@@ -36,7 +36,7 @@ DEFAULT_TIMEOUT = 30.0
 DEFAULT_DOWNLOAD_TIMEOUT = 300.0
 DEFAULT_NETWORK_CHUNK_SIZE = 8 * 1024 * 1024  # 8MB for network downloads
 DEFAULT_FILE_CHUNK_SIZE = 1 * 1024 * 1024  # 1MB for file operations
-USER_AGENT = "polaris-py/0.1.2"
+USER_AGENT = "polaris-py/0.1.3"
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 
