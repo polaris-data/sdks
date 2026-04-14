@@ -335,7 +335,7 @@ class PolarisClient:
         from_: TimeInput,
         to: TimeInput,
         *,
-        standard: bool = False,
+        standard: bool = True,
     ) -> list[JSONDict]:
         params = self._range_params(exchange, asset, from_, to)
         params["standard"] = bool_to_query(standard)
@@ -352,7 +352,7 @@ class PolarisClient:
         from_: TimeInput,
         to: TimeInput,
         *,
-        standard: bool = False,
+        standard: bool = True,
     ) -> DownloadUrlResponse:
         params = self._range_params(exchange, asset, from_, to)
         params["standard"] = bool_to_query(standard)
@@ -366,7 +366,7 @@ class PolarisClient:
         from_: TimeInput,
         to: TimeInput,
         *,
-        standard: bool = False,
+        standard: bool = True,
         chunk_size: int = 1024 * 1024,
     ) -> Iterator[JSONDict]:
         if chunk_size <= 0:
@@ -593,7 +593,7 @@ class PolarisClient:
         from_: TimeInput,
         to: TimeInput,
         *,
-        standard: bool = False,
+        standard: bool = True,
         destination: str | os.PathLike[str] | None = None,
         filename: str | None = None,
         overwrite: bool = False,
@@ -683,7 +683,7 @@ class PolarisClient:
         from_: TimeInput,
         to: TimeInput,
         *,
-        standard: bool = False,
+        standard: bool = True,
     ) -> Iterator[JSONDict]:
         params = self._range_params(exchange, asset, from_, to)
         params["standard"] = bool_to_query(standard)
@@ -706,7 +706,7 @@ class PolarisClient:
         from_: TimeInput,
         to: TimeInput,
         *,
-        standard: bool = False,
+        standard: bool = True,
     ) -> list[JSONDict]:
         return list(self.stream_events(exchange, asset, from_, to, standard=standard))
 

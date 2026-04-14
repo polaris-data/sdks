@@ -54,21 +54,23 @@ Open endpoints:
 - `timerange(exchange, asset)`
 - `dataset_size(exchange, asset, from_, to)`
 - `catalog()`
-- `dataset_preview(..., standard=False)`
+- `dataset_preview(..., standard=True)`
 - `ohlcv_preview(..., interval, limit=None, format=None)`
 
 Authenticated endpoints:
 
-- `dataset_download_url(..., standard=False)`
-- `replay(..., standard=False)` (stream rows from dataset download URL)
-- `download_dataset(..., standard=False, destination=None, filename=None, overwrite=False, decompress=True, keep_compressed=False)`
+- `dataset_download_url(..., standard=True)`
+- `replay(..., standard=True)` (stream rows from dataset download URL)
+- `download_dataset(..., standard=True, destination=None, filename=None, overwrite=False, decompress=True, keep_compressed=False)`
 - `trades_page(..., limit=1000, cursor=None)`
 - `iter_trades(...)`
 - `collect_all_trades(...)`
-- `stream_events(..., standard=False)`
-- `collect_events(..., standard=False)`
+- `stream_events(..., standard=True)`
+- `collect_events(..., standard=True)`
 - `iter_ohlcv(..., interval)`
 - `ohlcv(..., interval, format=None)`
+
+For event/data endpoints, `standard=True` is the default. Pass `standard=False` when you explicitly need raw schema payloads.
 
 ## Dataset replay (recommended)
 

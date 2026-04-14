@@ -141,6 +141,106 @@ def test_collect_events_parses_ndjson_stream() -> None:
         client.close()
 
 
+def test_dataset_download_url_defaults_to_standard_true() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/datasets/download"
+        assert request.url.params.get("standard") == "true"
+        return httpx.Response(
+            200,
+            json={
+                "url": "https://downloads.example.com/datasets/sample.jsonl.zst",
+                "totalBytes": 4,
+                "fileCount": 1,
+            },
+        )
+
+    client = make_client(handler)
+    try:
+        payload = client.dataset_download_url(
+            "binance",
+            "BTC-USDT",
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T01:00:00Z",
+        )
+        assert payload["url"] == "https://downloads.example.com/datasets/sample.jsonl.zst"
+    finally:
+        client.close()
+
+
+def test_dataset_download_url_allows_standard_false_for_raw() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/datasets/download"
+        assert request.url.params.get("standard") == "false"
+        return httpx.Response(
+            200,
+            json={
+                "url": "https://downloads.example.com/datasets/sample.jsonl.zst",
+                "totalBytes": 4,
+                "fileCount": 1,
+            },
+        )
+
+    client = make_client(handler)
+    try:
+        payload = client.dataset_download_url(
+            "binance",
+            "BTC-USDT",
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T01:00:00Z",
+            standard=False,
+        )
+        assert payload["url"] == "https://downloads.example.com/datasets/sample.jsonl.zst"
+    finally:
+        client.close()
+
+
+def test_stream_events_defaults_to_standard_true() -> None:
+    ndjson = b'{"timestamp": 1}\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/stream"
+        assert request.url.params.get("standard") == "true"
+        return httpx.Response(200, content=ndjson)
+
+    client = make_client(handler)
+    try:
+        events = list(
+            client.stream_events(
+                "binance",
+                "BTC-USDT",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T01:00:00Z",
+            )
+        )
+        assert events == [{"timestamp": 1}]
+    finally:
+        client.close()
+
+
+def test_stream_events_allows_standard_false_for_raw() -> None:
+    ndjson = b'{"timestamp": 1}\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/stream"
+        assert request.url.params.get("standard") == "false"
+        return httpx.Response(200, content=ndjson)
+
+    client = make_client(handler)
+    try:
+        events = list(
+            client.stream_events(
+                "binance",
+                "BTC-USDT",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T01:00:00Z",
+                standard=False,
+            )
+        )
+        assert events == [{"timestamp": 1}]
+    finally:
+        client.close()
+
+
 def test_ohlcv_tradingview_format_returns_json() -> None:
     payload = {
         "candles": [{"time": 1704067200000000, "open": 1, "high": 2, "low": 0, "close": 1.5}],
@@ -317,6 +417,7 @@ def test_replay_streams_rows_from_zstd_download_url() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/datasets/download":
+            assert request.url.params.get("standard") == "true"
             return httpx.Response(
                 200,
                 json={
@@ -347,6 +448,7 @@ def test_replay_streams_rows_from_plain_ndjson_download_url() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/datasets/download":
+            assert request.url.params.get("standard") == "true"
             return httpx.Response(
                 200,
                 json={
@@ -375,6 +477,7 @@ def test_replay_streams_rows_from_plain_ndjson_download_url() -> None:
 def test_replay_raises_stream_decode_error_for_invalid_zstd() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/datasets/download":
+            assert request.url.params.get("standard") == "true"
             return httpx.Response(
                 200,
                 json={
@@ -420,7 +523,7 @@ def test_replay_reads_cached_rows_without_api_call(tmp_path) -> None:
             "BTC-USDT",
             "2024-01-01T00:00:00Z",
             "2024-01-01T01:00:00Z",
-            False,
+            True,
         )
         cache_path = (tmp_path / cache_name).with_suffix("")
         cache_path.write_bytes(b'{"timestamp":99}\n')
@@ -461,7 +564,7 @@ def test_replay_reads_bugged_compressed_jsonl_cache_without_api_call(tmp_path) -
             "BTC-USDT",
             "2024-01-01T00:00:00Z",
             "2024-01-01T01:00:00Z",
-            False,
+            True,
         )
         cache_path = (tmp_path / cache_name).with_suffix("")
         cache_path.write_bytes(compressed)
@@ -486,6 +589,7 @@ def test_replay_populates_cache_and_reuses_on_new_client(tmp_path) -> None:
 
     def online_handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/datasets/download":
+            assert request.url.params.get("standard") == "true"
             return httpx.Response(
                 200,
                 json={
@@ -544,6 +648,7 @@ def test_replay_handles_signed_zstd_download_url_with_cache(tmp_path) -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/datasets/download":
+            assert request.url.params.get("standard") == "true"
             return httpx.Response(
                 200,
                 json={
@@ -570,5 +675,37 @@ def test_replay_handles_signed_zstd_download_url_with_cache(tmp_path) -> None:
             )
         )
         assert rows == [{"timestamp": 21}, {"timestamp": 22}]
+    finally:
+        client.close()
+
+
+def test_replay_allows_standard_false_for_raw() -> None:
+    events = b'{"timestamp":31}\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/datasets/download":
+            assert request.url.params.get("standard") == "false"
+            return httpx.Response(
+                200,
+                json={
+                    "url": "https://downloads.example.com/datasets/sample.jsonl",
+                    "totalBytes": len(events),
+                    "fileCount": 1,
+                },
+            )
+        return httpx.Response(200, content=events)
+
+    client = make_client(handler)
+    try:
+        rows = list(
+            client.replay(
+                "binance",
+                "BTC-USDT",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T01:00:00Z",
+                standard=False,
+            )
+        )
+        assert rows == [{"timestamp": 31}]
     finally:
         client.close()
