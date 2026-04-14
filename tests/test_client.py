@@ -439,6 +439,47 @@ def test_replay_reads_cached_rows_without_api_call(tmp_path) -> None:
         client.close()
 
 
+def test_replay_reads_bugged_compressed_jsonl_cache_without_api_call(tmp_path) -> None:
+    called = False
+    events = b'{"timestamp":101}\n{"timestamp":102}\n'
+    compressed = zstd.ZstdCompressor().compress(events)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(500)
+
+    client = PolarisClient(
+        api_key="pk_live_test",
+        transport=httpx.MockTransport(handler),
+        replay_cache_enabled=True,
+        replay_cache_dir=tmp_path,
+    )
+    try:
+        cache_name = client._default_dataset_filename(
+            "binance",
+            "BTC-USDT",
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T01:00:00Z",
+            False,
+        )
+        cache_path = (tmp_path / cache_name).with_suffix("")
+        cache_path.write_bytes(compressed)
+
+        rows = list(
+            client.replay(
+                "binance",
+                "BTC-USDT",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T01:00:00Z",
+            )
+        )
+        assert rows == [{"timestamp": 101}, {"timestamp": 102}]
+        assert called is False
+    finally:
+        client.close()
+
+
 def test_replay_populates_cache_and_reuses_on_new_client(tmp_path) -> None:
     events = b'{"timestamp":11}\n{"timestamp":12}\n'
     compressed = zstd.ZstdCompressor().compress(events)
@@ -495,3 +536,39 @@ def test_replay_populates_cache_and_reuses_on_new_client(tmp_path) -> None:
         assert cached_rows == [{"timestamp": 11}, {"timestamp": 12}]
     finally:
         offline_client.close()
+
+
+def test_replay_handles_signed_zstd_download_url_with_cache(tmp_path) -> None:
+    events = b'{"timestamp":21}\n{"timestamp":22}\n'
+    compressed = zstd.ZstdCompressor().compress(events)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/datasets/download":
+            return httpx.Response(
+                200,
+                json={
+                    "url": "https://downloads.example.com/datasets/sample.jsonl.zst?X-Amz-Signature=test",
+                    "totalBytes": len(compressed),
+                    "fileCount": 1,
+                },
+            )
+        return httpx.Response(200, content=compressed)
+
+    client = PolarisClient(
+        api_key="pk_live_test",
+        transport=httpx.MockTransport(handler),
+        replay_cache_enabled=True,
+        replay_cache_dir=tmp_path,
+    )
+    try:
+        rows = list(
+            client.replay(
+                "binance",
+                "BTC-USDT",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T01:00:00Z",
+            )
+        )
+        assert rows == [{"timestamp": 21}, {"timestamp": 22}]
+    finally:
+        client.close()

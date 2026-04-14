@@ -26,7 +26,8 @@ from .utils import TimeInput, bool_to_query, to_iso8601
 
 DEFAULT_BASE_URL = "https://polaris.supply/api"
 DEFAULT_TIMEOUT = 30.0
-USER_AGENT = "polaris-py/0.1.0"
+USER_AGENT = "polaris-py/0.1.2"
+_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 
 def _default_dataset_download_dir() -> Path:
@@ -51,6 +52,14 @@ def _safe_filename_fragment(value: str) -> str:
         for character in value
     ).strip("_")
     return cleaned or "dataset"
+
+
+def _file_is_zstd(path: Path) -> bool:
+    try:
+        with path.open("rb") as file:
+            return file.read(len(_ZSTD_MAGIC)) == _ZSTD_MAGIC
+    except OSError:
+        return False
 
 
 class PolarisClient:
@@ -369,8 +378,12 @@ class PolarisClient:
             cache_jsonl_path = cache_zst_path.with_suffix("")
 
             if cache_jsonl_path.exists():
+                if _file_is_zstd(cache_jsonl_path):
+                    return self._iter_ndjson_zstd_file(cache_jsonl_path, chunk_size)
                 return self._iter_ndjson_file(cache_jsonl_path, chunk_size)
             if cache_zst_path.exists():
+                if not _file_is_zstd(cache_zst_path):
+                    return self._iter_ndjson_file(cache_zst_path, chunk_size)
                 return self._iter_ndjson_zstd_file(cache_zst_path, chunk_size)
 
         payload = self.dataset_download_url(exchange, asset, from_, to, standard=standard)
@@ -379,7 +392,8 @@ class PolarisClient:
             raise PolarisError("Invalid dataset download response: missing url")
 
         if self.replay_cache_enabled:
-            cache_filename = canonical_zst_name if download_url.lower().endswith(".zst") else cache_jsonl_path.name
+            download_path = urlparse(download_url).path.lower()
+            cache_filename = canonical_zst_name if download_path.endswith(".zst") else cache_jsonl_path.name
             cached_path = self._download_dataset_impl(
                 exchange,
                 asset,
