@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "polaris-data"
-version = "0.1.0"
+version = "0.1.1"
 description = "Python SDK for the Polaris market data API"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -13,7 +13,8 @@ authors = [
   { name = "Polaris" }
 ]
 dependencies = [
-  "httpx>=0.27.0"
+  "httpx>=0.27.0",
+  "zstandard>=0.23.0"
 ]
 keywords = ["polaris", "market-data", "trading", "sdk"]
 classifiers = [

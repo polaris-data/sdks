@@ -13,6 +13,9 @@ class PolarisError(Exception):
     status_code: int | None = None
     body: str | None = None
 
+    def __post_init__(self) -> None:
+        super().__init__(self.message)
+
     def __str__(self) -> str:
         if self.status_code is None:
             return self.message
@@ -36,3 +39,7 @@ class RateLimitedError(PolarisError):
 
 class StreamDecodeError(PolarisError):
     """Raised when NDJSON stream decoding fails."""
+
+
+class DownloadNotAllowedError(PolarisError):
+    """Raised when file downloads are disabled by client configuration."""

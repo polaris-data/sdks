@@ -2,14 +2,29 @@ from __future__ import annotations
 
 import httpx
 import pytest
+import zstandard as zstd
 
 from polaris_data import PolarisClient
-from polaris_data.errors import RateLimitedError, UnauthorizedError
+from polaris_data.errors import (
+    DownloadNotAllowedError,
+    PolarisError,
+    RateLimitedError,
+    StreamDecodeError,
+    UnauthorizedError,
+)
 
 
-def make_client(handler, api_key: str | None = "pk_live_test") -> PolarisClient:
+def make_client(
+    handler,
+    api_key: str | None = "polaris_key_test",
+    replay_cache_enabled: bool = False,
+) -> PolarisClient:
     transport = httpx.MockTransport(handler)
-    return PolarisClient(api_key=api_key, transport=transport)
+    return PolarisClient(
+        api_key=api_key,
+        transport=transport,
+        replay_cache_enabled=replay_cache_enabled,
+    )
 
 
 def test_exchanges_response_shape() -> None:
@@ -150,3 +165,333 @@ def test_ohlcv_tradingview_format_returns_json() -> None:
         assert response == payload
     finally:
         client.close()
+
+
+def test_download_dataset_requires_explicit_opt_in() -> None:
+    called = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(500)
+
+    client = make_client(handler)
+    try:
+        with pytest.raises(DownloadNotAllowedError):
+            client.download_dataset(
+                "binance",
+                "BTC-USDT",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T01:00:00Z",
+            )
+        assert called is False
+    finally:
+        client.close()
+
+
+def test_download_dataset_writes_s3_payload(tmp_path) -> None:
+    dataset_bytes = b'{"timestamp":1}\n'
+    compressed_bytes = zstd.ZstdCompressor().compress(dataset_bytes)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/datasets/download":
+            return httpx.Response(
+                200,
+                json={
+                    "url": "https://downloads.example.com/datasets/sample.jsonl.zst",
+                    "totalBytes": 4,
+                    "fileCount": 1,
+                },
+            )
+
+        assert request.url.host == "downloads.example.com"
+        return httpx.Response(200, content=compressed_bytes)
+
+    client = PolarisClient(
+        api_key="pk_live_test",
+        transport=httpx.MockTransport(handler),
+        allow_dataset_downloads=True,
+        dataset_download_dir=tmp_path,
+    )
+    try:
+        path = client.download_dataset(
+            "binance",
+            "BTC-USDT",
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T01:00:00Z",
+        )
+        assert path == tmp_path / "sample.jsonl"
+        assert path.read_bytes() == dataset_bytes
+        assert not (tmp_path / "sample.jsonl.zst").exists()
+    finally:
+        client.close()
+
+
+def test_download_dataset_existing_file_requires_overwrite(tmp_path) -> None:
+    existing = tmp_path / "sample.jsonl.zst"
+    existing.write_bytes(b"old")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/datasets/download":
+            return httpx.Response(
+                200,
+                json={
+                    "url": "https://downloads.example.com/datasets/sample.jsonl.zst",
+                    "totalBytes": 3,
+                    "fileCount": 1,
+                },
+            )
+        return httpx.Response(200, content=b"new")
+
+    client = PolarisClient(
+        api_key="pk_live_test",
+        transport=httpx.MockTransport(handler),
+        allow_dataset_downloads=True,
+        dataset_download_dir=tmp_path,
+    )
+    try:
+        with pytest.raises(PolarisError):
+            client.download_dataset(
+                "binance",
+                "BTC-USDT",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T01:00:00Z",
+                decompress=False,
+            )
+        assert existing.read_bytes() == b"old"
+
+        path = client.download_dataset(
+            "binance",
+            "BTC-USDT",
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T01:00:00Z",
+            overwrite=True,
+            decompress=False,
+        )
+        assert path == existing
+        assert existing.read_bytes() == b"new"
+    finally:
+        client.close()
+
+
+def test_download_dataset_keep_compressed_true_keeps_both_files(tmp_path) -> None:
+    dataset_bytes = b'{"timestamp":2}\n'
+    compressed_bytes = zstd.ZstdCompressor().compress(dataset_bytes)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/datasets/download":
+            return httpx.Response(
+                200,
+                json={
+                    "url": "https://downloads.example.com/datasets/sample.jsonl.zst",
+                    "totalBytes": len(compressed_bytes),
+                    "fileCount": 1,
+                },
+            )
+        return httpx.Response(200, content=compressed_bytes)
+
+    client = PolarisClient(
+        api_key="pk_live_test",
+        transport=httpx.MockTransport(handler),
+        allow_dataset_downloads=True,
+        dataset_download_dir=tmp_path,
+    )
+    try:
+        path = client.download_dataset(
+            "binance",
+            "BTC-USDT",
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T01:00:00Z",
+            keep_compressed=True,
+        )
+        assert path == tmp_path / "sample.jsonl"
+        assert path.read_bytes() == dataset_bytes
+        assert (tmp_path / "sample.jsonl.zst").read_bytes() == compressed_bytes
+    finally:
+        client.close()
+
+
+def test_replay_streams_rows_from_zstd_download_url() -> None:
+    events = b'{"timestamp":1,"type":"trade"}\n{"timestamp":2,"type":"trade"}\n'
+    compressed = zstd.ZstdCompressor().compress(events)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/datasets/download":
+            return httpx.Response(
+                200,
+                json={
+                    "url": "https://downloads.example.com/datasets/sample.jsonl.zst",
+                    "totalBytes": len(compressed),
+                    "fileCount": 1,
+                },
+            )
+        return httpx.Response(200, content=compressed)
+
+    client = make_client(handler)
+    try:
+        rows = list(
+            client.replay(
+                "binance",
+                "BTC-USDT",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T01:00:00Z",
+            )
+        )
+        assert rows == [{"timestamp": 1, "type": "trade"}, {"timestamp": 2, "type": "trade"}]
+    finally:
+        client.close()
+
+
+def test_replay_streams_rows_from_plain_ndjson_download_url() -> None:
+    events = b'{"timestamp":3}\n{"timestamp":4}\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/datasets/download":
+            return httpx.Response(
+                200,
+                json={
+                    "url": "https://downloads.example.com/datasets/sample.jsonl",
+                    "totalBytes": len(events),
+                    "fileCount": 1,
+                },
+            )
+        return httpx.Response(200, content=events)
+
+    client = make_client(handler)
+    try:
+        rows = list(
+            client.replay(
+                "binance",
+                "BTC-USDT",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T01:00:00Z",
+            )
+        )
+        assert rows == [{"timestamp": 3}, {"timestamp": 4}]
+    finally:
+        client.close()
+
+
+def test_replay_raises_stream_decode_error_for_invalid_zstd() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/datasets/download":
+            return httpx.Response(
+                200,
+                json={
+                    "url": "https://downloads.example.com/datasets/sample.jsonl.zst",
+                    "totalBytes": 6,
+                    "fileCount": 1,
+                },
+            )
+        return httpx.Response(200, content=b"not-zs")
+
+    client = make_client(handler)
+    try:
+        with pytest.raises(StreamDecodeError):
+            list(
+                client.replay(
+                    "binance",
+                    "BTC-USDT",
+                    "2024-01-01T00:00:00Z",
+                    "2024-01-01T01:00:00Z",
+                )
+            )
+    finally:
+        client.close()
+
+
+def test_replay_reads_cached_rows_without_api_call(tmp_path) -> None:
+    called = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(500)
+
+    client = PolarisClient(
+        api_key="pk_live_test",
+        transport=httpx.MockTransport(handler),
+        replay_cache_enabled=True,
+        replay_cache_dir=tmp_path,
+    )
+    try:
+        cache_name = client._default_dataset_filename(
+            "binance",
+            "BTC-USDT",
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T01:00:00Z",
+            False,
+        )
+        cache_path = (tmp_path / cache_name).with_suffix("")
+        cache_path.write_bytes(b'{"timestamp":99}\n')
+
+        rows = list(
+            client.replay(
+                "binance",
+                "BTC-USDT",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T01:00:00Z",
+            )
+        )
+        assert rows == [{"timestamp": 99}]
+        assert called is False
+    finally:
+        client.close()
+
+
+def test_replay_populates_cache_and_reuses_on_new_client(tmp_path) -> None:
+    events = b'{"timestamp":11}\n{"timestamp":12}\n'
+    compressed = zstd.ZstdCompressor().compress(events)
+
+    def online_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/datasets/download":
+            return httpx.Response(
+                200,
+                json={
+                    "url": "https://downloads.example.com/datasets/sample.jsonl.zst",
+                    "totalBytes": len(compressed),
+                    "fileCount": 1,
+                },
+            )
+        return httpx.Response(200, content=compressed)
+
+    online_client = PolarisClient(
+        api_key="pk_live_test",
+        transport=httpx.MockTransport(online_handler),
+        replay_cache_enabled=True,
+        replay_cache_dir=tmp_path,
+    )
+    try:
+        rows = list(
+            online_client.replay(
+                "binance",
+                "BTC-USDT",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T01:00:00Z",
+            )
+        )
+        assert rows == [{"timestamp": 11}, {"timestamp": 12}]
+    finally:
+        online_client.close()
+
+    def offline_handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("Network should not be called when replay cache has the dataset")
+
+    offline_client = PolarisClient(
+        api_key=None,
+        transport=httpx.MockTransport(offline_handler),
+        replay_cache_enabled=True,
+        replay_cache_dir=tmp_path,
+    )
+    try:
+        cached_rows = list(
+            offline_client.replay(
+                "binance",
+                "BTC-USDT",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T01:00:00Z",
+            )
+        )
+        assert cached_rows == [{"timestamp": 11}, {"timestamp": 12}]
+    finally:
+        offline_client.close()

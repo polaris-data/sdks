@@ -2,6 +2,7 @@
 
 from .client import PolarisClient
 from .errors import (
+    DownloadNotAllowedError,
     NotFoundError,
     PolarisError,
     RateLimitedError,
@@ -11,6 +12,7 @@ from .errors import (
 
 __all__ = [
     "NotFoundError",
+    "DownloadNotAllowedError",
     "PolarisClient",
     "PolarisError",
     "RateLimitedError",

@@ -20,19 +20,17 @@ uv lock
 ```python
 from polaris_data import PolarisClient
 
-with PolarisClient.new("pk_live_your_key") as client:
-    exchanges = client.exchanges()
-    assets = client.assets(exchanges[0])
-
-    trades = client.collect_all_trades(
-        exchange=exchanges[0],
-        asset=assets[0],
+with PolarisClient.new("polaris_key_your_key") as client:
+    row_count = 0
+    for row in client.replay(
+        exchange="binance",
+        asset="BTC-USDT",
         from_="2024-01-01T00:00:00Z",
         to="2024-01-01T01:00:00Z",
-        limit=500,
-    )
+    ):
+        row_count += 1
 
-    print(f"Loaded {len(trades)} trades")
+    print(f"Replayed {row_count} rows")
 ```
 
 If `api_key` is omitted, the client reads `POLARIS_API_KEY` from the environment.
@@ -62,6 +60,8 @@ Open endpoints:
 Authenticated endpoints:
 
 - `dataset_download_url(..., standard=False)`
+- `replay(..., standard=False)` (stream rows from dataset download URL)
+- `download_dataset(..., standard=False, destination=None, filename=None, overwrite=False, decompress=True, keep_compressed=False)`
 - `trades_page(..., limit=1000, cursor=None)`
 - `iter_trades(...)`
 - `collect_all_trades(...)`
@@ -69,6 +69,57 @@ Authenticated endpoints:
 - `collect_events(..., standard=False)`
 - `iter_ohlcv(..., interval)`
 - `ohlcv(..., interval, format=None)`
+
+## Dataset replay (recommended)
+
+For row-by-row iteration without managing file paths, use `replay(...)`:
+
+```python
+from polaris_data import PolarisClient
+
+with PolarisClient.new("polaris_key_your_key") as client:
+    for row in client.replay(
+        exchange="binance",
+        asset="BTC-USDT",
+        from_="2024-01-01T00:00:00Z",
+        to="2024-01-01T01:00:00Z",
+    ):
+        print(row)
+```
+
+`replay(...)` checks the local replay cache first, then fetches and caches the dataset if needed.
+Replay cache is enabled by default and initialized when the client is created.
+
+## Optional: persist dataset files
+
+For safety, file downloads are disabled by default. Enable them explicitly when you want to save files locally:
+
+```python
+from polaris_data import PolarisClient
+
+with PolarisClient.new("polaris_key_your_key", allow_dataset_downloads=True) as client:
+    file_path = client.download_dataset(
+        exchange="binance",
+        asset="BTC-USDT",
+        from_="2024-01-01T00:00:00Z",
+        to="2024-01-01T01:00:00Z",
+    )
+    print(file_path)
+```
+
+`download_dataset(...)` decompresses `.zst` files by default and returns the decompressed file path (for example `.jsonl`).
+Set `decompress=False` to keep the original `.zst`, or `keep_compressed=True` to keep both files.
+
+Default download directories:
+
+- macOS: `~/Library/Caches/polaris/datasets`
+- Linux: `~/.cache/polaris/datasets`
+- Windows: `%LOCALAPPDATA%\\polaris\\datasets`
+
+You can override this with `dataset_download_dir=...` on the client or `destination=...` on a single `download_dataset(...)` call.
+Set `POLARIS_DATASET_DOWNLOAD_DIR` to override the default directory globally.
+Replay cache defaults to a `replay/` subdirectory under `dataset_download_dir`.
+Use `replay_cache_enabled=False` to disable replay caching, or `replay_cache_dir=...` to move it.
 
 ## Error handling
 
