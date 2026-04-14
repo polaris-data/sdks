@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import heapq
 import json
 import os
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import unquote, urlparse
@@ -21,11 +23,19 @@ from .errors import (
     StreamDecodeError,
     UnauthorizedError,
 )
-from .models import DownloadUrlResponse, JSONDict, OhlcvParquetResponse, PaginatedResponse
-from .utils import TimeInput, bool_to_query, to_iso8601
+from .models import (
+    DownloadUrlResponse,
+    JSONDict,
+    OhlcvParquetResponse,
+    PaginatedResponse,
+)
+from .utils import TimeInput, bool_to_query, chunk_timerange, to_iso8601
 
 DEFAULT_BASE_URL = "https://polaris.supply/api"
 DEFAULT_TIMEOUT = 30.0
+DEFAULT_DOWNLOAD_TIMEOUT = 300.0
+DEFAULT_NETWORK_CHUNK_SIZE = 8 * 1024 * 1024  # 8MB for network downloads
+DEFAULT_FILE_CHUNK_SIZE = 1 * 1024 * 1024  # 1MB for file operations
 USER_AGENT = "polaris-py/0.1.2"
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
@@ -102,11 +112,24 @@ class PolarisClient:
             self._client = http_client
             self._owns_client = False
         else:
+            # Try to enable HTTP/2 if available
+            try:
+                import h2  # noqa: F401
+
+                use_http2 = True
+            except ImportError:
+                use_http2 = False
+
             self._client = httpx.Client(
                 base_url=self.base_url,
                 timeout=self.timeout,
                 headers={"User-Agent": USER_AGENT},
                 transport=transport,
+                http2=use_http2,
+                limits=httpx.Limits(
+                    max_connections=10,
+                    max_keepalive_connections=5,
+                ),
             )
             self._owns_client = True
 
@@ -246,7 +269,9 @@ class PolarisClient:
         if tail:
             yield self._parse_ndjson_line(tail)
 
-    def _iter_zstd_decompressed_chunks(self, chunks: Iterator[bytes]) -> Iterator[bytes]:
+    def _iter_zstd_decompressed_chunks(
+        self, chunks: Iterator[bytes]
+    ) -> Iterator[bytes]:
         decompressor = zstd.ZstdDecompressor().decompressobj()
         try:
             for chunk in chunks:
@@ -273,7 +298,9 @@ class PolarisClient:
         return self._iter_ndjson_from_chunks(self._iter_file_chunks(path, chunk_size))
 
     def _iter_ndjson_zstd_file(self, path: Path, chunk_size: int) -> Iterator[JSONDict]:
-        decompressed_chunks = self._iter_zstd_decompressed_chunks(self._iter_file_chunks(path, chunk_size))
+        decompressed_chunks = self._iter_zstd_decompressed_chunks(
+            self._iter_file_chunks(path, chunk_size)
+        )
         return self._iter_ndjson_from_chunks(decompressed_chunks)
 
     def _range_params(
@@ -367,54 +394,90 @@ class PolarisClient:
         to: TimeInput,
         *,
         standard: bool = True,
-        chunk_size: int = 1024 * 1024,
+        chunk_size: int | None = None,
+        timeout: float | None = None,
+        parallel: bool | int = False,
     ) -> Iterator[JSONDict]:
-        if chunk_size <= 0:
+        # Use optimized network chunk size by default
+        effective_chunk_size = (
+            chunk_size if chunk_size is not None else DEFAULT_NETWORK_CHUNK_SIZE
+        )
+        if effective_chunk_size <= 0:
             raise ValueError("chunk_size must be > 0")
 
-        if self.replay_cache_enabled:
-            canonical_zst_name = self._default_dataset_filename(exchange, asset, from_, to, standard)
-            cache_zst_path = self.replay_cache_dir / canonical_zst_name
-            cache_jsonl_path = cache_zst_path.with_suffix("")
-
-            if cache_jsonl_path.exists():
-                if _file_is_zstd(cache_jsonl_path):
-                    return self._iter_ndjson_zstd_file(cache_jsonl_path, chunk_size)
-                return self._iter_ndjson_file(cache_jsonl_path, chunk_size)
-            if cache_zst_path.exists():
-                if not _file_is_zstd(cache_zst_path):
-                    return self._iter_ndjson_file(cache_zst_path, chunk_size)
-                return self._iter_ndjson_zstd_file(cache_zst_path, chunk_size)
-
-        payload = self.dataset_download_url(exchange, asset, from_, to, standard=standard)
-        download_url = payload.get("url")
-        if not isinstance(download_url, str) or not download_url:
-            raise PolarisError("Invalid dataset download response: missing url")
-
-        if self.replay_cache_enabled:
-            download_path = urlparse(download_url).path.lower()
-            cache_filename = canonical_zst_name if download_path.endswith(".zst") else cache_jsonl_path.name
-            cached_path = self._download_dataset_impl(
+        # Handle parallel chunking
+        if parallel:
+            max_workers = parallel if isinstance(parallel, int) else 4
+            return self._replay_parallel(
                 exchange,
                 asset,
                 from_,
                 to,
                 standard=standard,
-                destination=self.replay_cache_dir,
-                filename=cache_filename,
-                overwrite=False,
-                decompress=True,
-                keep_compressed=False,
-                chunk_size=chunk_size,
-                require_opt_in=False,
-                download_url=download_url,
+                chunk_size=effective_chunk_size,
+                timeout=timeout,
+                max_workers=max_workers,
             )
-            return self._iter_ndjson_file(cached_path, chunk_size)
+
+        # Check if cache exists
+        if self.replay_cache_enabled:
+            canonical_zst_name = self._default_dataset_filename(
+                exchange, asset, from_, to, standard
+            )
+            cache_zst_path = self.replay_cache_dir / canonical_zst_name
+            cache_jsonl_path = cache_zst_path.with_suffix("")
+
+            # Serve from cache if already downloaded
+            if cache_jsonl_path.exists():
+                if _file_is_zstd(cache_jsonl_path):
+                    return self._iter_ndjson_zstd_file(
+                        cache_jsonl_path, DEFAULT_FILE_CHUNK_SIZE
+                    )
+                return self._iter_ndjson_file(cache_jsonl_path, DEFAULT_FILE_CHUNK_SIZE)
+            if cache_zst_path.exists():
+                if not _file_is_zstd(cache_zst_path):
+                    return self._iter_ndjson_file(
+                        cache_zst_path, DEFAULT_FILE_CHUNK_SIZE
+                    )
+                return self._iter_ndjson_zstd_file(
+                    cache_zst_path, DEFAULT_FILE_CHUNK_SIZE
+                )
+
+        # Get download URL
+        payload = self.dataset_download_url(
+            exchange, asset, from_, to, standard=standard
+        )
+        download_url = payload.get("url")
+        if not isinstance(download_url, str) or not download_url:
+            raise PolarisError("Invalid dataset download response: missing url")
 
         is_zst = urlparse(download_url).path.lower().endswith(".zst")
+        download_timeout = timeout if timeout is not None else DEFAULT_DOWNLOAD_TIMEOUT
 
+        # Streaming cache mode: cache while streaming
+        if self.replay_cache_enabled:
+            canonical_zst_name = self._default_dataset_filename(
+                exchange, asset, from_, to, standard
+            )
+            cache_zst_path = self.replay_cache_dir / canonical_zst_name
+            cache_jsonl_path = cache_zst_path.with_suffix("")
+
+            # Determine cache file path (decompressed for easier reading)
+            cache_path = cache_jsonl_path
+
+            return self._replay_with_streaming_cache(
+                download_url,
+                cache_path,
+                is_zst,
+                effective_chunk_size,
+                download_timeout,
+            )
+
+        # No cache: pure streaming
         def _iterator() -> Iterator[JSONDict]:
-            with self._client.stream("GET", download_url, follow_redirects=True) as response:
+            with self._client.stream(
+                "GET", download_url, follow_redirects=True, timeout=download_timeout
+            ) as response:
                 if response.is_error:
                     raise PolarisError(
                         "Dataset replay download failed",
@@ -422,11 +485,223 @@ class PolarisClient:
                         body=response.text,
                     )
 
-                chunks = response.iter_bytes(chunk_size=chunk_size)
-                source_chunks = self._iter_zstd_decompressed_chunks(chunks) if is_zst else chunks
+                chunks = response.iter_bytes(chunk_size=effective_chunk_size)
+                source_chunks = (
+                    self._iter_zstd_decompressed_chunks(chunks) if is_zst else chunks
+                )
                 yield from self._iter_ndjson_from_chunks(source_chunks)
 
         return _iterator()
+
+    def _replay_parallel(
+        self,
+        exchange: str,
+        asset: str,
+        from_: TimeInput,
+        to: TimeInput,
+        *,
+        standard: bool = True,
+        chunk_size: int,
+        timeout: float | None = None,
+        max_workers: int = 4,
+    ) -> Iterator[JSONDict]:
+        """
+        Download and replay data in parallel time chunks.
+
+        Splits the time range into chunks, downloads them in parallel,
+        and yields records in chronological order.
+        """
+        # Split time range into 24-hour chunks
+        time_chunks = chunk_timerange(from_, to, chunk_hours=24)
+
+        if len(time_chunks) == 1:
+            # Only one chunk, use regular replay
+            return self.replay(
+                exchange,
+                asset,
+                from_,
+                to,
+                standard=standard,
+                chunk_size=chunk_size,
+                timeout=timeout,
+                parallel=False,
+            )
+
+        # Download chunks in parallel and collect results
+        def _parallel_iterator() -> Iterator[JSONDict]:
+            # Use a priority queue to maintain chronological order
+            # Each item is (chunk_index, record_iterator)
+            chunk_iterators: dict[int, Iterator[JSONDict]] = {}
+
+            # Download chunks in parallel using ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all chunk downloads
+                future_to_index = {}
+                for idx, (chunk_start, chunk_end) in enumerate(time_chunks):
+                    future = executor.submit(
+                        self._download_chunk_to_list,
+                        exchange,
+                        asset,
+                        chunk_start,
+                        chunk_end,
+                        standard,
+                        chunk_size,
+                        timeout,
+                    )
+                    future_to_index[future] = idx
+
+                # Collect results as they complete
+                chunk_results: dict[int, list[JSONDict]] = {}
+                for future in as_completed(future_to_index):
+                    idx = future_to_index[future]
+                    try:
+                        records = future.result()
+                        chunk_results[idx] = records
+                    except Exception as exc:
+                        raise PolarisError(
+                            f"Parallel chunk {idx} download failed: {exc}"
+                        ) from exc
+
+            # Yield records in chronological order
+            for idx in sorted(chunk_results.keys()):
+                yield from chunk_results[idx]
+
+        return _parallel_iterator()
+
+    def _download_chunk_to_list(
+        self,
+        exchange: str,
+        asset: str,
+        from_: TimeInput,
+        to: TimeInput,
+        standard: bool,
+        chunk_size: int,
+        timeout: float | None,
+    ) -> list[JSONDict]:
+        """Download a single time chunk and return all records as a list."""
+        records = []
+        for record in self.replay(
+            exchange,
+            asset,
+            from_,
+            to,
+            standard=standard,
+            chunk_size=chunk_size,
+            timeout=timeout,
+            parallel=False,  # Prevent recursive parallel calls
+        ):
+            records.append(record)
+        return records
+
+    def _replay_with_streaming_cache(
+        self,
+        download_url: str,
+        cache_path: Path,
+        is_zst: bool,
+        chunk_size: int,
+        timeout: float,
+    ) -> Iterator[JSONDict]:
+        """Stream dataset from S3 while simultaneously caching to disk."""
+        temp_cache_path: Path | None = None
+        cache_file = None
+
+        def _streaming_iterator() -> Iterator[JSONDict]:
+            nonlocal temp_cache_path, cache_file
+
+            try:
+                # Create temporary cache file
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    delete=False,
+                    dir=self.replay_cache_dir,
+                    prefix=f".{cache_path.name}.",
+                    suffix=".part",
+                ) as temp_file:
+                    temp_cache_path = Path(temp_file.name)
+                    cache_file = temp_file
+
+                    with self._client.stream(
+                        "GET", download_url, follow_redirects=True, timeout=timeout
+                    ) as response:
+                        if response.is_error:
+                            raise PolarisError(
+                                "Dataset replay download failed",
+                                status_code=response.status_code,
+                                body=response.text,
+                            )
+
+                        # Stream, decompress, parse, and cache simultaneously
+                        raw_chunks = response.iter_bytes(chunk_size=chunk_size)
+
+                        if is_zst:
+                            # For zstd: decompress streaming, cache decompressed data
+                            decompressor = zstd.ZstdDecompressor().decompressobj()
+
+                            for raw_chunk in raw_chunks:
+                                if not raw_chunk:
+                                    continue
+
+                                try:
+                                    # Decompress chunk using streaming decompressor
+                                    decompressed = decompressor.decompress(raw_chunk)
+
+                                    if decompressed:
+                                        # Write decompressed data to cache
+                                        cache_file.write(decompressed)
+
+                                        # Parse and yield records from decompressed chunk
+                                        for record in self._iter_ndjson_from_chunks(
+                                            [decompressed]
+                                        ):
+                                            yield record
+                                except zstd.ZstdError as exc:
+                                    raise StreamDecodeError(
+                                        f"Invalid zstd stream: {exc}"
+                                    ) from exc
+
+                            # Flush remaining data
+                            tail = decompressor.flush()
+                            if tail:
+                                cache_file.write(tail)
+                                for record in self._iter_ndjson_from_chunks([tail]):
+                                    yield record
+                        else:
+                            # For plain NDJSON: cache raw data while parsing
+                            for chunk in raw_chunks:
+                                if not chunk:
+                                    continue
+
+                                # Write to cache
+                                cache_file.write(chunk)
+
+                                # Parse and yield records
+                                for record in self._iter_ndjson_from_chunks([chunk]):
+                                    yield record
+
+                # Close the temp file before moving
+                cache_file.close()
+                cache_file = None
+
+                # Successfully completed - move temp file to final location
+                if temp_cache_path and temp_cache_path.exists():
+                    os.replace(temp_cache_path, cache_path)
+                    temp_cache_path = None
+
+            except Exception:
+                # Clean up temp file on error
+                if cache_file:
+                    try:
+                        cache_file.close()
+                    except Exception:
+                        pass
+                if temp_cache_path and temp_cache_path.exists():
+                    try:
+                        temp_cache_path.unlink()
+                    except Exception:
+                        pass
+                raise
+
+        return _streaming_iterator()
 
     def _dataset_filename_from_url(self, url: str) -> str | None:
         filename = Path(unquote(urlparse(url).path)).name
@@ -484,19 +759,27 @@ class PolarisClient:
 
         resolved_download_url = download_url
         if resolved_download_url is None:
-            payload = self.dataset_download_url(exchange, asset, from_, to, standard=standard)
+            payload = self.dataset_download_url(
+                exchange, asset, from_, to, standard=standard
+            )
             resolved_download_url = payload.get("url")
 
         download_url = resolved_download_url
         if not isinstance(download_url, str) or not download_url:
             raise PolarisError("Invalid dataset download response: missing url")
 
-        target_dir = Path(destination).expanduser() if destination is not None else self.dataset_download_dir
+        target_dir = (
+            Path(destination).expanduser()
+            if destination is not None
+            else self.dataset_download_dir
+        )
         target_dir.mkdir(parents=True, exist_ok=True)
 
         resolved_filename = filename or self._dataset_filename_from_url(download_url)
         if not resolved_filename:
-            resolved_filename = self._default_dataset_filename(exchange, asset, from_, to, standard)
+            resolved_filename = self._default_dataset_filename(
+                exchange, asset, from_, to, standard
+            )
 
         target_path = target_dir / resolved_filename
         if target_path.exists() and not overwrite:
@@ -514,7 +797,12 @@ class PolarisClient:
 
         temp_path: Path | None = None
         try:
-            with self._client.stream("GET", download_url, follow_redirects=True) as response:
+            with self._client.stream(
+                "GET",
+                download_url,
+                follow_redirects=True,
+                timeout=DEFAULT_DOWNLOAD_TIMEOUT,
+            ) as response:
                 if response.is_error:
                     body = response.text
                     raise PolarisError(
@@ -536,7 +824,9 @@ class PolarisClient:
                             temp_file.write(chunk)
 
             if temp_path is None:
-                raise PolarisError("Dataset file download failed before writing any data")
+                raise PolarisError(
+                    "Dataset file download failed before writing any data"
+                )
 
             os.replace(temp_path, target_path)
         except Exception:
@@ -561,7 +851,9 @@ class PolarisClient:
             ) as temp_file:
                 decompressed_temp_path = Path(temp_file.name)
                 with target_path.open("rb") as compressed_file:
-                    with zstd.ZstdDecompressor().stream_reader(compressed_file) as reader:
+                    with zstd.ZstdDecompressor().stream_reader(
+                        compressed_file
+                    ) as reader:
                         while True:
                             chunk = reader.read(chunk_size)
                             if not chunk:
@@ -569,7 +861,9 @@ class PolarisClient:
                             temp_file.write(chunk)
 
             if decompressed_temp_path is None:
-                raise PolarisError("Dataset decompression failed before writing any data")
+                raise PolarisError(
+                    "Dataset decompression failed before writing any data"
+                )
 
             os.replace(decompressed_temp_path, decompressed_path)
         except zstd.ZstdError as exc:
@@ -690,7 +984,9 @@ class PolarisClient:
         headers = self._auth_headers(auth_required=True)
 
         def _iterator() -> Iterator[JSONDict]:
-            with self._client.stream("GET", "stream", params=params, headers=headers) as response:
+            with self._client.stream(
+                "GET", "stream", params=params, headers=headers
+            ) as response:
                 self._raise_for_status(response)
                 for line in response.iter_lines():
                     if not line:
@@ -751,7 +1047,9 @@ class PolarisClient:
         headers = self._auth_headers(auth_required=True)
 
         def _iterator() -> Iterator[JSONDict]:
-            with self._client.stream("GET", "ohlcv", params=params, headers=headers) as response:
+            with self._client.stream(
+                "GET", "ohlcv", params=params, headers=headers
+            ) as response:
                 self._raise_for_status(response)
                 for line in response.iter_lines():
                     if not line:
