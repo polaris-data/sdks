@@ -3,7 +3,7 @@
 from polaris_data import PolarisClient
 
 
-with PolarisClient.new("pk_live_your_key") as client:
+with PolarisClient(api_key="pk_live_your_key") as client:
     exchanges = client.exchanges()
     print("Exchanges:", exchanges)
 

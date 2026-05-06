@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import heapq
 import json
 import os
 import sys
@@ -31,12 +30,12 @@ from .models import (
 )
 from .utils import TimeInput, bool_to_query, chunk_timerange, to_iso8601
 
-DEFAULT_BASE_URL = "https://polaris.supply/api"
+DEFAULT_BASE_URL = "https://api.polaris.supply"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_DOWNLOAD_TIMEOUT = 300.0
 DEFAULT_NETWORK_CHUNK_SIZE = 8 * 1024 * 1024  # 8MB for network downloads
 DEFAULT_FILE_CHUNK_SIZE = 1 * 1024 * 1024  # 1MB for file operations
-USER_AGENT = "polaris-py/0.1.3"
+USER_AGENT = "polaris-py/0.2.0"
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 
@@ -132,16 +131,6 @@ class PolarisClient:
                 ),
             )
             self._owns_client = True
-
-    @classmethod
-    def new(cls, api_key: str, **kwargs: Any) -> "PolarisClient":
-        """Create an authenticated client."""
-        return cls(api_key=api_key, **kwargs)
-
-    @classmethod
-    def anonymous(cls, **kwargs: Any) -> "PolarisClient":
-        """Create a client for open endpoints only."""
-        return cls(api_key=None, **kwargs)
 
     def close(self) -> None:
         """Close the underlying HTTP client."""
@@ -327,14 +316,14 @@ class PolarisClient:
             raise PolarisError("Invalid exchanges response")
         return [str(exchange) for exchange in exchanges]
 
-    def assets(self, exchange: str) -> list[str]:
+    def assets(self, *, exchange: str) -> list[str]:
         payload = self._get_json("catalog/assets", params={"exchange": exchange})
         assets = payload.get("assets", [])
         if not isinstance(assets, list):
             raise PolarisError("Invalid assets response")
         return [str(asset) for asset in assets]
 
-    def timerange(self, exchange: str, asset: str) -> JSONDict:
+    def timerange(self, *, exchange: str, asset: str) -> JSONDict:
         return self._get_json(
             "catalog/timerange",
             params={"exchange": exchange, "asset": asset},
@@ -342,6 +331,7 @@ class PolarisClient:
 
     def dataset_size(
         self,
+        *,
         exchange: str,
         asset: str,
         from_: TimeInput,
@@ -357,11 +347,11 @@ class PolarisClient:
 
     def dataset_preview(
         self,
+        *,
         exchange: str,
         asset: str,
         from_: TimeInput,
         to: TimeInput,
-        *,
         standard: bool = True,
     ) -> list[JSONDict]:
         params = self._range_params(exchange, asset, from_, to)
@@ -374,11 +364,11 @@ class PolarisClient:
 
     def dataset_download_url(
         self,
+        *,
         exchange: str,
         asset: str,
         from_: TimeInput,
         to: TimeInput,
-        *,
         standard: bool = True,
     ) -> DownloadUrlResponse:
         params = self._range_params(exchange, asset, from_, to)
@@ -388,11 +378,11 @@ class PolarisClient:
 
     def replay(
         self,
+        *,
         exchange: str,
         asset: str,
         from_: TimeInput,
         to: TimeInput,
-        *,
         standard: bool = True,
         chunk_size: int | None = None,
         timeout: float | None = None,
@@ -409,10 +399,10 @@ class PolarisClient:
         if parallel:
             max_workers = parallel if isinstance(parallel, int) else 4
             return self._replay_parallel(
-                exchange,
-                asset,
-                from_,
-                to,
+                exchange=exchange,
+                asset=asset,
+                from_=from_,
+                to=to,
                 standard=standard,
                 chunk_size=effective_chunk_size,
                 timeout=timeout,
@@ -445,7 +435,7 @@ class PolarisClient:
 
         # Get download URL
         payload = self.dataset_download_url(
-            exchange, asset, from_, to, standard=standard
+            exchange=exchange, asset=asset, from_=from_, to=to, standard=standard
         )
         download_url = payload.get("url")
         if not isinstance(download_url, str) or not download_url:
@@ -495,11 +485,11 @@ class PolarisClient:
 
     def _replay_parallel(
         self,
+        *,
         exchange: str,
         asset: str,
         from_: TimeInput,
         to: TimeInput,
-        *,
         standard: bool = True,
         chunk_size: int,
         timeout: float | None = None,
@@ -517,10 +507,10 @@ class PolarisClient:
         if len(time_chunks) == 1:
             # Only one chunk, use regular replay
             return self.replay(
-                exchange,
-                asset,
-                from_,
-                to,
+                exchange=exchange,
+                asset=asset,
+                from_=from_,
+                to=to,
                 standard=standard,
                 chunk_size=chunk_size,
                 timeout=timeout,
@@ -529,10 +519,6 @@ class PolarisClient:
 
         # Download chunks in parallel and collect results
         def _parallel_iterator() -> Iterator[JSONDict]:
-            # Use a priority queue to maintain chronological order
-            # Each item is (chunk_index, record_iterator)
-            chunk_iterators: dict[int, Iterator[JSONDict]] = {}
-
             # Download chunks in parallel using ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # Submit all chunk downloads
@@ -540,13 +526,13 @@ class PolarisClient:
                 for idx, (chunk_start, chunk_end) in enumerate(time_chunks):
                     future = executor.submit(
                         self._download_chunk_to_list,
-                        exchange,
-                        asset,
-                        chunk_start,
-                        chunk_end,
-                        standard,
-                        chunk_size,
-                        timeout,
+                        exchange=exchange,
+                        asset=asset,
+                        from_=chunk_start,
+                        to=chunk_end,
+                        standard=standard,
+                        chunk_size=chunk_size,
+                        timeout=timeout,
                     )
                     future_to_index[future] = idx
 
@@ -570,6 +556,7 @@ class PolarisClient:
 
     def _download_chunk_to_list(
         self,
+        *,
         exchange: str,
         asset: str,
         from_: TimeInput,
@@ -581,10 +568,10 @@ class PolarisClient:
         """Download a single time chunk and return all records as a list."""
         records = []
         for record in self.replay(
-            exchange,
-            asset,
-            from_,
-            to,
+            exchange=exchange,
+            asset=asset,
+            from_=from_,
+            to=to,
             standard=standard,
             chunk_size=chunk_size,
             timeout=timeout,
@@ -760,7 +747,11 @@ class PolarisClient:
         resolved_download_url = download_url
         if resolved_download_url is None:
             payload = self.dataset_download_url(
-                exchange, asset, from_, to, standard=standard
+                exchange=exchange,
+                asset=asset,
+                from_=from_,
+                to=to,
+                standard=standard,
             )
             resolved_download_url = payload.get("url")
 
@@ -882,11 +873,11 @@ class PolarisClient:
 
     def download_dataset(
         self,
+        *,
         exchange: str,
         asset: str,
         from_: TimeInput,
         to: TimeInput,
-        *,
         standard: bool = True,
         destination: str | os.PathLike[str] | None = None,
         filename: str | None = None,
@@ -896,10 +887,10 @@ class PolarisClient:
         chunk_size: int = 1024 * 1024,
     ) -> Path:
         return self._download_dataset_impl(
-            exchange,
-            asset,
-            from_,
-            to,
+            exchange=exchange,
+            asset=asset,
+            from_=from_,
+            to=to,
             standard=standard,
             destination=destination,
             filename=filename,
@@ -913,11 +904,11 @@ class PolarisClient:
 
     def trades_page(
         self,
+        *,
         exchange: str,
         asset: str,
         from_: TimeInput,
         to: TimeInput,
-        *,
         limit: int = 1000,
         cursor: str | None = None,
     ) -> PaginatedResponse:
@@ -930,21 +921,21 @@ class PolarisClient:
 
     def iter_trades(
         self,
+        *,
         exchange: str,
         asset: str,
         from_: TimeInput,
         to: TimeInput,
-        *,
         limit: int = 1000,
     ) -> Iterator[JSONDict]:
         cursor: str | None = None
 
         while True:
             page = self.trades_page(
-                exchange,
-                asset,
-                from_,
-                to,
+                exchange=exchange,
+                asset=asset,
+                from_=from_,
+                to=to,
                 limit=limit,
                 cursor=cursor,
             )
@@ -961,22 +952,30 @@ class PolarisClient:
 
     def collect_all_trades(
         self,
+        *,
         exchange: str,
         asset: str,
         from_: TimeInput,
         to: TimeInput,
-        *,
         limit: int = 1000,
     ) -> list[JSONDict]:
-        return list(self.iter_trades(exchange, asset, from_, to, limit=limit))
+        return list(
+            self.iter_trades(
+                exchange=exchange,
+                asset=asset,
+                from_=from_,
+                to=to,
+                limit=limit,
+            )
+        )
 
     def stream_events(
         self,
+        *,
         exchange: str,
         asset: str,
         from_: TimeInput,
         to: TimeInput,
-        *,
         standard: bool = True,
     ) -> Iterator[JSONDict]:
         params = self._range_params(exchange, asset, from_, to)
@@ -997,22 +996,30 @@ class PolarisClient:
 
     def collect_events(
         self,
+        *,
         exchange: str,
         asset: str,
         from_: TimeInput,
         to: TimeInput,
-        *,
         standard: bool = True,
     ) -> list[JSONDict]:
-        return list(self.stream_events(exchange, asset, from_, to, standard=standard))
+        return list(
+            self.stream_events(
+                exchange=exchange,
+                asset=asset,
+                from_=from_,
+                to=to,
+                standard=standard,
+            )
+        )
 
     def ohlcv_preview(
         self,
+        *,
         exchange: str,
         asset: str,
         from_: TimeInput,
         to: TimeInput,
-        *,
         interval: str,
         limit: int | None = None,
         format: str | None = None,
@@ -1035,11 +1042,11 @@ class PolarisClient:
 
     def iter_ohlcv(
         self,
+        *,
         exchange: str,
         asset: str,
         from_: TimeInput,
         to: TimeInput,
-        *,
         interval: str,
     ) -> Iterator[JSONDict]:
         params = self._range_params(exchange, asset, from_, to)
@@ -1060,16 +1067,24 @@ class PolarisClient:
 
     def ohlcv(
         self,
+        *,
         exchange: str,
         asset: str,
         from_: TimeInput,
         to: TimeInput,
-        *,
         interval: str,
         format: str | None = None,
     ) -> list[JSONDict] | JSONDict | OhlcvParquetResponse:
         if format is None:
-            return list(self.iter_ohlcv(exchange, asset, from_, to, interval=interval))
+            return list(
+                self.iter_ohlcv(
+                    exchange=exchange,
+                    asset=asset,
+                    from_=from_,
+                    to=to,
+                    interval=interval,
+                )
+            )
 
         if format not in {"tradingview", "parquet"}:
             raise ValueError("format must be one of: None, 'tradingview', 'parquet'")

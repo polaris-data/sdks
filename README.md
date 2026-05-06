@@ -1,6 +1,7 @@
 # polaris-py
 
 Python SDK for the Polaris API, optimized for notebook workflows and trading scripts.
+Documentation can be found at https://polaris.supply/docs
 
 ## Install (uv)
 
@@ -20,7 +21,7 @@ uv lock
 ```python
 from polaris_data import PolarisClient
 
-with PolarisClient.new("polaris_key_your_key") as client:
+with PolarisClient(api_key="polaris_key_your_key") as client:
     row_count = 0
     for row in client.replay(
         exchange="binance",
@@ -50,25 +51,25 @@ Open endpoints:
 
 - `health()`
 - `exchanges()`
-- `assets(exchange)`
-- `timerange(exchange, asset)`
-- `dataset_size(exchange, asset, from_, to)`
+- `assets(exchange=...)`
+- `timerange(exchange=..., asset=...)`
+- `dataset_size(exchange=..., asset=..., from_=..., to=...)`
 - `catalog()`
 - `dataset_preview(..., standard=True)`
 - `ohlcv_preview(..., interval, limit=None, format=None)`
 
 Authenticated endpoints:
 
-- `dataset_download_url(..., standard=True)`
-- `replay(..., standard=True)` (stream rows from dataset download URL)
-- `download_dataset(..., standard=True, destination=None, filename=None, overwrite=False, decompress=True, keep_compressed=False)`
-- `trades_page(..., limit=1000, cursor=None)`
-- `iter_trades(...)`
-- `collect_all_trades(...)`
-- `stream_events(..., standard=True)`
-- `collect_events(..., standard=True)`
-- `iter_ohlcv(..., interval)`
-- `ohlcv(..., interval, format=None)`
+- `dataset_download_url(exchange=..., asset=..., from_=..., to=..., standard=True)`
+- `replay(exchange=..., asset=..., from_=..., to=..., standard=True)` (stream rows from dataset download URL)
+- `download_dataset(exchange=..., asset=..., from_=..., to=..., standard=True, destination=None, filename=None, overwrite=False, decompress=True, keep_compressed=False)`
+- `trades_page(exchange=..., asset=..., from_=..., to=..., limit=1000, cursor=None)`
+- `iter_trades(exchange=..., asset=..., from_=..., to=..., limit=1000)`
+- `collect_all_trades(exchange=..., asset=..., from_=..., to=..., limit=1000)`
+- `stream_events(exchange=..., asset=..., from_=..., to=..., standard=True)`
+- `collect_events(exchange=..., asset=..., from_=..., to=..., standard=True)`
+- `iter_ohlcv(exchange=..., asset=..., from_=..., to=..., interval=...)`
+- `ohlcv(exchange=..., asset=..., from_=..., to=..., interval=..., format=None)`
 
 For event/data endpoints, `standard=True` is the default. Pass `standard=False` when you explicitly need raw schema payloads.
 
@@ -79,7 +80,7 @@ For row-by-row iteration without managing file paths, use `replay(...)`:
 ```python
 from polaris_data import PolarisClient
 
-with PolarisClient.new("polaris_key_your_key") as client:
+with PolarisClient(api_key="polaris_key_your_key") as client:
     for row in client.replay(
         exchange="binance",
         asset="BTC-USDT",
@@ -99,7 +100,10 @@ For safety, file downloads are disabled by default. Enable them explicitly when 
 ```python
 from polaris_data import PolarisClient
 
-with PolarisClient.new("polaris_key_your_key", allow_dataset_downloads=True) as client:
+with PolarisClient(
+    api_key="polaris_key_your_key",
+    allow_dataset_downloads=True,
+) as client:
     file_path = client.download_dataset(
         exchange="binance",
         asset="BTC-USDT",
@@ -128,10 +132,15 @@ Use `replay_cache_enabled=False` to disable replay caching, or `replay_cache_dir
 ```python
 from polaris_data import PolarisClient, RateLimitedError, UnauthorizedError
 
-client = PolarisClient.anonymous()
+client = PolarisClient()
 
 try:
-    client.collect_events("binance", "BTC-USDT", "2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z")
+    client.collect_events(
+        exchange="binance",
+        asset="BTC-USDT",
+        from_="2024-01-01T00:00:00Z",
+        to="2024-01-01T01:00:00Z",
+    )
 except UnauthorizedError:
     print("API key is required")
 except RateLimitedError as err:
