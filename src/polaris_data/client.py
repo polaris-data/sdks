@@ -35,7 +35,7 @@ DEFAULT_TIMEOUT = 30.0
 DEFAULT_DOWNLOAD_TIMEOUT = 300.0
 DEFAULT_NETWORK_CHUNK_SIZE = 8 * 1024 * 1024  # 8MB for network downloads
 DEFAULT_FILE_CHUNK_SIZE = 1 * 1024 * 1024  # 1MB for file operations
-USER_AGENT = "polaris-py/0.2.1"
+USER_AGENT = "polaris-py/0.2.2"
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 
@@ -346,7 +346,7 @@ class PolarisClient:
 
     def timerange(self, *, exchange: str, asset: str) -> JSONDict:
         return self._get_json(
-            "catalog/timerange",
+            "timerange",
             params={"exchange": exchange, "asset": asset},
         )
 

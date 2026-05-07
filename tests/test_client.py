@@ -82,6 +82,27 @@ def test_assets_unknown_exchange_returns_empty_list() -> None:
         client.close()
 
 
+def test_timerange_uses_explicit_timerange_endpoint() -> None:
+    expected = {
+        "exchange": "binance",
+        "asset": "BTC-USDT",
+        "start": "2026-05-01T00:15:00.000Z",
+        "end": "2026-05-07T23:45:00.000Z",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/timerange"
+        assert request.url.params.get("exchange") == "binance"
+        assert request.url.params.get("asset") == "BTC-USDT"
+        return httpx.Response(200, json=expected)
+
+    client = make_client(handler)
+    try:
+        assert client.timerange(exchange="binance", asset="BTC-USDT") == expected
+    finally:
+        client.close()
+
+
 def test_unauthorized_requires_api_key_before_request() -> None:
     called = False
 
