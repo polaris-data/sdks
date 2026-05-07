@@ -35,7 +35,7 @@ DEFAULT_TIMEOUT = 30.0
 DEFAULT_DOWNLOAD_TIMEOUT = 300.0
 DEFAULT_NETWORK_CHUNK_SIZE = 8 * 1024 * 1024  # 8MB for network downloads
 DEFAULT_FILE_CHUNK_SIZE = 1 * 1024 * 1024  # 1MB for file operations
-USER_AGENT = "polaris-py/0.2.0"
+USER_AGENT = "polaris-py/0.2.1"
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 
@@ -310,18 +310,39 @@ class PolarisClient:
         return self._get_json("health")
 
     def exchanges(self) -> list[str]:
-        payload = self._get_json("catalog/exchanges")
+        payload = self.catalog()
         exchanges = payload.get("exchanges", [])
         if not isinstance(exchanges, list):
-            raise PolarisError("Invalid exchanges response")
-        return [str(exchange) for exchange in exchanges]
+            raise PolarisError("Invalid catalog response")
+
+        exchange_ids: list[str] = []
+        for exchange in exchanges:
+            if not isinstance(exchange, dict):
+                raise PolarisError("Invalid catalog response")
+            exchange_id = exchange.get("id")
+            if not isinstance(exchange_id, str):
+                raise PolarisError("Invalid catalog response")
+            exchange_ids.append(exchange_id)
+
+        return exchange_ids
 
     def assets(self, *, exchange: str) -> list[str]:
-        payload = self._get_json("catalog/assets", params={"exchange": exchange})
-        assets = payload.get("assets", [])
-        if not isinstance(assets, list):
-            raise PolarisError("Invalid assets response")
-        return [str(asset) for asset in assets]
+        payload = self.catalog()
+        exchanges = payload.get("exchanges", [])
+        if not isinstance(exchanges, list):
+            raise PolarisError("Invalid catalog response")
+
+        for item in exchanges:
+            if not isinstance(item, dict):
+                raise PolarisError("Invalid catalog response")
+            if item.get("id") != exchange:
+                continue
+            assets = item.get("assets", [])
+            if not isinstance(assets, list):
+                raise PolarisError("Invalid catalog response")
+            return [str(asset) for asset in assets]
+
+        return []
 
     def timerange(self, *, exchange: str, asset: str) -> JSONDict:
         return self._get_json(

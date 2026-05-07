@@ -29,12 +29,55 @@ def make_client(
 
 def test_exchanges_response_shape() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/catalog/exchanges"
-        return httpx.Response(200, json={"exchanges": ["binance", "hyperliquid"]})
+        assert request.url.path == "/catalog"
+        return httpx.Response(
+            200,
+            json={
+                "exchanges": [
+                    {"id": "binance", "assets": ["BTC-USDT"]},
+                    {"id": "hyperliquid", "assets": ["BTC", "ETH"]},
+                ]
+            },
+        )
 
     client = make_client(handler)
     try:
         assert client.exchanges() == ["binance", "hyperliquid"]
+    finally:
+        client.close()
+
+
+def test_assets_reads_from_catalog() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/catalog"
+        return httpx.Response(
+            200,
+            json={
+                "exchanges": [
+                    {"id": "binance", "assets": ["BTC-USDT", "ETH-USDT"]},
+                    {"id": "okx", "assets": ["BTC-USDT"]},
+                ]
+            },
+        )
+
+    client = make_client(handler)
+    try:
+        assert client.assets(exchange="binance") == ["BTC-USDT", "ETH-USDT"]
+    finally:
+        client.close()
+
+
+def test_assets_unknown_exchange_returns_empty_list() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/catalog"
+        return httpx.Response(
+            200,
+            json={"exchanges": [{"id": "binance", "assets": ["BTC-USDT"]}]},
+        )
+
+    client = make_client(handler)
+    try:
+        assert client.assets(exchange="does-not-exist") == []
     finally:
         client.close()
 
