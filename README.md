@@ -53,18 +53,12 @@ Open endpoints:
 - `exchanges()`
 - `assets(exchange=...)`
 - `timerange(exchange=..., asset=...)`
-- `dataset_size(exchange=..., asset=..., from_=..., to=...)`
 - `catalog()`
-- `dataset_preview(..., standard=True)`
-- `ohlcv_preview(..., interval, limit=None, format=None)`
 
 Authenticated endpoints:
 
-- `dataset_download_url(exchange=..., asset=..., from_=..., to=..., standard=True)`
 - `replay(exchange=..., asset=..., from_=..., to=..., standard=True)` (stream rows from dataset download URL)
-- `download_dataset(exchange=..., asset=..., from_=..., to=..., standard=True, destination=None, filename=None, overwrite=False, decompress=True, keep_compressed=False)`
 - `trades(exchange=..., asset=..., from_=..., to=..., limit=1000)` (collects all pages)
-- `iter_ohlcv(exchange=..., asset=..., from_=..., to=..., interval=...)`
 - `ohlcv(exchange=..., asset=..., from_=..., to=..., interval=..., format=None)`
 
 For event/data endpoints, `standard=True` is the default. Pass `standard=False` when you explicitly need raw schema payloads.
@@ -87,41 +81,14 @@ with PolarisClient(api_key="polaris_key_your_key") as client:
 ```
 
 `replay(...)` checks the local replay cache first, then fetches and caches the dataset if needed.
-Replay cache is enabled by default and initialized when the client is created.
+Replay cache is enabled by default and stored under:
 
-## Optional: persist dataset files
+- macOS: `~/Library/Caches/polaris/datasets/replay`
+- Linux: `~/.cache/polaris/datasets/replay`
+- Windows: `%LOCALAPPDATA%\\polaris\\datasets\\replay`
 
-For safety, file downloads are disabled by default. Enable them explicitly when you want to save files locally:
-
-```python
-from polaris_data import PolarisClient
-
-with PolarisClient(
-    api_key="polaris_key_your_key",
-    allow_dataset_downloads=True,
-) as client:
-    file_path = client.download_dataset(
-        exchange="binance",
-        asset="BTC-USDT",
-        from_="2024-01-01T00:00:00Z",
-        to="2024-01-01T01:00:00Z",
-    )
-    print(file_path)
-```
-
-`download_dataset(...)` decompresses `.zst` files by default and returns the decompressed file path (for example `.jsonl`).
-Set `decompress=False` to keep the original `.zst`, or `keep_compressed=True` to keep both files.
-
-Default download directories:
-
-- macOS: `~/Library/Caches/polaris/datasets`
-- Linux: `~/.cache/polaris/datasets`
-- Windows: `%LOCALAPPDATA%\\polaris\\datasets`
-
-You can override this with `dataset_download_dir=...` on the client or `destination=...` on a single `download_dataset(...)` call.
-Set `POLARIS_DATASET_DOWNLOAD_DIR` to override the default directory globally.
-Replay cache defaults to a `replay/` subdirectory under `dataset_download_dir`.
-Use `replay_cache_enabled=False` to disable replay caching, or `replay_cache_dir=...` to move it.
+Set `POLARIS_DATASET_DOWNLOAD_DIR` to override the base directory globally.
+Use `replay_cache_enabled=False` to disable caching, or `replay_cache_dir=...` to set a custom path.
 
 ## Error handling
 

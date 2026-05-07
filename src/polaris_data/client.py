@@ -9,13 +9,12 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Iterator
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
 
 import httpx
 import zstandard as zstd
 
 from .errors import (
-    DownloadNotAllowedError,
     NotFoundError,
     PolarisError,
     RateLimitedError,
@@ -23,7 +22,6 @@ from .errors import (
     UnauthorizedError,
 )
 from .models import (
-    DownloadUrlResponse,
     JSONDict,
     OhlcvParquetResponse,
 )
@@ -80,7 +78,6 @@ class PolarisClient:
         timeout: float = DEFAULT_TIMEOUT,
         transport: httpx.BaseTransport | None = None,
         http_client: httpx.Client | None = None,
-        allow_dataset_downloads: bool = False,
         dataset_download_dir: str | os.PathLike[str] | None = None,
         replay_cache_enabled: bool = True,
         replay_cache_dir: str | os.PathLike[str] | None = None,
@@ -91,7 +88,6 @@ class PolarisClient:
         self.api_key = api_key or os.getenv("POLARIS_API_KEY")
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self.allow_dataset_downloads = allow_dataset_downloads
         self.dataset_download_dir = (
             Path(dataset_download_dir).expanduser()
             if dataset_download_dir is not None
@@ -349,52 +345,8 @@ class PolarisClient:
             params={"exchange": exchange, "asset": asset},
         )
 
-    def dataset_size(
-        self,
-        *,
-        exchange: str,
-        asset: str,
-        from_: TimeInput,
-        to: TimeInput,
-    ) -> JSONDict:
-        return self._get_json(
-            "catalog/size",
-            params=self._range_params(exchange, asset, from_, to),
-        )
-
     def catalog(self) -> JSONDict:
         return self._get_json("catalog", include_auth_if_available=True)
-
-    def dataset_preview(
-        self,
-        *,
-        exchange: str,
-        asset: str,
-        from_: TimeInput,
-        to: TimeInput,
-        standard: bool = True,
-    ) -> list[JSONDict]:
-        params = self._range_params(exchange, asset, from_, to)
-        params["standard"] = bool_to_query(standard)
-        payload = self._get_json("datasets/preview", params=params)
-        events = payload.get("events", [])
-        if not isinstance(events, list):
-            raise PolarisError("Invalid dataset preview response")
-        return [event for event in events if isinstance(event, dict)]
-
-    def dataset_download_url(
-        self,
-        *,
-        exchange: str,
-        asset: str,
-        from_: TimeInput,
-        to: TimeInput,
-        standard: bool = True,
-    ) -> DownloadUrlResponse:
-        params = self._range_params(exchange, asset, from_, to)
-        params["standard"] = bool_to_query(standard)
-        payload = self._get_json("datasets/download", params=params, auth_required=True)
-        return payload  # type: ignore[return-value]
 
     def replay(
         self,
@@ -454,9 +406,9 @@ class PolarisClient:
                 )
 
         # Get download URL
-        payload = self.dataset_download_url(
-            exchange=exchange, asset=asset, from_=from_, to=to, standard=standard
-        )
+        dl_params = self._range_params(exchange, asset, from_, to)
+        dl_params["standard"] = bool_to_query(standard)
+        payload = self._get_json("datasets/download", params=dl_params, auth_required=True)
         download_url = payload.get("url")
         if not isinstance(download_url, str) or not download_url:
             raise PolarisError("Invalid dataset download response: missing url")
@@ -710,12 +662,6 @@ class PolarisClient:
 
         return _streaming_iterator()
 
-    def _dataset_filename_from_url(self, url: str) -> str | None:
-        filename = Path(unquote(urlparse(url).path)).name
-        if not filename:
-            return None
-        return filename
-
     def _default_dataset_filename(
         self,
         exchange: str,
@@ -733,193 +679,6 @@ class PolarisClient:
             f"{_safe_filename_fragment(from_text)}_"
             f"{_safe_filename_fragment(to_text)}_"
             f"{mode}.jsonl.zst"
-        )
-
-    def _download_dataset_impl(
-        self,
-        exchange: str,
-        asset: str,
-        from_: TimeInput,
-        to: TimeInput,
-        *,
-        standard: bool = False,
-        destination: str | os.PathLike[str] | None = None,
-        filename: str | None = None,
-        overwrite: bool = False,
-        decompress: bool = True,
-        keep_compressed: bool = False,
-        chunk_size: int = 1024 * 1024,
-        require_opt_in: bool,
-        download_url: str | None = None,
-    ) -> Path:
-        if require_opt_in and not self.allow_dataset_downloads:
-            raise DownloadNotAllowedError(
-                "Dataset downloads are disabled. Recreate the client with "
-                "allow_dataset_downloads=True to enable file downloads."
-            )
-
-        if chunk_size <= 0:
-            raise ValueError("chunk_size must be > 0")
-
-        if filename is not None and Path(filename).name != filename:
-            raise ValueError("filename must be a file name, not a path")
-
-        resolved_download_url = download_url
-        if resolved_download_url is None:
-            payload = self.dataset_download_url(
-                exchange=exchange,
-                asset=asset,
-                from_=from_,
-                to=to,
-                standard=standard,
-            )
-            resolved_download_url = payload.get("url")
-
-        download_url = resolved_download_url
-        if not isinstance(download_url, str) or not download_url:
-            raise PolarisError("Invalid dataset download response: missing url")
-
-        target_dir = (
-            Path(destination).expanduser()
-            if destination is not None
-            else self.dataset_download_dir
-        )
-        target_dir.mkdir(parents=True, exist_ok=True)
-
-        resolved_filename = filename or self._dataset_filename_from_url(download_url)
-        if not resolved_filename:
-            resolved_filename = self._default_dataset_filename(
-                exchange, asset, from_, to, standard
-            )
-
-        target_path = target_dir / resolved_filename
-        if target_path.exists() and not overwrite:
-            raise PolarisError(
-                f"Dataset file already exists: {target_path}. Pass overwrite=True to replace it."
-            )
-
-        decompressed_path: Path | None = None
-        if decompress and target_path.suffix.lower() == ".zst":
-            decompressed_path = target_path.with_suffix("")
-            if decompressed_path.exists() and not overwrite:
-                raise PolarisError(
-                    f"Dataset file already exists: {decompressed_path}. Pass overwrite=True to replace it."
-                )
-
-        temp_path: Path | None = None
-        try:
-            with self._client.stream(
-                "GET",
-                download_url,
-                follow_redirects=True,
-                timeout=DEFAULT_DOWNLOAD_TIMEOUT,
-            ) as response:
-                if response.is_error:
-                    body = response.text
-                    raise PolarisError(
-                        "Dataset file download failed",
-                        status_code=response.status_code,
-                        body=body,
-                    )
-
-                with tempfile.NamedTemporaryFile(
-                    mode="wb",
-                    delete=False,
-                    dir=target_dir,
-                    prefix=f".{target_path.name}.",
-                    suffix=".part",
-                ) as temp_file:
-                    temp_path = Path(temp_file.name)
-                    for chunk in response.iter_bytes(chunk_size=chunk_size):
-                        if chunk:
-                            temp_file.write(chunk)
-
-            if temp_path is None:
-                raise PolarisError(
-                    "Dataset file download failed before writing any data"
-                )
-
-            os.replace(temp_path, target_path)
-        except Exception:
-            if temp_path is not None and temp_path.exists():
-                temp_path.unlink()
-            raise
-
-        if not decompress or target_path.suffix.lower() != ".zst":
-            return target_path
-
-        if decompressed_path is None:
-            raise PolarisError("Dataset decompression path resolution failed")
-
-        decompressed_temp_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                delete=False,
-                dir=target_dir,
-                prefix=f".{decompressed_path.name}.",
-                suffix=".part",
-            ) as temp_file:
-                decompressed_temp_path = Path(temp_file.name)
-                with target_path.open("rb") as compressed_file:
-                    with zstd.ZstdDecompressor().stream_reader(
-                        compressed_file
-                    ) as reader:
-                        while True:
-                            chunk = reader.read(chunk_size)
-                            if not chunk:
-                                break
-                            temp_file.write(chunk)
-
-            if decompressed_temp_path is None:
-                raise PolarisError(
-                    "Dataset decompression failed before writing any data"
-                )
-
-            os.replace(decompressed_temp_path, decompressed_path)
-        except zstd.ZstdError as exc:
-            if decompressed_temp_path is not None and decompressed_temp_path.exists():
-                decompressed_temp_path.unlink()
-            raise PolarisError(f"Dataset decompression failed: {exc}") from exc
-        except Exception:
-            if decompressed_temp_path is not None and decompressed_temp_path.exists():
-                decompressed_temp_path.unlink()
-            raise
-
-        if not keep_compressed:
-            target_path.unlink()
-
-        return decompressed_path
-
-    def download_dataset(
-        self,
-        *,
-        exchange: str,
-        asset: str,
-        from_: TimeInput,
-        to: TimeInput,
-        standard: bool = True,
-        destination: str | os.PathLike[str] | None = None,
-        filename: str | None = None,
-        overwrite: bool = False,
-        decompress: bool = True,
-        keep_compressed: bool = False,
-        chunk_size: int = 1024 * 1024,
-    ) -> Path:
-        return self._download_dataset_impl(
-            exchange=exchange,
-            asset=asset,
-            from_=from_,
-            to=to,
-            standard=standard,
-            destination=destination,
-            filename=filename,
-            overwrite=overwrite,
-            decompress=decompress,
-            keep_compressed=keep_compressed,
-            chunk_size=chunk_size,
-            require_opt_in=True,
-            download_url=None,
         )
 
     def trades(
@@ -959,58 +718,6 @@ class PolarisClient:
 
         return rows
 
-    def ohlcv_preview(
-        self,
-        *,
-        exchange: str,
-        asset: str,
-        from_: TimeInput,
-        to: TimeInput,
-        interval: str,
-        limit: int | None = None,
-        format: str | None = None,
-    ) -> JSONDict | list[JSONDict]:
-        params = self._range_params(exchange, asset, from_, to)
-        params["interval"] = interval
-        if limit is not None:
-            params["limit"] = str(limit)
-        if format is not None:
-            params["format"] = format
-
-        payload = self._get_json("ohlcv/preview", params=params)
-        if format == "tradingview":
-            return payload
-
-        bars = payload.get("bars", [])
-        if not isinstance(bars, list):
-            raise PolarisError("Invalid OHLCV preview response")
-        return [bar for bar in bars if isinstance(bar, dict)]
-
-    def iter_ohlcv(
-        self,
-        *,
-        exchange: str,
-        asset: str,
-        from_: TimeInput,
-        to: TimeInput,
-        interval: str,
-    ) -> Iterator[JSONDict]:
-        params = self._range_params(exchange, asset, from_, to)
-        params["interval"] = interval
-        headers = self._auth_headers(auth_required=True)
-
-        def _iterator() -> Iterator[JSONDict]:
-            with self._client.stream(
-                "GET", "ohlcv", params=params, headers=headers
-            ) as response:
-                self._raise_for_status(response)
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-                    yield self._parse_ndjson_line(line)
-
-        return _iterator()
-
     def ohlcv(
         self,
         *,
@@ -1022,15 +729,12 @@ class PolarisClient:
         format: str | None = None,
     ) -> list[JSONDict] | JSONDict | OhlcvParquetResponse:
         if format is None:
-            return list(
-                self.iter_ohlcv(
-                    exchange=exchange,
-                    asset=asset,
-                    from_=from_,
-                    to=to,
-                    interval=interval,
-                )
-            )
+            params = self._range_params(exchange, asset, from_, to)
+            params["interval"] = interval
+            headers = self._auth_headers(auth_required=True)
+            with self._client.stream("GET", "ohlcv", params=params, headers=headers) as response:
+                self._raise_for_status(response)
+                return [self._parse_ndjson_line(line) for line in response.iter_lines() if line]
 
         if format not in {"tradingview", "parquet"}:
             raise ValueError("format must be one of: None, 'tradingview', 'parquet'")

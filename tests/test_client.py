@@ -6,7 +6,6 @@ import zstandard as zstd
 
 from polaris_data import PolarisClient
 from polaris_data.errors import (
-    DownloadNotAllowedError,
     PolarisError,
     RateLimitedError,
     StreamDecodeError,
@@ -114,7 +113,7 @@ def test_unauthorized_requires_api_key_before_request() -> None:
     client = make_client(handler, api_key=None)
     try:
         with pytest.raises(UnauthorizedError):
-            client.dataset_download_url(
+            client.trades(
                 exchange="binance",
                 asset="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
@@ -184,63 +183,6 @@ def test_trades_paginates() -> None:
         client.close()
 
 
-def test_dataset_download_url_defaults_to_standard_true() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/datasets/download"
-        assert request.url.params.get("standard") == "true"
-        return httpx.Response(
-            200,
-            json={
-                "url": "https://downloads.example.com/datasets/sample.jsonl.zst",
-                "totalBytes": 4,
-                "fileCount": 1,
-            },
-        )
-
-    client = make_client(handler)
-    try:
-        payload = client.dataset_download_url(
-            exchange="binance",
-            asset="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
-        )
-        assert (
-            payload["url"] == "https://downloads.example.com/datasets/sample.jsonl.zst"
-        )
-    finally:
-        client.close()
-
-
-def test_dataset_download_url_allows_standard_false_for_raw() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/datasets/download"
-        assert request.url.params.get("standard") == "false"
-        return httpx.Response(
-            200,
-            json={
-                "url": "https://downloads.example.com/datasets/sample.jsonl.zst",
-                "totalBytes": 4,
-                "fileCount": 1,
-            },
-        )
-
-    client = make_client(handler)
-    try:
-        payload = client.dataset_download_url(
-            exchange="binance",
-            asset="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
-            standard=False,
-        )
-        assert (
-            payload["url"] == "https://downloads.example.com/datasets/sample.jsonl.zst"
-        )
-    finally:
-        client.close()
-
-
 
 
 def test_ohlcv_tradingview_format_returns_json() -> None:
@@ -267,150 +209,6 @@ def test_ohlcv_tradingview_format_returns_json() -> None:
             format="tradingview",
         )
         assert response == payload
-    finally:
-        client.close()
-
-
-def test_download_dataset_requires_explicit_opt_in() -> None:
-    called = False
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal called
-        called = True
-        return httpx.Response(500)
-
-    client = make_client(handler)
-    try:
-        with pytest.raises(DownloadNotAllowedError):
-            client.download_dataset(
-                exchange="binance",
-                asset="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-            )
-        assert called is False
-    finally:
-        client.close()
-
-
-def test_download_dataset_writes_s3_payload(tmp_path) -> None:
-    dataset_bytes = b'{"timestamp":1}\n'
-    compressed_bytes = zstd.ZstdCompressor().compress(dataset_bytes)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/datasets/download":
-            return httpx.Response(
-                200,
-                json={
-                    "url": "https://downloads.example.com/datasets/sample.jsonl.zst",
-                    "totalBytes": 4,
-                    "fileCount": 1,
-                },
-            )
-
-        assert request.url.host == "downloads.example.com"
-        return httpx.Response(200, content=compressed_bytes)
-
-    client = PolarisClient(
-        api_key="pk_live_test",
-        transport=httpx.MockTransport(handler),
-        allow_dataset_downloads=True,
-        dataset_download_dir=tmp_path,
-    )
-    try:
-        path = client.download_dataset(
-            exchange="binance",
-            asset="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
-        )
-        assert path == tmp_path / "sample.jsonl"
-        assert path.read_bytes() == dataset_bytes
-        assert not (tmp_path / "sample.jsonl.zst").exists()
-    finally:
-        client.close()
-
-
-def test_download_dataset_existing_file_requires_overwrite(tmp_path) -> None:
-    existing = tmp_path / "sample.jsonl.zst"
-    existing.write_bytes(b"old")
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/datasets/download":
-            return httpx.Response(
-                200,
-                json={
-                    "url": "https://downloads.example.com/datasets/sample.jsonl.zst",
-                    "totalBytes": 3,
-                    "fileCount": 1,
-                },
-            )
-        return httpx.Response(200, content=b"new")
-
-    client = PolarisClient(
-        api_key="pk_live_test",
-        transport=httpx.MockTransport(handler),
-        allow_dataset_downloads=True,
-        dataset_download_dir=tmp_path,
-    )
-    try:
-        with pytest.raises(PolarisError):
-            client.download_dataset(
-                exchange="binance",
-                asset="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-                decompress=False,
-            )
-        assert existing.read_bytes() == b"old"
-
-        path = client.download_dataset(
-            exchange="binance",
-            asset="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
-            overwrite=True,
-            decompress=False,
-        )
-        assert path == existing
-        assert existing.read_bytes() == b"new"
-    finally:
-        client.close()
-
-
-def test_download_dataset_keep_compressed_true_keeps_both_files(tmp_path) -> None:
-    dataset_bytes = b'{"timestamp":2}\n'
-    compressed_bytes = zstd.ZstdCompressor().compress(dataset_bytes)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/datasets/download":
-            return httpx.Response(
-                200,
-                json={
-                    "url": "https://downloads.example.com/datasets/sample.jsonl.zst",
-                    "totalBytes": len(compressed_bytes),
-                    "fileCount": 1,
-                },
-            )
-        return httpx.Response(200, content=compressed_bytes)
-
-    client = PolarisClient(
-        api_key="pk_live_test",
-        transport=httpx.MockTransport(handler),
-        allow_dataset_downloads=True,
-        dataset_download_dir=tmp_path,
-    )
-    try:
-        path = client.download_dataset(
-            exchange="binance",
-            asset="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
-            keep_compressed=True,
-        )
-        assert path == tmp_path / "sample.jsonl"
-        assert path.read_bytes() == dataset_bytes
-        assert (tmp_path / "sample.jsonl.zst").read_bytes() == compressed_bytes
     finally:
         client.close()
 
