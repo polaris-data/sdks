@@ -135,7 +135,7 @@ def test_rate_limited_error_maps_reset_at() -> None:
     client = make_client(handler)
     try:
         with pytest.raises(RateLimitedError) as exc_info:
-            client.trades_page(
+            client.trades(
                 exchange="binance",
                 asset="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
@@ -147,7 +147,7 @@ def test_rate_limited_error_maps_reset_at() -> None:
         client.close()
 
 
-def test_collect_all_trades_paginates() -> None:
+def test_trades_paginates() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         cursor = request.url.params.get("cursor")
         if cursor is None:
@@ -172,7 +172,7 @@ def test_collect_all_trades_paginates() -> None:
 
     client = make_client(handler)
     try:
-        results = client.collect_all_trades(
+        results = client.trades(
             exchange="binance",
             asset="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
@@ -180,27 +180,6 @@ def test_collect_all_trades_paginates() -> None:
             limit=1,
         )
         assert results == [{"id": 1}, {"id": 2}]
-    finally:
-        client.close()
-
-
-def test_collect_events_parses_ndjson_stream() -> None:
-    ndjson = b'{"timestamp": 1, "type": "trade"}\n{"timestamp": 2, "type": "trade"}\n'
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/stream"
-        return httpx.Response(200, content=ndjson)
-
-    client = make_client(handler)
-    try:
-        events = client.collect_events(
-            exchange="binance",
-            asset="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
-            standard=True,
-        )
-        assert [event["timestamp"] for event in events] == [1, 2]
     finally:
         client.close()
 
@@ -262,51 +241,6 @@ def test_dataset_download_url_allows_standard_false_for_raw() -> None:
         client.close()
 
 
-def test_stream_events_defaults_to_standard_true() -> None:
-    ndjson = b'{"timestamp": 1}\n'
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/stream"
-        assert request.url.params.get("standard") == "true"
-        return httpx.Response(200, content=ndjson)
-
-    client = make_client(handler)
-    try:
-        events = list(
-            client.stream_events(
-                exchange="binance",
-                asset="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-            )
-        )
-        assert events == [{"timestamp": 1}]
-    finally:
-        client.close()
-
-
-def test_stream_events_allows_standard_false_for_raw() -> None:
-    ndjson = b'{"timestamp": 1}\n'
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/stream"
-        assert request.url.params.get("standard") == "false"
-        return httpx.Response(200, content=ndjson)
-
-    client = make_client(handler)
-    try:
-        events = list(
-            client.stream_events(
-                exchange="binance",
-                asset="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-                standard=False,
-            )
-        )
-        assert events == [{"timestamp": 1}]
-    finally:
-        client.close()
 
 
 def test_ohlcv_tradingview_format_returns_json() -> None:

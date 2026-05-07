@@ -63,11 +63,7 @@ Authenticated endpoints:
 - `dataset_download_url(exchange=..., asset=..., from_=..., to=..., standard=True)`
 - `replay(exchange=..., asset=..., from_=..., to=..., standard=True)` (stream rows from dataset download URL)
 - `download_dataset(exchange=..., asset=..., from_=..., to=..., standard=True, destination=None, filename=None, overwrite=False, decompress=True, keep_compressed=False)`
-- `trades_page(exchange=..., asset=..., from_=..., to=..., limit=1000, cursor=None)`
-- `iter_trades(exchange=..., asset=..., from_=..., to=..., limit=1000)`
-- `collect_all_trades(exchange=..., asset=..., from_=..., to=..., limit=1000)`
-- `stream_events(exchange=..., asset=..., from_=..., to=..., standard=True)`
-- `collect_events(exchange=..., asset=..., from_=..., to=..., standard=True)`
+- `trades(exchange=..., asset=..., from_=..., to=..., limit=1000)` (collects all pages)
 - `iter_ohlcv(exchange=..., asset=..., from_=..., to=..., interval=...)`
 - `ohlcv(exchange=..., asset=..., from_=..., to=..., interval=..., format=None)`
 
@@ -135,7 +131,7 @@ from polaris_data import PolarisClient, RateLimitedError, UnauthorizedError
 client = PolarisClient()
 
 try:
-    client.collect_events(
+    client.replay(
         exchange="binance",
         asset="BTC-USDT",
         from_="2024-01-01T00:00:00Z",

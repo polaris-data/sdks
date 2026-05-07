@@ -26,7 +26,6 @@ from .models import (
     DownloadUrlResponse,
     JSONDict,
     OhlcvParquetResponse,
-    PaginatedResponse,
 )
 from .utils import TimeInput, bool_to_query, chunk_timerange, to_iso8601
 
@@ -923,7 +922,7 @@ class PolarisClient:
             download_url=None,
         )
 
-    def trades_page(
+    def trades(
         self,
         *,
         exchange: str,
@@ -931,108 +930,34 @@ class PolarisClient:
         from_: TimeInput,
         to: TimeInput,
         limit: int = 1000,
-        cursor: str | None = None,
-    ) -> PaginatedResponse:
+    ) -> list[JSONDict]:
         params = self._range_params(exchange, asset, from_, to)
         params["limit"] = str(limit)
-        if cursor:
-            params["cursor"] = cursor
-        payload = self._get_json("trades", params=params, auth_required=True)
-        return payload  # type: ignore[return-value]
 
-    def iter_trades(
-        self,
-        *,
-        exchange: str,
-        asset: str,
-        from_: TimeInput,
-        to: TimeInput,
-        limit: int = 1000,
-    ) -> Iterator[JSONDict]:
         cursor: str | None = None
+        rows: list[JSONDict] = []
 
         while True:
-            page = self.trades_page(
-                exchange=exchange,
-                asset=asset,
-                from_=from_,
-                to=to,
-                limit=limit,
-                cursor=cursor,
-            )
-            for item in page.get("data", []):
-                if isinstance(item, dict):
-                    yield item
+            page_params = dict(params)
+            if cursor:
+                page_params["cursor"] = cursor
 
-            if not page.get("has_more"):
+            payload = self._get_json("trades", params=page_params, auth_required=True)
+            data = payload.get("data", [])
+            if not isinstance(data, list):
+                raise PolarisError("Invalid trades response")
+
+            rows.extend(item for item in data if isinstance(item, dict))
+
+            if not payload.get("has_more"):
                 break
 
-            cursor = page.get("next_cursor")
-            if not cursor:
+            next_cursor = payload.get("next_cursor")
+            if not isinstance(next_cursor, str) or not next_cursor:
                 break
+            cursor = next_cursor
 
-    def collect_all_trades(
-        self,
-        *,
-        exchange: str,
-        asset: str,
-        from_: TimeInput,
-        to: TimeInput,
-        limit: int = 1000,
-    ) -> list[JSONDict]:
-        return list(
-            self.iter_trades(
-                exchange=exchange,
-                asset=asset,
-                from_=from_,
-                to=to,
-                limit=limit,
-            )
-        )
-
-    def stream_events(
-        self,
-        *,
-        exchange: str,
-        asset: str,
-        from_: TimeInput,
-        to: TimeInput,
-        standard: bool = True,
-    ) -> Iterator[JSONDict]:
-        params = self._range_params(exchange, asset, from_, to)
-        params["standard"] = bool_to_query(standard)
-        headers = self._auth_headers(auth_required=True)
-
-        def _iterator() -> Iterator[JSONDict]:
-            with self._client.stream(
-                "GET", "stream", params=params, headers=headers
-            ) as response:
-                self._raise_for_status(response)
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-                    yield self._parse_ndjson_line(line)
-
-        return _iterator()
-
-    def collect_events(
-        self,
-        *,
-        exchange: str,
-        asset: str,
-        from_: TimeInput,
-        to: TimeInput,
-        standard: bool = True,
-    ) -> list[JSONDict]:
-        return list(
-            self.stream_events(
-                exchange=exchange,
-                asset=asset,
-                from_=from_,
-                to=to,
-                standard=standard,
-            )
-        )
+        return rows
 
     def ohlcv_preview(
         self,
