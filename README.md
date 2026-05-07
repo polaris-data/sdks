@@ -57,8 +57,10 @@ Open endpoints:
 
 Authenticated endpoints:
 
-- `replay(exchange=..., asset=..., from_=..., to=..., standard=True)` (stream rows from dataset download URL)
+- `replay(exchange=..., asset=..., from_=..., to=..., standard=True)` (iterator over `/events` or `/raw`)
 - `trades(exchange=..., asset=..., from_=..., to=..., limit=1000)` (collects all pages)
+- `events(exchange=..., asset=..., from_=..., to=..., limit=1000)` (collects all pages)
+- `raw(exchange=..., asset=..., from_=..., to=..., limit=1000)` (collects all pages)
 - `ohlcv(exchange=..., asset=..., from_=..., to=..., interval=..., format=None)`
 
 For event/data endpoints, `standard=True` is the default. Pass `standard=False` when you explicitly need raw schema payloads.
@@ -80,7 +82,7 @@ with PolarisClient(api_key="polaris_key_your_key") as client:
         print(row)
 ```
 
-`replay(...)` checks the local replay cache first, then fetches and caches the dataset if needed.
+`replay(...)` checks the local replay cache first, then fetches paginated rows and caches them as NDJSON if needed.
 Replay cache is enabled by default and stored under:
 
 - macOS: `~/Library/Caches/polaris/datasets/replay`

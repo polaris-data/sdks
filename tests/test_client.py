@@ -213,22 +213,22 @@ def test_ohlcv_tradingview_format_returns_json() -> None:
         client.close()
 
 
-def test_replay_streams_rows_from_zstd_download_url() -> None:
-    events = b'{"timestamp":1,"type":"trade"}\n{"timestamp":2,"type":"trade"}\n'
-    compressed = zstd.ZstdCompressor().compress(events)
-
+def test_replay_streams_rows_from_events_endpoint() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/datasets/download":
-            assert request.url.params.get("standard") == "true"
-            return httpx.Response(
-                200,
-                json={
-                    "url": "https://downloads.example.com/datasets/sample.jsonl.zst",
-                    "totalBytes": len(compressed),
-                    "fileCount": 1,
-                },
-            )
-        return httpx.Response(200, content=compressed)
+        assert request.url.path == "/events"
+        assert request.url.params.get("exchange") == "binance"
+        assert request.url.params.get("asset") == "BTC-USDT"
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"timestamp": 1, "type": "trade"},
+                    {"timestamp": 2, "type": "bar"},
+                ],
+                "next_cursor": None,
+                "has_more": False,
+            },
+        )
 
     client = make_client(handler)
     try:
@@ -240,61 +240,110 @@ def test_replay_streams_rows_from_zstd_download_url() -> None:
                 to="2024-01-01T01:00:00Z",
             )
         )
-        assert rows == [
-            {"timestamp": 1, "type": "trade"},
-            {"timestamp": 2, "type": "trade"},
-        ]
+        assert rows == [{"timestamp": 1, "type": "trade"}, {"timestamp": 2, "type": "bar"}]
     finally:
         client.close()
 
 
-def test_replay_streams_rows_from_plain_ndjson_download_url() -> None:
-    events = b'{"timestamp":3}\n{"timestamp":4}\n'
-
+def test_events_paginates() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/datasets/download":
-            assert request.url.params.get("standard") == "true"
+        assert request.url.path == "/events"
+        cursor = request.url.params.get("cursor")
+        if cursor is None:
             return httpx.Response(
                 200,
                 json={
-                    "url": "https://downloads.example.com/datasets/sample.jsonl",
-                    "totalBytes": len(events),
-                    "fileCount": 1,
+                    "data": [{"timestamp": 1}],
+                    "next_cursor": "cursor-2",
+                    "has_more": True,
                 },
             )
-        return httpx.Response(200, content=events)
-
-    client = make_client(handler)
-    try:
-        rows = list(
-            client.replay(
-                exchange="binance",
-                asset="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-            )
+        assert cursor == "cursor-2"
+        return httpx.Response(
+            200,
+            json={
+                "data": [{"timestamp": 2}],
+                "next_cursor": None,
+                "has_more": False,
+            },
         )
-        assert rows == [{"timestamp": 3}, {"timestamp": 4}]
+
+    client = make_client(handler)
+    try:
+        rows = client.events(
+            exchange="binance",
+            asset="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T01:00:00Z",
+            limit=1,
+        )
+        assert rows == [{"timestamp": 1}, {"timestamp": 2}]
     finally:
         client.close()
 
 
-def test_replay_raises_stream_decode_error_for_invalid_zstd() -> None:
+def test_raw_paginates() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/datasets/download":
-            assert request.url.params.get("standard") == "true"
+        assert request.url.path == "/raw"
+        cursor = request.url.params.get("cursor")
+        if cursor is None:
             return httpx.Response(
                 200,
                 json={
-                    "url": "https://downloads.example.com/datasets/sample.jsonl.zst",
-                    "totalBytes": 6,
-                    "fileCount": 1,
+                    "data": [{"exchange_payload": {"id": 10}}],
+                    "next_cursor": "cursor-raw-2",
+                    "has_more": True,
                 },
             )
-        return httpx.Response(200, content=b"not-zs")
+        assert cursor == "cursor-raw-2"
+        return httpx.Response(
+            200,
+            json={
+                "data": [{"exchange_payload": {"id": 11}}],
+                "next_cursor": None,
+                "has_more": False,
+            },
+        )
 
     client = make_client(handler)
     try:
+        rows = client.raw(
+            exchange="binance",
+            asset="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T01:00:00Z",
+            limit=1,
+        )
+        assert rows == [{"exchange_payload": {"id": 10}}, {"exchange_payload": {"id": 11}}]
+    finally:
+        client.close()
+
+
+def test_replay_raises_stream_decode_error_for_invalid_cached_zstd(tmp_path) -> None:
+    called = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(500)
+
+    client = PolarisClient(
+        api_key="pk_live_test",
+        transport=httpx.MockTransport(handler),
+        replay_cache_enabled=True,
+        replay_cache_dir=tmp_path,
+    )
+    try:
+        cache_name = client._default_dataset_filename(
+            exchange="binance",
+            asset="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T01:00:00Z",
+            standard=True,
+        )
+        cache_path = tmp_path / cache_name
+        cache_path.write_bytes(b"not-zs")
+
         with pytest.raises(StreamDecodeError):
             list(
                 client.replay(
@@ -304,6 +353,7 @@ def test_replay_raises_stream_decode_error_for_invalid_zstd() -> None:
                     to="2024-01-01T01:00:00Z",
                 )
             )
+        assert called is False
     finally:
         client.close()
 
@@ -389,21 +439,16 @@ def test_replay_reads_bugged_compressed_jsonl_cache_without_api_call(tmp_path) -
 
 
 def test_replay_populates_cache_and_reuses_on_new_client(tmp_path) -> None:
-    events = b'{"timestamp":11}\n{"timestamp":12}\n'
-    compressed = zstd.ZstdCompressor().compress(events)
-
     def online_handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/datasets/download":
-            assert request.url.params.get("standard") == "true"
-            return httpx.Response(
-                200,
-                json={
-                    "url": "https://downloads.example.com/datasets/sample.jsonl.zst",
-                    "totalBytes": len(compressed),
-                    "fileCount": 1,
-                },
-            )
-        return httpx.Response(200, content=compressed)
+        assert request.url.path == "/events"
+        return httpx.Response(
+            200,
+            json={
+                "data": [{"timestamp": 11}, {"timestamp": 12}],
+                "next_cursor": None,
+                "has_more": False,
+            },
+        )
 
     online_client = PolarisClient(
         api_key="pk_live_test",
@@ -449,22 +494,17 @@ def test_replay_populates_cache_and_reuses_on_new_client(tmp_path) -> None:
         offline_client.close()
 
 
-def test_replay_handles_signed_zstd_download_url_with_cache(tmp_path) -> None:
-    events = b'{"timestamp":21}\n{"timestamp":22}\n'
-    compressed = zstd.ZstdCompressor().compress(events)
-
+def test_replay_uses_events_endpoint_with_cache(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/datasets/download":
-            assert request.url.params.get("standard") == "true"
-            return httpx.Response(
-                200,
-                json={
-                    "url": "https://downloads.example.com/datasets/sample.jsonl.zst?X-Amz-Signature=test",
-                    "totalBytes": len(compressed),
-                    "fileCount": 1,
-                },
-            )
-        return httpx.Response(200, content=compressed)
+        assert request.url.path == "/events"
+        return httpx.Response(
+            200,
+            json={
+                "data": [{"timestamp": 21}, {"timestamp": 22}],
+                "next_cursor": None,
+                "has_more": False,
+            },
+        )
 
     client = PolarisClient(
         api_key="pk_live_test",
@@ -487,20 +527,16 @@ def test_replay_handles_signed_zstd_download_url_with_cache(tmp_path) -> None:
 
 
 def test_replay_allows_standard_false_for_raw() -> None:
-    events = b'{"timestamp":31}\n'
-
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/datasets/download":
-            assert request.url.params.get("standard") == "false"
-            return httpx.Response(
-                200,
-                json={
-                    "url": "https://downloads.example.com/datasets/sample.jsonl",
-                    "totalBytes": len(events),
-                    "fileCount": 1,
-                },
-            )
-        return httpx.Response(200, content=events)
+        assert request.url.path == "/raw"
+        return httpx.Response(
+            200,
+            json={
+                "data": [{"timestamp": 31}],
+                "next_cursor": None,
+                "has_more": False,
+            },
+        )
 
     client = make_client(handler)
     try:
@@ -520,63 +556,42 @@ def test_replay_allows_standard_false_for_raw() -> None:
 
 def test_replay_parallel_splits_into_chunks() -> None:
     """Test that parallel replay splits multi-day requests into chunks."""
-    # Data for 3 days, each day returns different timestamps
-    day1_events = b'{"timestamp":1}\n{"timestamp":2}\n'
-    day2_events = b'{"timestamp":3}\n{"timestamp":4}\n'
-    day3_events = b'{"timestamp":5}\n{"timestamp":6}\n'
-
-    compressed_day1 = zstd.ZstdCompressor().compress(day1_events)
-    compressed_day2 = zstd.ZstdCompressor().compress(day2_events)
-    compressed_day3 = zstd.ZstdCompressor().compress(day3_events)
-
     request_count = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal request_count
 
-        if request.url.path == "/datasets/download":
+        if request.url.path == "/events":
             request_count += 1
             from_param = request.url.params.get("from", "")
 
-            # Return different URLs based on the date range
             if "2024-01-01" in from_param:
-                url = "https://downloads.example.com/datasets/day1.jsonl.zst"
                 return httpx.Response(
                     200,
                     json={
-                        "url": url,
-                        "totalBytes": len(compressed_day1),
-                        "fileCount": 1,
+                        "data": [{"timestamp": 1}, {"timestamp": 2}],
+                        "next_cursor": None,
+                        "has_more": False,
                     },
                 )
-            elif "2024-01-02" in from_param:
-                url = "https://downloads.example.com/datasets/day2.jsonl.zst"
+            if "2024-01-02" in from_param:
                 return httpx.Response(
                     200,
                     json={
-                        "url": url,
-                        "totalBytes": len(compressed_day2),
-                        "fileCount": 1,
+                        "data": [{"timestamp": 3}, {"timestamp": 4}],
+                        "next_cursor": None,
+                        "has_more": False,
                     },
                 )
-            elif "2024-01-03" in from_param:
-                url = "https://downloads.example.com/datasets/day3.jsonl.zst"
+            if "2024-01-03" in from_param:
                 return httpx.Response(
                     200,
                     json={
-                        "url": url,
-                        "totalBytes": len(compressed_day3),
-                        "fileCount": 1,
+                        "data": [{"timestamp": 5}, {"timestamp": 6}],
+                        "next_cursor": None,
+                        "has_more": False,
                     },
                 )
-
-        # Handle download requests
-        if "day1" in str(request.url):
-            return httpx.Response(200, content=compressed_day1)
-        elif "day2" in str(request.url):
-            return httpx.Response(200, content=compressed_day2)
-        elif "day3" in str(request.url):
-            return httpx.Response(200, content=compressed_day3)
 
         return httpx.Response(404)
 
@@ -593,7 +608,7 @@ def test_replay_parallel_splits_into_chunks() -> None:
             )
         )
 
-        # Should have made 3 separate download URL requests (one per day)
+        # Should have made 3 separate events requests (one per day)
         assert request_count == 3
 
         # Should get all records in chronological order
@@ -611,20 +626,16 @@ def test_replay_parallel_splits_into_chunks() -> None:
 
 def test_replay_parallel_with_custom_workers() -> None:
     """Test that parallel replay respects max_workers setting."""
-    events = b'{"timestamp":1}\n'
-    compressed = zstd.ZstdCompressor().compress(events)
-
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/datasets/download":
-            return httpx.Response(
-                200,
-                json={
-                    "url": "https://downloads.example.com/datasets/sample.jsonl.zst",
-                    "totalBytes": len(compressed),
-                    "fileCount": 1,
-                },
-            )
-        return httpx.Response(200, content=compressed)
+        assert request.url.path == "/events"
+        return httpx.Response(
+            200,
+            json={
+                "data": [{"timestamp": 1}],
+                "next_cursor": None,
+                "has_more": False,
+            },
+        )
 
     client = make_client(handler, replay_cache_enabled=False)
     try:
@@ -647,24 +658,21 @@ def test_replay_parallel_with_custom_workers() -> None:
 
 def test_replay_parallel_single_day_uses_regular_replay() -> None:
     """Test that single-day requests don't use parallel mode."""
-    events = b'{"timestamp":1}\n'
-    compressed = zstd.ZstdCompressor().compress(events)
-
     request_count = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal request_count
-        if request.url.path == "/datasets/download":
+        if request.url.path == "/events":
             request_count += 1
             return httpx.Response(
                 200,
                 json={
-                    "url": "https://downloads.example.com/datasets/sample.jsonl.zst",
-                    "totalBytes": len(compressed),
-                    "fileCount": 1,
+                    "data": [{"timestamp": 1}],
+                    "next_cursor": None,
+                    "has_more": False,
                 },
             )
-        return httpx.Response(200, content=compressed)
+        return httpx.Response(404)
 
     client = make_client(handler, replay_cache_enabled=False)
     try:
