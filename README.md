@@ -50,10 +50,7 @@ Methods that take `from_` and `to` accept:
 Open endpoints:
 
 - `health()`
-- `exchanges()`
-- `assets(exchange=...)`
-- `timerange(exchange=..., asset=...)`
-- `catalog()`
+- `catalog(exchange=None, asset=None)`
 
 Authenticated endpoints:
 

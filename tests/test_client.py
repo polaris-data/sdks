@@ -26,78 +26,54 @@ def make_client(
     )
 
 
-def test_exchanges_response_shape() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/catalog"
-        return httpx.Response(
-            200,
-            json={
-                "exchanges": [
-                    {"id": "binance", "assets": ["BTC-USDT"]},
-                    {"id": "hyperliquid", "assets": ["BTC", "ETH"]},
-                ]
-            },
-        )
-
-    client = make_client(handler)
-    try:
-        assert client.exchanges() == ["binance", "hyperliquid"]
-    finally:
-        client.close()
-
-
-def test_assets_reads_from_catalog() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/catalog"
-        return httpx.Response(
-            200,
-            json={
-                "exchanges": [
-                    {"id": "binance", "assets": ["BTC-USDT", "ETH-USDT"]},
-                    {"id": "okx", "assets": ["BTC-USDT"]},
-                ]
-            },
-        )
-
-    client = make_client(handler)
-    try:
-        assert client.assets(exchange="binance") == ["BTC-USDT", "ETH-USDT"]
-    finally:
-        client.close()
-
-
-def test_assets_unknown_exchange_returns_empty_list() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/catalog"
-        return httpx.Response(
-            200,
-            json={"exchanges": [{"id": "binance", "assets": ["BTC-USDT"]}]},
-        )
-
-    client = make_client(handler)
-    try:
-        assert client.assets(exchange="does-not-exist") == []
-    finally:
-        client.close()
-
-
-def test_timerange_uses_explicit_timerange_endpoint() -> None:
-    expected = {
-        "exchange": "binance",
-        "asset": "BTC-USDT",
-        "start": "2026-05-01T00:15:00.000Z",
-        "end": "2026-05-07T23:45:00.000Z",
+def test_catalog_returns_payload() -> None:
+    payload = {
+        "exchanges": [
+            {"id": "binance", "assets": ["BTC-USDT"]},
+            {"id": "hyperliquid", "assets": ["BTC", "ETH"]},
+        ]
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/timerange"
-        assert request.url.params.get("exchange") == "binance"
-        assert request.url.params.get("asset") == "BTC-USDT"
-        return httpx.Response(200, json=expected)
+        assert request.url.path == "/catalog"
+        assert request.url.params == httpx.QueryParams()
+        assert request.headers.get("authorization") == "Bearer polaris_key_test"
+        return httpx.Response(200, json=payload)
 
     client = make_client(handler)
     try:
-        assert client.timerange(exchange="binance", asset="BTC-USDT") == expected
+        assert client.catalog() == payload
+    finally:
+        client.close()
+
+
+def test_catalog_with_exchange_filter() -> None:
+    payload = {"exchanges": [{"id": "binance", "assets": ["BTC-USDT", "ETH-USDT"]}]}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/catalog"
+        assert request.url.params.get("exchange") == "binance"
+        return httpx.Response(200, json=payload)
+
+    client = make_client(handler)
+    try:
+        assert client.catalog(exchange="binance") == payload
+    finally:
+        client.close()
+
+
+def test_catalog_with_exchange_and_asset_filter() -> None:
+    payload = {"exchanges": [{"id": "binance", "assets": ["BTC-USDT"]}]}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/catalog"
+        assert request.url.params.get("exchange") == "binance"
+        assert request.url.params.get("asset") == "BTC-USDT"
+        return httpx.Response(200, json=payload)
+
+    client = make_client(handler)
+    try:
+        assert client.catalog(exchange="binance", asset="BTC-USDT") == payload
     finally:
         client.close()
 

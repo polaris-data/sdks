@@ -4,8 +4,8 @@ from polaris_data import PolarisClient
 
 
 with PolarisClient(api_key="pk_live_your_key") as client:
-    exchanges = client.exchanges()
-    print("Exchanges:", exchanges)
+    catalog = client.catalog(exchange="binance")
+    print("Catalog:", catalog)
 
     bars = client.ohlcv(
         exchange="binance",

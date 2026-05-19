@@ -29,7 +29,7 @@ DEFAULT_BASE_URL = "https://api.polaris.supply"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_NETWORK_CHUNK_SIZE = 8 * 1024 * 1024  # 8MB for network downloads
 DEFAULT_FILE_CHUNK_SIZE = 1 * 1024 * 1024  # 1MB for file operations
-USER_AGENT = "polaris-py/0.3.1"
+USER_AGENT = "polaris-py/0.4.0"
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 
@@ -331,49 +331,19 @@ class PolarisClient:
     def health(self) -> JSONDict:
         return self._get_json("health")
 
-    def exchanges(self) -> list[str]:
-        payload = self.catalog()
-        exchanges = payload.get("exchanges", [])
-        if not isinstance(exchanges, list):
-            raise PolarisError("Invalid catalog response")
-
-        exchange_ids: list[str] = []
-        for exchange in exchanges:
-            if not isinstance(exchange, dict):
-                raise PolarisError("Invalid catalog response")
-            exchange_id = exchange.get("id")
-            if not isinstance(exchange_id, str):
-                raise PolarisError("Invalid catalog response")
-            exchange_ids.append(exchange_id)
-
-        return exchange_ids
-
-    def assets(self, *, exchange: str) -> list[str]:
-        payload = self.catalog()
-        exchanges = payload.get("exchanges", [])
-        if not isinstance(exchanges, list):
-            raise PolarisError("Invalid catalog response")
-
-        for item in exchanges:
-            if not isinstance(item, dict):
-                raise PolarisError("Invalid catalog response")
-            if item.get("id") != exchange:
-                continue
-            assets = item.get("assets", [])
-            if not isinstance(assets, list):
-                raise PolarisError("Invalid catalog response")
-            return [str(asset) for asset in assets]
-
-        return []
-
-    def timerange(self, *, exchange: str, asset: str) -> JSONDict:
+    def catalog(
+        self, *, exchange: str | None = None, asset: str | None = None
+    ) -> JSONDict:
+        params: dict[str, str] = {}
+        if exchange is not None:
+            params["exchange"] = exchange
+        if asset is not None:
+            params["asset"] = asset
         return self._get_json(
-            "timerange",
-            params={"exchange": exchange, "asset": asset},
+            "catalog",
+            params=params or None,
+            include_auth_if_available=True,
         )
-
-    def catalog(self) -> JSONDict:
-        return self._get_json("catalog", include_auth_if_available=True)
 
     def replay(
         self,
