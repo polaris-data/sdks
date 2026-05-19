@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 import zstandard as zstd
@@ -11,6 +13,14 @@ from polaris_data.errors import (
     StreamDecodeError,
     UnauthorizedError,
 )
+
+
+def _zstd_ndjson(rows: list[dict]) -> bytes:
+    ndjson = b"".join(
+        f"{json.dumps(row, separators=(',', ':'), ensure_ascii=True)}\n".encode("utf-8")
+        for row in rows
+    )
+    return zstd.ZstdCompressor().compress(ndjson)
 
 
 def make_client(
@@ -194,16 +204,13 @@ def test_replay_streams_rows_from_events_endpoint() -> None:
         assert request.url.path == "/events"
         assert request.url.params.get("exchange") == "binance"
         assert request.url.params.get("asset") == "BTC-USDT"
+        assert request.url.params.get("format") == "file"
         return httpx.Response(
             200,
-            json={
-                "data": [
-                    {"timestamp": 1, "type": "trade"},
-                    {"timestamp": 2, "type": "bar"},
-                ],
-                "next_cursor": None,
-                "has_more": False,
-            },
+            content=_zstd_ndjson(
+                [{"timestamp": 1, "type": "trade"}, {"timestamp": 2, "type": "bar"}]
+            ),
+            headers={"content-type": "application/zstd"},
         )
 
     client = make_client(handler)
@@ -258,6 +265,29 @@ def test_events_paginates() -> None:
         client.close()
 
 
+def test_events_uses_file_export_by_default() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/events"
+        assert request.url.params.get("format") == "file"
+        return httpx.Response(
+            200,
+            content=_zstd_ndjson([{"timestamp": 7}, {"timestamp": 8}]),
+            headers={"content-type": "application/zstd"},
+        )
+
+    client = make_client(handler)
+    try:
+        rows = client.events(
+            exchange="binance",
+            asset="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T01:00:00Z",
+        )
+        assert rows == [{"timestamp": 7}, {"timestamp": 8}]
+    finally:
+        client.close()
+
+
 def test_raw_paginates() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/raw"
@@ -291,6 +321,29 @@ def test_raw_paginates() -> None:
             limit=1,
         )
         assert rows == [{"exchange_payload": {"id": 10}}, {"exchange_payload": {"id": 11}}]
+    finally:
+        client.close()
+
+
+def test_raw_uses_file_export_by_default() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/raw"
+        assert request.url.params.get("format") == "file"
+        return httpx.Response(
+            200,
+            content=_zstd_ndjson([{"exchange_payload": {"id": 42}}]),
+            headers={"content-type": "application/zstd"},
+        )
+
+    client = make_client(handler)
+    try:
+        rows = client.raw(
+            exchange="binance",
+            asset="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T01:00:00Z",
+        )
+        assert rows == [{"exchange_payload": {"id": 42}}]
     finally:
         client.close()
 
@@ -417,13 +470,11 @@ def test_replay_reads_bugged_compressed_jsonl_cache_without_api_call(tmp_path) -
 def test_replay_populates_cache_and_reuses_on_new_client(tmp_path) -> None:
     def online_handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/events"
+        assert request.url.params.get("format") == "file"
         return httpx.Response(
             200,
-            json={
-                "data": [{"timestamp": 11}, {"timestamp": 12}],
-                "next_cursor": None,
-                "has_more": False,
-            },
+            content=_zstd_ndjson([{"timestamp": 11}, {"timestamp": 12}]),
+            headers={"content-type": "application/zstd"},
         )
 
     online_client = PolarisClient(
@@ -473,13 +524,11 @@ def test_replay_populates_cache_and_reuses_on_new_client(tmp_path) -> None:
 def test_replay_uses_events_endpoint_with_cache(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/events"
+        assert request.url.params.get("format") == "file"
         return httpx.Response(
             200,
-            json={
-                "data": [{"timestamp": 21}, {"timestamp": 22}],
-                "next_cursor": None,
-                "has_more": False,
-            },
+            content=_zstd_ndjson([{"timestamp": 21}, {"timestamp": 22}]),
+            headers={"content-type": "application/zstd"},
         )
 
     client = PolarisClient(
@@ -505,13 +554,11 @@ def test_replay_uses_events_endpoint_with_cache(tmp_path) -> None:
 def test_replay_allows_standard_false_for_raw() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/raw"
+        assert request.url.params.get("format") == "file"
         return httpx.Response(
             200,
-            json={
-                "data": [{"timestamp": 31}],
-                "next_cursor": None,
-                "has_more": False,
-            },
+            content=_zstd_ndjson([{"timestamp": 31}]),
+            headers={"content-type": "application/zstd"},
         )
 
     client = make_client(handler)
@@ -539,34 +586,26 @@ def test_replay_parallel_splits_into_chunks() -> None:
 
         if request.url.path == "/events":
             request_count += 1
+            assert request.url.params.get("format") == "file"
             from_param = request.url.params.get("from", "")
 
             if "2024-01-01" in from_param:
                 return httpx.Response(
                     200,
-                    json={
-                        "data": [{"timestamp": 1}, {"timestamp": 2}],
-                        "next_cursor": None,
-                        "has_more": False,
-                    },
+                    content=_zstd_ndjson([{"timestamp": 1}, {"timestamp": 2}]),
+                    headers={"content-type": "application/zstd"},
                 )
             if "2024-01-02" in from_param:
                 return httpx.Response(
                     200,
-                    json={
-                        "data": [{"timestamp": 3}, {"timestamp": 4}],
-                        "next_cursor": None,
-                        "has_more": False,
-                    },
+                    content=_zstd_ndjson([{"timestamp": 3}, {"timestamp": 4}]),
+                    headers={"content-type": "application/zstd"},
                 )
             if "2024-01-03" in from_param:
                 return httpx.Response(
                     200,
-                    json={
-                        "data": [{"timestamp": 5}, {"timestamp": 6}],
-                        "next_cursor": None,
-                        "has_more": False,
-                    },
+                    content=_zstd_ndjson([{"timestamp": 5}, {"timestamp": 6}]),
+                    headers={"content-type": "application/zstd"},
                 )
 
         return httpx.Response(404)
@@ -604,13 +643,11 @@ def test_replay_parallel_with_custom_workers() -> None:
     """Test that parallel replay respects max_workers setting."""
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/events"
+        assert request.url.params.get("format") == "file"
         return httpx.Response(
             200,
-            json={
-                "data": [{"timestamp": 1}],
-                "next_cursor": None,
-                "has_more": False,
-            },
+            content=_zstd_ndjson([{"timestamp": 1}]),
+            headers={"content-type": "application/zstd"},
         )
 
     client = make_client(handler, replay_cache_enabled=False)
@@ -640,13 +677,11 @@ def test_replay_parallel_single_day_uses_regular_replay() -> None:
         nonlocal request_count
         if request.url.path == "/events":
             request_count += 1
+            assert request.url.params.get("format") == "file"
             return httpx.Response(
                 200,
-                json={
-                    "data": [{"timestamp": 1}],
-                    "next_cursor": None,
-                    "has_more": False,
-                },
+                content=_zstd_ndjson([{"timestamp": 1}]),
+                headers={"content-type": "application/zstd"},
             )
         return httpx.Response(404)
 
@@ -666,5 +701,83 @@ def test_replay_parallel_single_day_uses_regular_replay() -> None:
         # Should only make 1 request (no chunking needed)
         assert request_count == 1
         assert rows == [{"timestamp": 1}]
+    finally:
+        client.close()
+
+
+def test_replay_falls_back_to_paginated_json_when_file_export_unavailable() -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.path, request.url.params.get("format")))
+        if request.url.path != "/events":
+            return httpx.Response(404)
+
+        if request.url.params.get("format") == "file":
+            return httpx.Response(
+                200,
+                json={"error": "file export not enabled"},
+            )
+
+        return httpx.Response(
+            200,
+            json={
+                "data": [{"timestamp": 77}],
+                "next_cursor": None,
+                "has_more": False,
+            },
+        )
+
+    client = make_client(handler, replay_cache_enabled=False)
+    try:
+        rows = list(
+            client.replay(
+                exchange="binance",
+                asset="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+            )
+        )
+        assert rows == [{"timestamp": 77}]
+        assert calls == [("/events", "file"), ("/events", None)]
+    finally:
+        client.close()
+
+
+def test_replay_file_export_follows_redirect() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+
+        if request.url.path == "/events":
+            return httpx.Response(
+                302,
+                headers={"location": "https://download.example.com/replay/events.jsonl.zst"},
+            )
+
+        if request.url.path == "/replay/events.jsonl.zst":
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson([{"timestamp": 88}, {"timestamp": 89}]),
+                headers={"content-type": "application/zstd"},
+            )
+
+        return httpx.Response(404)
+
+    client = make_client(handler, replay_cache_enabled=False)
+    try:
+        rows = list(
+            client.replay(
+                exchange="binance",
+                asset="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+            )
+        )
+        assert rows == [{"timestamp": 88}, {"timestamp": 89}]
+        assert len(calls) == 2
+        assert calls[0].startswith("https://api.polaris.supply/events?")
+        assert calls[1] == "https://download.example.com/replay/events.jsonl.zst"
     finally:
         client.close()

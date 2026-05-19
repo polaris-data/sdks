@@ -29,7 +29,7 @@ DEFAULT_BASE_URL = "https://api.polaris.supply"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_NETWORK_CHUNK_SIZE = 8 * 1024 * 1024  # 8MB for network downloads
 DEFAULT_FILE_CHUNK_SIZE = 1 * 1024 * 1024  # 1MB for file operations
-USER_AGENT = "polaris-py/0.4.0"
+USER_AGENT = "polaris-py/0.4.1"
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 
@@ -314,6 +314,105 @@ class PolarisClient:
         )
         return self._iter_ndjson_from_chunks(decompressed_chunks)
 
+    def _iter_file_export_data(
+        self,
+        path: str,
+        *,
+        params: dict[str, str],
+        chunk_size: int,
+        timeout: float | None,
+        auth_required: bool,
+    ) -> Iterator[JSONDict]:
+        request_kwargs: dict[str, Any] = {
+            "params": params,
+            "headers": self._auth_headers(auth_required=auth_required),
+            "follow_redirects": True,
+        }
+        if timeout is not None:
+            request_kwargs["timeout"] = timeout
+
+        with self._client.stream("GET", path, **request_kwargs) as response:
+            self._raise_for_status(response)
+
+            # If file export is not enabled server-side, endpoints may return JSON.
+            content_type = response.headers.get("content-type", "").lower()
+            if "application/json" in content_type:
+                raise PolarisError(
+                    message=f"Expected compressed file export from {path}, received JSON",
+                    status_code=response.status_code,
+                )
+
+            decompressed_chunks = self._iter_zstd_decompressed_chunks(
+                response.iter_bytes(chunk_size=chunk_size)
+            )
+            yield from self._iter_ndjson_from_chunks(decompressed_chunks)
+
+    def _iter_dataset_data(
+        self,
+        *,
+        endpoint: str,
+        exchange: str,
+        asset: str,
+        from_: TimeInput,
+        to: TimeInput,
+        chunk_size: int,
+        timeout: float | None,
+        fallback_limit: int | None = None,
+    ) -> Iterator[JSONDict]:
+        if endpoint not in {"events", "raw"}:
+            raise ValueError("endpoint must be one of: 'events', 'raw'")
+
+        params = self._range_params(exchange, asset, from_, to)
+        params["format"] = "file"
+        yielded_any = False
+
+        try:
+            for row in self._iter_file_export_data(
+                path=endpoint,
+                params=params,
+                chunk_size=chunk_size,
+                timeout=timeout,
+                auth_required=True,
+            ):
+                yielded_any = True
+                yield row
+            return
+        except (httpx.HTTPError, PolarisError, StreamDecodeError):
+            if yielded_any:
+                raise
+
+        fallback_params = self._range_params(exchange, asset, from_, to)
+        if fallback_limit is not None:
+            fallback_params["limit"] = str(fallback_limit)
+
+        yield from self._iter_paginated_data(
+            endpoint,
+            params=fallback_params,
+            auth_required=True,
+        )
+
+    def _iter_replay_data(
+        self,
+        *,
+        exchange: str,
+        asset: str,
+        from_: TimeInput,
+        to: TimeInput,
+        standard: bool,
+        chunk_size: int,
+        timeout: float | None,
+    ) -> Iterator[JSONDict]:
+        endpoint = "events" if standard else "raw"
+        yield from self._iter_dataset_data(
+            endpoint=endpoint,
+            exchange=exchange,
+            asset=asset,
+            from_=from_,
+            to=to,
+            chunk_size=chunk_size,
+            timeout=timeout,
+        )
+
     def _range_params(
         self,
         exchange: str,
@@ -406,10 +505,14 @@ class PolarisClient:
                     cache_zst_path, DEFAULT_FILE_CHUNK_SIZE
                 )
 
-        source_rows = (
-            self._iter_events_data(exchange=exchange, asset=asset, from_=from_, to=to)
-            if standard
-            else self._iter_raw_data(exchange=exchange, asset=asset, from_=from_, to=to)
+        source_rows = self._iter_replay_data(
+            exchange=exchange,
+            asset=asset,
+            from_=from_,
+            to=to,
+            standard=standard,
+            chunk_size=effective_chunk_size,
+            timeout=timeout,
         )
 
         if self.replay_cache_enabled:
@@ -638,9 +741,16 @@ class PolarisClient:
         to: TimeInput,
         limit: int = 1000,
     ) -> Iterator[JSONDict]:
-        params = self._range_params(exchange, asset, from_, to)
-        params["limit"] = str(limit)
-        return self._iter_paginated_data("events", params=params, auth_required=True)
+        yield from self._iter_dataset_data(
+            endpoint="events",
+            exchange=exchange,
+            asset=asset,
+            from_=from_,
+            to=to,
+            chunk_size=DEFAULT_NETWORK_CHUNK_SIZE,
+            timeout=None,
+            fallback_limit=limit,
+        )
 
     def raw(
         self,
@@ -670,9 +780,16 @@ class PolarisClient:
         to: TimeInput,
         limit: int = 1000,
     ) -> Iterator[JSONDict]:
-        params = self._range_params(exchange, asset, from_, to)
-        params["limit"] = str(limit)
-        return self._iter_paginated_data("raw", params=params, auth_required=True)
+        yield from self._iter_dataset_data(
+            endpoint="raw",
+            exchange=exchange,
+            asset=asset,
+            from_=from_,
+            to=to,
+            chunk_size=DEFAULT_NETWORK_CHUNK_SIZE,
+            timeout=None,
+            fallback_limit=limit,
+        )
 
     def ohlcv(
         self,

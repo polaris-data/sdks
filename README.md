@@ -56,8 +56,8 @@ Authenticated endpoints:
 
 - `replay(exchange=..., asset=..., from_=..., to=..., standard=True)` (iterator over `/events` or `/raw`)
 - `trades(exchange=..., asset=..., from_=..., to=..., limit=1000)` (collects all pages)
-- `events(exchange=..., asset=..., from_=..., to=..., limit=1000)` (collects all pages)
-- `raw(exchange=..., asset=..., from_=..., to=..., limit=1000)` (collects all pages)
+- `events(exchange=..., asset=..., from_=..., to=..., limit=1000)` (prefers `format=file`, falls back to paginated JSON)
+- `raw(exchange=..., asset=..., from_=..., to=..., limit=1000)` (prefers `format=file`, falls back to paginated JSON)
 - `ohlcv(exchange=..., asset=..., from_=..., to=..., interval=..., format=None)`
 
 For event/data endpoints, `standard=True` is the default. Pass `standard=False` when you explicitly need raw schema payloads.
@@ -79,7 +79,7 @@ with PolarisClient(api_key="polaris_key_your_key") as client:
         print(row)
 ```
 
-`replay(...)` checks the local replay cache first, then fetches paginated rows and caches them as NDJSON if needed.
+`replay(...)` checks the local replay cache first, then requests bulk export (`format=file`) and streams the compressed `.jsonl.zst` response row-by-row. If file export is unavailable, it falls back to paginated JSON and still caches rows as NDJSON.
 Replay cache is enabled by default and stored under:
 
 - macOS: `~/Library/Caches/polaris/datasets/replay`
