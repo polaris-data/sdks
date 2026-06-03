@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -19,34 +19,25 @@ from .errors import (
     StreamDecodeError,
     UnauthorizedError,
 )
+from .layout import (
+    LocalDatasetLayout,
+    infer_snapshot_date_from_key,
+    resolve_dataset_root,
+)
 from .models import (
     JSONDict,
+    LocalSnapshotEntry,
     OhlcvParquetResponse,
+    SnapshotEntry,
 )
-from .utils import TimeInput, chunk_timerange, to_iso8601
+from .utils import TimeInput, chunk_timerange, to_datetime, to_iso8601
 
 DEFAULT_BASE_URL = "https://api.polaris.supply"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_NETWORK_CHUNK_SIZE = 8 * 1024 * 1024  # 8MB for network downloads
 DEFAULT_FILE_CHUNK_SIZE = 1 * 1024 * 1024  # 1MB for file operations
-USER_AGENT = "polaris-py/0.4.1"
+USER_AGENT = "polaris-py/0.5.0"
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
-
-
-def _default_dataset_download_dir() -> Path:
-    override = os.getenv("POLARIS_DATASET_DOWNLOAD_DIR")
-    if override:
-        return Path(override).expanduser()
-
-    home = Path.home()
-    if sys.platform == "darwin":
-        return home / "Library" / "Caches" / "polaris" / "datasets"
-    if os.name == "nt":
-        local_app_data = os.getenv("LOCALAPPDATA")
-        if local_app_data:
-            return Path(local_app_data) / "polaris" / "datasets"
-        return home / "AppData" / "Local" / "polaris" / "datasets"
-    return home / ".cache" / "polaris" / "datasets"
 
 
 def _safe_filename_fragment(value: str) -> str:
@@ -65,6 +56,27 @@ def _file_is_zstd(path: Path) -> bool:
         return False
 
 
+def _datetime_to_epoch_micros(value: datetime) -> int:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return int(value.timestamp() * 1_000_000)
+
+
+def _iter_utc_dates(start: datetime, end: datetime) -> list[date]:
+    if start >= end:
+        raise ValueError("from_ must be before to")
+
+    current = start.date()
+    last = (end - timedelta(microseconds=1)).date()
+    days: list[date] = []
+    while current <= last:
+        days.append(current)
+        current += timedelta(days=1)
+    return days
+
+
 class PolarisClient:
     """High-level sync SDK client for Polaris datasets and market data."""
 
@@ -75,6 +87,7 @@ class PolarisClient:
         timeout: float = DEFAULT_TIMEOUT,
         transport: httpx.BaseTransport | None = None,
         http_client: httpx.Client | None = None,
+        dataset_root: str | os.PathLike[str] | None = None,
         dataset_download_dir: str | os.PathLike[str] | None = None,
         replay_cache_enabled: bool = True,
         replay_cache_dir: str | os.PathLike[str] | None = None,
@@ -85,16 +98,18 @@ class PolarisClient:
         self.api_key = api_key or os.getenv("POLARIS_API_KEY")
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self.dataset_download_dir = (
-            Path(dataset_download_dir).expanduser()
-            if dataset_download_dir is not None
-            else _default_dataset_download_dir()
+        self.dataset_root = resolve_dataset_root(
+            dataset_root=dataset_root,
+            dataset_download_dir=dataset_download_dir,
         )
+        self.layout = LocalDatasetLayout(self.dataset_root)
+        # Kept as a compatibility alias for earlier SDK releases.
+        self.dataset_download_dir = self.dataset_root
         self.replay_cache_enabled = replay_cache_enabled
         self.replay_cache_dir = (
             Path(replay_cache_dir).expanduser()
             if replay_cache_dir is not None
-            else self.dataset_download_dir / "replay"
+            else self.layout.cache_root / "replay"
         )
         if self.replay_cache_enabled:
             self.replay_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -427,6 +442,299 @@ class PolarisClient:
             "to": to_iso8601(to),
         }
 
+    def _parse_snapshot_entry(self, raw: object) -> SnapshotEntry:
+        if not isinstance(raw, dict):
+            raise PolarisError("Invalid /snapshots response entry")
+
+        key = raw.get("key") or raw.get("path") or raw.get("name")
+        if not isinstance(key, str) or not key:
+            raise PolarisError("Snapshot entry did not include a key")
+
+        filename = raw.get("filename")
+        if not isinstance(filename, str) or not filename:
+            filename = key.rsplit("/", 1)[-1]
+        if not filename:
+            raise PolarisError("Snapshot entry did not include a filename")
+
+        return SnapshotEntry(key=key, filename=filename)
+
+    def _iter_local_snapshot_rows(
+        self,
+        paths: list[Path],
+        *,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+    ) -> Iterator[JSONDict]:
+        start_micros = (
+            _datetime_to_epoch_micros(to_datetime(from_)) if from_ is not None else None
+        )
+        end_micros = _datetime_to_epoch_micros(to_datetime(to)) if to is not None else None
+
+        for path in paths:
+            if _file_is_zstd(path):
+                rows = self._iter_ndjson_zstd_file(path, DEFAULT_FILE_CHUNK_SIZE)
+            else:
+                rows = self._iter_ndjson_file(path, DEFAULT_FILE_CHUNK_SIZE)
+
+            for row in rows:
+                if start_micros is None and end_micros is None:
+                    yield row
+                    continue
+
+                timestamp = row.get("timestamp")
+                if not isinstance(timestamp, (int, float)):
+                    continue
+                if start_micros is not None and timestamp < start_micros:
+                    continue
+                if end_micros is not None and timestamp >= end_micros:
+                    continue
+                yield row
+
+    def _filter_local_snapshots(
+        self,
+        entries: list[LocalSnapshotEntry],
+        *,
+        exchange: str | None = None,
+        asset: str | None = None,
+        date_filter: str | date | None = None,
+    ) -> list[LocalSnapshotEntry]:
+        date_text = (
+            date_filter.isoformat() if isinstance(date_filter, date) else date_filter
+        )
+        filtered = []
+        for entry in entries:
+            if exchange is not None and entry.exchange != exchange:
+                continue
+            if asset is not None and entry.asset != asset:
+                continue
+            if date_text is not None and entry.date != date_text:
+                continue
+            filtered.append(entry)
+        return filtered
+
+    def _daily_artifact_paths(
+        self,
+        *,
+        exchange: str,
+        asset: str,
+    ) -> dict[date, Path]:
+        artifacts = self.layout.list_local_daily_artifacts()
+        result: dict[date, Path] = {}
+        for artifact in artifacts:
+            if artifact.exchange != exchange or artifact.asset != asset:
+                continue
+            try:
+                result[date.fromisoformat(artifact.date)] = Path(artifact.path)
+            except ValueError:
+                continue
+        return result
+
+    def _materialize_local_daily_artifacts(
+        self,
+        *,
+        exchange: str,
+        asset: str,
+        required_dates: set[date] | None = None,
+        force: bool = False,
+    ) -> dict[date, Path]:
+        daily_paths = self._daily_artifact_paths(exchange=exchange, asset=asset)
+        snapshots = self._filter_local_snapshots(
+            self.layout.list_local_snapshots(),
+            exchange=exchange,
+            asset=asset,
+        )
+
+        candidates: list[LocalSnapshotEntry] = []
+        for snapshot in snapshots:
+            if snapshot.date is None:
+                continue
+            try:
+                snapshot_day = date.fromisoformat(snapshot.date)
+            except ValueError:
+                continue
+            if required_dates is not None and snapshot_day not in required_dates:
+                continue
+            if snapshot_day in daily_paths and not force:
+                continue
+            candidates.append(snapshot)
+
+        if candidates:
+            with self.layout.sync_lock():
+                for snapshot in candidates:
+                    path = self.layout.materialize_daily_artifact(snapshot, force=force)
+                    if path is None or snapshot.date is None:
+                        continue
+                    daily_paths[date.fromisoformat(snapshot.date)] = path
+
+        return daily_paths
+
+    def _download_snapshot_file(
+        self,
+        snapshot: SnapshotEntry,
+        *,
+        force_materialize: bool = False,
+    ) -> LocalSnapshotEntry:
+        local_path = self.layout.data_path_for_key(snapshot.key)
+        temp_path = self.layout.temp_path_for_key(snapshot.key)
+        temp_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if temp_path.exists():
+            temp_path.unlink()
+
+        try:
+            with self._client.stream(
+                "GET",
+                "snapshots/download",
+                params={"key": snapshot.key, "filename": snapshot.filename},
+                headers=self._auth_headers(
+                    auth_required=False,
+                    include_auth_if_available=True,
+                ),
+                follow_redirects=True,
+            ) as response:
+                self._raise_for_status(response)
+
+                content_type = response.headers.get("content-type", "").lower()
+                if "application/json" in content_type:
+                    raise PolarisError(
+                        message="Expected compressed snapshot download, received JSON",
+                        status_code=response.status_code,
+                    )
+
+                with temp_path.open("wb") as file:
+                    for chunk in response.iter_bytes(chunk_size=DEFAULT_NETWORK_CHUNK_SIZE):
+                        if chunk:
+                            file.write(chunk)
+                    file.flush()
+                    os.fsync(file.fileno())
+
+            os.replace(temp_path, local_path)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+        for entry in self.layout.list_local_snapshots():
+            if entry.key == snapshot.key:
+                self.layout.materialize_daily_artifact(
+                    entry,
+                    force=force_materialize,
+                )
+                return entry
+
+        raise PolarisError(f"Downloaded snapshot {snapshot.key} could not be indexed locally")
+
+    def _ensure_local_snapshot_entries(
+        self,
+        snapshots: list[SnapshotEntry],
+        *,
+        force: bool = False,
+    ) -> list[LocalSnapshotEntry]:
+        indexed = {entry.key: entry for entry in self.layout.list_local_snapshots()}
+        results: list[LocalSnapshotEntry] = []
+
+        with self.layout.sync_lock():
+            for snapshot in snapshots:
+                local_entry = indexed.get(snapshot.key)
+                local_path = self.layout.data_path_for_key(snapshot.key)
+
+                if local_entry is not None and local_path.exists() and not force:
+                    self.layout.materialize_daily_artifact(local_entry)
+                    results.append(local_entry)
+                    continue
+
+                entry = self._download_snapshot_file(
+                    snapshot,
+                    force_materialize=force,
+                )
+                indexed[entry.key] = entry
+                results.append(entry)
+
+        return results
+
+    def _resolve_snapshot_day_files(
+        self,
+        *,
+        exchange: str,
+        asset: str,
+        from_: TimeInput,
+        to: TimeInput,
+    ) -> list[Path] | None:
+        start = to_datetime(from_)
+        end = to_datetime(to)
+        required_days = _iter_utc_dates(start, end)
+        required_day_set = set(required_days)
+
+        daily_paths = self._materialize_local_daily_artifacts(
+            exchange=exchange,
+            asset=asset,
+            required_dates=required_day_set,
+        )
+        missing_days = [day for day in required_days if day not in daily_paths]
+        if not missing_days:
+            return [daily_paths[day] for day in required_days]
+
+        remote_snapshots = self.list_snapshots(
+            exchange=exchange,
+            asset=asset,
+            from_=from_,
+            to=to,
+        )
+        snapshots_by_day: dict[date, SnapshotEntry] = {}
+        for snapshot in remote_snapshots:
+            day = infer_snapshot_date_from_key(snapshot.key)
+            if day is not None and day not in snapshots_by_day:
+                snapshots_by_day[day] = snapshot
+
+        missing_remote_days = [day for day in missing_days if day not in snapshots_by_day]
+        if missing_remote_days:
+            return None
+
+        self._ensure_local_snapshot_entries(
+            [snapshots_by_day[day] for day in missing_days],
+            force=False,
+        )
+        daily_paths = self._materialize_local_daily_artifacts(
+            exchange=exchange,
+            asset=asset,
+            required_dates=required_day_set,
+        )
+        if any(day not in daily_paths for day in required_days):
+            return None
+        return [daily_paths[day] for day in required_days]
+
+    def _iter_standard_events_with_snapshots(
+        self,
+        *,
+        exchange: str,
+        asset: str,
+        from_: TimeInput,
+        to: TimeInput,
+        fallback_limit: int | None = None,
+        chunk_size: int = DEFAULT_NETWORK_CHUNK_SIZE,
+        timeout: float | None = None,
+    ) -> Iterator[JSONDict]:
+        day_paths = self._resolve_snapshot_day_files(
+            exchange=exchange,
+            asset=asset,
+            from_=from_,
+            to=to,
+        )
+        if day_paths is not None:
+            yield from self._iter_local_snapshot_rows(day_paths, from_=from_, to=to)
+            return
+
+        yield from self._iter_dataset_data(
+            endpoint="events",
+            exchange=exchange,
+            asset=asset,
+            from_=from_,
+            to=to,
+            chunk_size=chunk_size,
+            timeout=timeout,
+            fallback_limit=fallback_limit,
+        )
+
     def health(self) -> JSONDict:
         return self._get_json("health")
 
@@ -443,6 +751,115 @@ class PolarisClient:
             params=params or None,
             include_auth_if_available=True,
         )
+
+    def list_snapshots(
+        self,
+        *,
+        exchange: str,
+        asset: str,
+        from_: TimeInput,
+        to: TimeInput,
+        limit: int = 1000,
+    ) -> list[SnapshotEntry]:
+        if limit <= 0:
+            raise ValueError("limit must be > 0")
+
+        params = self._range_params(exchange, asset, from_, to)
+        params["limit"] = str(limit)
+
+        snapshots: dict[str, SnapshotEntry] = {}
+        cursor: str | None = None
+        while True:
+            page_params = dict(params)
+            if cursor is not None:
+                page_params["cursor"] = cursor
+
+            payload = self._get_json(
+                "snapshots",
+                params=page_params,
+                include_auth_if_available=True,
+            )
+
+            raw_entries = []
+            data = payload.get("data")
+            if isinstance(data, list):
+                raw_entries.extend(data)
+            snapshot_data = payload.get("snapshots")
+            if isinstance(snapshot_data, list):
+                raw_entries.extend(snapshot_data)
+
+            for raw in raw_entries:
+                entry = self._parse_snapshot_entry(raw)
+                snapshots[entry.key] = entry
+
+            next_cursor = payload.get("next_cursor")
+            if not isinstance(next_cursor, str) or not next_cursor:
+                break
+            cursor = next_cursor
+
+        return [snapshots[key] for key in sorted(snapshots)]
+
+    def download_snapshots(
+        self,
+        *,
+        exchange: str,
+        asset: str,
+        from_: TimeInput,
+        to: TimeInput,
+        force: bool = False,
+    ) -> list[LocalSnapshotEntry]:
+        snapshots = self.list_snapshots(
+            exchange=exchange,
+            asset=asset,
+            from_=from_,
+            to=to,
+        )
+        return self._ensure_local_snapshot_entries(snapshots, force=force)
+
+    def list_local_snapshots(
+        self,
+        *,
+        exchange: str | None = None,
+        asset: str | None = None,
+        date: str | date | None = None,
+    ) -> list[LocalSnapshotEntry]:
+        return self._filter_local_snapshots(
+            self.layout.list_local_snapshots(),
+            exchange=exchange,
+            asset=asset,
+            date_filter=date,
+        )
+
+    def iter_local_events(
+        self,
+        *,
+        exchange: str,
+        asset: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+    ) -> Iterator[JSONDict]:
+        start = to_datetime(from_) if from_ is not None else None
+        end = to_datetime(to) if to is not None else None
+        if start is not None and end is not None and start >= end:
+            raise ValueError("from_ must be before to")
+
+        daily_paths = self._materialize_local_daily_artifacts(
+            exchange=exchange,
+            asset=asset,
+        )
+
+        last_inclusive = (
+            (end - timedelta(microseconds=1)).date() if end is not None else None
+        )
+        selected_paths: list[Path] = []
+        for day in sorted(daily_paths):
+            if start is not None and day < start.date():
+                continue
+            if last_inclusive is not None and day > last_inclusive:
+                continue
+            selected_paths.append(daily_paths[day])
+
+        return self._iter_local_snapshot_rows(selected_paths, from_=from_, to=to)
 
     def replay(
         self,
@@ -481,7 +898,34 @@ class PolarisClient:
                 max_workers=max_workers,
             )
 
-        # Check if cache exists first.
+        if standard:
+            day_paths = self._resolve_snapshot_day_files(
+                exchange=exchange,
+                asset=asset,
+                from_=from_,
+                to=to,
+            )
+            if day_paths is not None:
+                return self._iter_local_snapshot_rows(day_paths, from_=from_, to=to)
+
+            source_rows = self._iter_dataset_data(
+                endpoint="events",
+                exchange=exchange,
+                asset=asset,
+                from_=from_,
+                to=to,
+                chunk_size=effective_chunk_size,
+                timeout=timeout,
+            )
+            if self.replay_cache_enabled:
+                canonical_zst_name = self._default_dataset_filename(
+                    exchange, asset, from_, to, standard
+                )
+                cache_path = (self.replay_cache_dir / canonical_zst_name).with_suffix("")
+                return self._replay_with_cache(source_rows, cache_path)
+            return source_rows
+
+        # Check if cache exists first for legacy raw replay behavior.
         if self.replay_cache_enabled:
             canonical_zst_name = self._default_dataset_filename(
                 exchange, asset, from_, to, standard
@@ -741,15 +1185,14 @@ class PolarisClient:
         to: TimeInput,
         limit: int = 1000,
     ) -> Iterator[JSONDict]:
-        yield from self._iter_dataset_data(
-            endpoint="events",
+        yield from self._iter_standard_events_with_snapshots(
             exchange=exchange,
             asset=asset,
             from_=from_,
             to=to,
+            fallback_limit=limit,
             chunk_size=DEFAULT_NETWORK_CHUNK_SIZE,
             timeout=None,
-            fallback_limit=limit,
         )
 
     def raw(

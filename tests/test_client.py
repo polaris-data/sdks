@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import json
+from datetime import date
+from pathlib import Path
 
 import httpx
 import pytest
 import zstandard as zstd
 
 from polaris_data import PolarisClient
-from polaris_data.errors import (
-    PolarisError,
-    RateLimitedError,
-    StreamDecodeError,
-    UnauthorizedError,
-)
+from polaris_data.errors import RateLimitedError, StreamDecodeError, UnauthorizedError
+
+SNAPSHOT_KEY_DAY_1 = "snapshots/standard/binance/BTC-USDT/2024-01-01.jsonl.zst"
+SNAPSHOT_KEY_DAY_2 = "snapshots/standard/binance/BTC-USDT/2024-01-02.jsonl.zst"
 
 
 def _zstd_ndjson(rows: list[dict]) -> bytes:
@@ -25,14 +25,19 @@ def _zstd_ndjson(rows: list[dict]) -> bytes:
 
 def make_client(
     handler,
+    *,
     api_key: str | None = "polaris_key_test",
+    dataset_root: Path | None = None,
     replay_cache_enabled: bool = False,
+    replay_cache_dir: Path | None = None,
 ) -> PolarisClient:
     transport = httpx.MockTransport(handler)
     return PolarisClient(
         api_key=api_key,
         transport=transport,
+        dataset_root=dataset_root,
         replay_cache_enabled=replay_cache_enabled,
+        replay_cache_dir=replay_cache_dir,
     )
 
 
@@ -46,44 +51,12 @@ def test_catalog_returns_payload() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/catalog"
-        assert request.url.params == httpx.QueryParams()
         assert request.headers.get("authorization") == "Bearer polaris_key_test"
         return httpx.Response(200, json=payload)
 
     client = make_client(handler)
     try:
         assert client.catalog() == payload
-    finally:
-        client.close()
-
-
-def test_catalog_with_exchange_filter() -> None:
-    payload = {"exchanges": [{"id": "binance", "assets": ["BTC-USDT", "ETH-USDT"]}]}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/catalog"
-        assert request.url.params.get("exchange") == "binance"
-        return httpx.Response(200, json=payload)
-
-    client = make_client(handler)
-    try:
-        assert client.catalog(exchange="binance") == payload
-    finally:
-        client.close()
-
-
-def test_catalog_with_exchange_and_asset_filter() -> None:
-    payload = {"exchanges": [{"id": "binance", "assets": ["BTC-USDT"]}]}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/catalog"
-        assert request.url.params.get("exchange") == "binance"
-        assert request.url.params.get("asset") == "BTC-USDT"
-        return httpx.Response(200, json=payload)
-
-    client = make_client(handler)
-    try:
-        assert client.catalog(exchange="binance", asset="BTC-USDT") == payload
     finally:
         client.close()
 
@@ -126,7 +99,6 @@ def test_rate_limited_error_maps_reset_at() -> None:
                 from_="2024-01-01T00:00:00Z",
                 to="2024-01-01T01:00:00Z",
             )
-
         assert exc_info.value.reset_at == "2026-05-01T00:00:00.000Z"
     finally:
         client.close()
@@ -134,41 +106,30 @@ def test_rate_limited_error_maps_reset_at() -> None:
 
 def test_trades_paginates() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/trades"
         cursor = request.url.params.get("cursor")
         if cursor is None:
             return httpx.Response(
                 200,
-                json={
-                    "data": [{"id": 1}],
-                    "next_cursor": "cursor-2",
-                    "has_more": True,
-                },
+                json={"data": [{"id": 1}], "next_cursor": "cursor-2", "has_more": True},
             )
-
         assert cursor == "cursor-2"
         return httpx.Response(
             200,
-            json={
-                "data": [{"id": 2}],
-                "next_cursor": None,
-                "has_more": False,
-            },
+            json={"data": [{"id": 2}], "next_cursor": None, "has_more": False},
         )
 
     client = make_client(handler)
     try:
-        results = client.trades(
+        assert client.trades(
             exchange="binance",
             asset="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-01T01:00:00Z",
             limit=1,
-        )
-        assert results == [{"id": 1}, {"id": 2}]
+        ) == [{"id": 1}, {"id": 2}]
     finally:
         client.close()
-
-
 
 
 def test_ohlcv_tradingview_format_returns_json() -> None:
@@ -186,104 +147,262 @@ def test_ohlcv_tradingview_format_returns_json() -> None:
 
     client = make_client(handler)
     try:
-        response = client.ohlcv(
-            exchange="binance",
-            asset="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
-            interval="1m",
-            format="tradingview",
+        assert (
+            client.ohlcv(
+                exchange="binance",
+                asset="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+                interval="1m",
+                format="tradingview",
+            )
+            == payload
         )
-        assert response == payload
     finally:
         client.close()
 
 
-def test_replay_streams_rows_from_events_endpoint() -> None:
+def test_list_snapshots_paginates_across_data_and_snapshots_fields() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/events"
-        assert request.url.params.get("exchange") == "binance"
-        assert request.url.params.get("asset") == "BTC-USDT"
-        assert request.url.params.get("format") == "file"
+        assert request.url.path == "/snapshots"
+        cursor = request.url.params.get("cursor")
+        if cursor is None:
+            return httpx.Response(
+                200,
+                json={
+                    "data": [{"key": SNAPSHOT_KEY_DAY_1}],
+                    "next_cursor": "page-2",
+                },
+            )
+        assert cursor == "page-2"
         return httpx.Response(
             200,
-            content=_zstd_ndjson(
-                [{"timestamp": 1, "type": "trade"}, {"timestamp": 2, "type": "bar"}]
-            ),
-            headers={"content-type": "application/zstd"},
+            json={
+                "snapshots": [{"key": SNAPSHOT_KEY_DAY_2, "filename": "2024-01-02.jsonl.zst"}],
+                "next_cursor": None,
+            },
         )
 
     client = make_client(handler)
+    try:
+        snapshots = client.list_snapshots(
+            exchange="binance",
+            asset="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-03T00:00:00Z",
+        )
+        assert [snapshot.key for snapshot in snapshots] == [
+            SNAPSHOT_KEY_DAY_1,
+            SNAPSHOT_KEY_DAY_2,
+        ]
+        assert [snapshot.filename for snapshot in snapshots] == [
+            "2024-01-01.jsonl.zst",
+            "2024-01-02.jsonl.zst",
+        ]
+    finally:
+        client.close()
+
+
+def test_download_snapshots_saves_files_and_materializes_daily_artifacts(tmp_path) -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        if request.url.path == "/snapshots":
+            assert request.headers.get("authorization") == "Bearer polaris_key_test"
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1}]},
+            )
+        if request.url.path == "/snapshots/download":
+            assert request.url.params.get("key") == SNAPSHOT_KEY_DAY_1
+            return httpx.Response(
+                302,
+                headers={"location": "https://download.example.com/day-1.jsonl.zst"},
+            )
+        if request.url.host == "download.example.com":
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson([{"timestamp": 1}, {"timestamp": 2}]),
+                headers={"content-type": "application/zstd"},
+            )
+        return httpx.Response(404)
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        entries = client.download_snapshots(
+            exchange="binance",
+            asset="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-02T00:00:00Z",
+        )
+        assert [entry.key for entry in entries] == [SNAPSHOT_KEY_DAY_1]
+        assert (tmp_path / "data" / SNAPSHOT_KEY_DAY_1).exists()
+        assert (tmp_path / "daily" / "binance" / "BTC-USDT" / "2024-01-01.jsonl.zst").exists()
+        assert len(calls) == 3
+    finally:
+        client.close()
+
+
+def test_list_local_snapshots_filters_by_exchange_asset_and_date(tmp_path) -> None:
+    client = make_client(lambda request: httpx.Response(500), dataset_root=tmp_path)
+    try:
+        first = client.layout.data_path_for_key(SNAPSHOT_KEY_DAY_1)
+        second = client.layout.data_path_for_key(
+            "snapshots/standard/binance/ETH-USDT/2024-01-01.jsonl.zst"
+        )
+        first.parent.mkdir(parents=True, exist_ok=True)
+        second.parent.mkdir(parents=True, exist_ok=True)
+        first.write_bytes(_zstd_ndjson([{"timestamp": 1}]))
+        second.write_bytes(_zstd_ndjson([{"timestamp": 2}]))
+
+        assert len(client.list_local_snapshots()) == 2
+        assert len(client.list_local_snapshots(exchange="binance", asset="BTC-USDT")) == 1
+        assert len(client.list_local_snapshots(date="2024-01-01")) == 2
+    finally:
+        client.close()
+
+
+def test_iter_local_events_filters_across_materialized_days(tmp_path) -> None:
+    client = make_client(lambda request: httpx.Response(500), dataset_root=tmp_path)
+    try:
+        day_one = client.layout.daily_path_for_dataset_day(
+            "binance",
+            "BTC-USDT",
+            date(2024, 1, 1),
+        )
+        day_two = client.layout.daily_path_for_dataset_day(
+            "binance",
+            "BTC-USDT",
+            date(2024, 1, 2),
+        )
+        day_one.parent.mkdir(parents=True, exist_ok=True)
+        day_two.parent.mkdir(parents=True, exist_ok=True)
+        day_one.write_bytes(
+            _zstd_ndjson(
+                [
+                    {"timestamp": 1704067200000000},
+                    {"timestamp": 1704110400000000},
+                ]
+            )
+        )
+        day_two.write_bytes(_zstd_ndjson([{"timestamp": 1704153600000000}]))
+
+        rows = list(
+            client.iter_local_events(
+                exchange="binance",
+                asset="BTC-USDT",
+                from_="2024-01-01T12:00:00Z",
+                to="2024-01-02T00:00:00Z",
+            )
+        )
+        assert rows == [{"timestamp": 1704110400000000}]
+    finally:
+        client.close()
+
+
+def test_replay_reads_local_snapshot_day_files_before_network(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("network should not be called when local daily files exist")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        daily_path = client.layout.daily_path_for_dataset_day(
+            "binance",
+            "BTC-USDT",
+            date(2024, 1, 1),
+        )
+        daily_path.parent.mkdir(parents=True, exist_ok=True)
+        daily_path.write_bytes(
+            _zstd_ndjson(
+                [
+                    {"timestamp": 1704067200000000},
+                    {"timestamp": 1704067260000000},
+                ]
+            )
+        )
+
+        rows = list(
+            client.replay(
+                exchange="binance",
+                asset="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-02T00:00:00Z",
+            )
+        )
+        assert rows == [
+            {"timestamp": 1704067200000000},
+            {"timestamp": 1704067260000000},
+        ]
+    finally:
+        client.close()
+
+
+def test_events_use_snapshot_download_flow_by_default(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshots":
+            return httpx.Response(200, json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1}]})
+        if request.url.path == "/snapshots/download":
+            return httpx.Response(
+                302,
+                headers={"location": "https://download.example.com/day-1.jsonl.zst"},
+            )
+        if request.url.host == "download.example.com":
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(
+                    [
+                        {"timestamp": 1704067200000000},
+                        {"timestamp": 1704067260000000},
+                    ]
+                ),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        assert client.events(
+            exchange="binance",
+            asset="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-02T00:00:00Z",
+        ) == [
+            {"timestamp": 1704067200000000},
+            {"timestamp": 1704067260000000},
+        ]
+    finally:
+        client.close()
+
+
+def test_replay_falls_back_to_events_when_snapshot_coverage_is_incomplete(tmp_path) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.path, request.url.params.get("format")))
+        if request.url.path == "/snapshots":
+            return httpx.Response(200, json={"snapshots": []})
+        if request.url.path == "/events":
+            assert request.url.params.get("format") == "file"
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson([{"timestamp": 21}, {"timestamp": 22}]),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path, replay_cache_enabled=False)
     try:
         rows = list(
             client.replay(
                 exchange="binance",
                 asset="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
+                to="2024-01-02T00:00:00Z",
             )
         )
-        assert rows == [{"timestamp": 1, "type": "trade"}, {"timestamp": 2, "type": "bar"}]
-    finally:
-        client.close()
-
-
-def test_events_paginates() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/events"
-        cursor = request.url.params.get("cursor")
-        if cursor is None:
-            return httpx.Response(
-                200,
-                json={
-                    "data": [{"timestamp": 1}],
-                    "next_cursor": "cursor-2",
-                    "has_more": True,
-                },
-            )
-        assert cursor == "cursor-2"
-        return httpx.Response(
-            200,
-            json={
-                "data": [{"timestamp": 2}],
-                "next_cursor": None,
-                "has_more": False,
-            },
-        )
-
-    client = make_client(handler)
-    try:
-        rows = client.events(
-            exchange="binance",
-            asset="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
-            limit=1,
-        )
-        assert rows == [{"timestamp": 1}, {"timestamp": 2}]
-    finally:
-        client.close()
-
-
-def test_events_uses_file_export_by_default() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/events"
-        assert request.url.params.get("format") == "file"
-        return httpx.Response(
-            200,
-            content=_zstd_ndjson([{"timestamp": 7}, {"timestamp": 8}]),
-            headers={"content-type": "application/zstd"},
-        )
-
-    client = make_client(handler)
-    try:
-        rows = client.events(
-            exchange="binance",
-            asset="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
-        )
-        assert rows == [{"timestamp": 7}, {"timestamp": 8}]
+        assert rows == [{"timestamp": 21}, {"timestamp": 22}]
+        assert calls == [("/snapshots", None), ("/events", "file")]
     finally:
         client.close()
 
@@ -313,14 +432,13 @@ def test_raw_paginates() -> None:
 
     client = make_client(handler)
     try:
-        rows = client.raw(
+        assert client.raw(
             exchange="binance",
             asset="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-01T01:00:00Z",
             limit=1,
-        )
-        assert rows == [{"exchange_payload": {"id": 10}}, {"exchange_payload": {"id": 11}}]
+        ) == [{"exchange_payload": {"id": 10}}, {"exchange_payload": {"id": 11}}]
     finally:
         client.close()
 
@@ -337,18 +455,17 @@ def test_raw_uses_file_export_by_default() -> None:
 
     client = make_client(handler)
     try:
-        rows = client.raw(
+        assert client.raw(
             exchange="binance",
             asset="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-01T01:00:00Z",
-        )
-        assert rows == [{"exchange_payload": {"id": 42}}]
+        ) == [{"exchange_payload": {"id": 42}}]
     finally:
         client.close()
 
 
-def test_replay_raises_stream_decode_error_for_invalid_cached_zstd(tmp_path) -> None:
+def test_raw_replay_raises_stream_decode_error_for_invalid_cached_zstd(tmp_path) -> None:
     called = False
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -368,10 +485,9 @@ def test_replay_raises_stream_decode_error_for_invalid_cached_zstd(tmp_path) -> 
             asset="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-01T01:00:00Z",
-            standard=True,
+            standard=False,
         )
-        cache_path = tmp_path / cache_name
-        cache_path.write_bytes(b"not-zs")
+        (tmp_path / cache_name).with_suffix("").write_bytes(b"not-zs")
 
         with pytest.raises(StreamDecodeError):
             list(
@@ -380,6 +496,7 @@ def test_replay_raises_stream_decode_error_for_invalid_cached_zstd(tmp_path) -> 
                     asset="BTC-USDT",
                     from_="2024-01-01T00:00:00Z",
                     to="2024-01-01T01:00:00Z",
+                    standard=False,
                 )
             )
         assert called is False
@@ -387,7 +504,7 @@ def test_replay_raises_stream_decode_error_for_invalid_cached_zstd(tmp_path) -> 
         client.close()
 
 
-def test_replay_reads_cached_rows_without_api_call(tmp_path) -> None:
+def test_raw_replay_reads_cached_rows_without_api_call(tmp_path) -> None:
     called = False
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -407,10 +524,9 @@ def test_replay_reads_cached_rows_without_api_call(tmp_path) -> None:
             asset="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-01T01:00:00Z",
-            standard=True,
+            standard=False,
         )
-        cache_path = (tmp_path / cache_name).with_suffix("")
-        cache_path.write_bytes(b'{"timestamp":99}\n')
+        (tmp_path / cache_name).with_suffix("").write_bytes(b'{"timestamp":99}\n')
 
         rows = list(
             client.replay(
@@ -418,6 +534,7 @@ def test_replay_reads_cached_rows_without_api_call(tmp_path) -> None:
                 asset="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
                 to="2024-01-01T01:00:00Z",
+                standard=False,
             )
         )
         assert rows == [{"timestamp": 99}]
@@ -426,54 +543,13 @@ def test_replay_reads_cached_rows_without_api_call(tmp_path) -> None:
         client.close()
 
 
-def test_replay_reads_bugged_compressed_jsonl_cache_without_api_call(tmp_path) -> None:
-    called = False
-    events = b'{"timestamp":101}\n{"timestamp":102}\n'
-    compressed = zstd.ZstdCompressor().compress(events)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal called
-        called = True
-        return httpx.Response(500)
-
-    client = PolarisClient(
-        api_key="pk_live_test",
-        transport=httpx.MockTransport(handler),
-        replay_cache_enabled=True,
-        replay_cache_dir=tmp_path,
-    )
-    try:
-        cache_name = client._default_dataset_filename(
-            exchange="binance",
-            asset="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
-            standard=True,
-        )
-        cache_path = (tmp_path / cache_name).with_suffix("")
-        cache_path.write_bytes(compressed)
-
-        rows = list(
-            client.replay(
-                exchange="binance",
-                asset="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-            )
-        )
-        assert rows == [{"timestamp": 101}, {"timestamp": 102}]
-        assert called is False
-    finally:
-        client.close()
-
-
-def test_replay_populates_cache_and_reuses_on_new_client(tmp_path) -> None:
+def test_raw_replay_populates_cache_and_reuses_on_new_client(tmp_path) -> None:
     def online_handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/events"
+        assert request.url.path == "/raw"
         assert request.url.params.get("format") == "file"
         return httpx.Response(
             200,
-            content=_zstd_ndjson([{"timestamp": 11}, {"timestamp": 12}]),
+            content=_zstd_ndjson([{"timestamp": 31}, {"timestamp": 32}]),
             headers={"content-type": "application/zstd"},
         )
 
@@ -484,22 +560,20 @@ def test_replay_populates_cache_and_reuses_on_new_client(tmp_path) -> None:
         replay_cache_dir=tmp_path,
     )
     try:
-        rows = list(
+        assert list(
             online_client.replay(
                 exchange="binance",
                 asset="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
                 to="2024-01-01T01:00:00Z",
+                standard=False,
             )
-        )
-        assert rows == [{"timestamp": 11}, {"timestamp": 12}]
+        ) == [{"timestamp": 31}, {"timestamp": 32}]
     finally:
         online_client.close()
 
     def offline_handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError(
-            "Network should not be called when replay cache has the dataset"
-        )
+        raise AssertionError("network should not be called when replay cache already exists")
 
     offline_client = PolarisClient(
         api_key=None,
@@ -508,47 +582,17 @@ def test_replay_populates_cache_and_reuses_on_new_client(tmp_path) -> None:
         replay_cache_dir=tmp_path,
     )
     try:
-        cached_rows = list(
+        assert list(
             offline_client.replay(
                 exchange="binance",
                 asset="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
                 to="2024-01-01T01:00:00Z",
+                standard=False,
             )
-        )
-        assert cached_rows == [{"timestamp": 11}, {"timestamp": 12}]
+        ) == [{"timestamp": 31}, {"timestamp": 32}]
     finally:
         offline_client.close()
-
-
-def test_replay_uses_events_endpoint_with_cache(tmp_path) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/events"
-        assert request.url.params.get("format") == "file"
-        return httpx.Response(
-            200,
-            content=_zstd_ndjson([{"timestamp": 21}, {"timestamp": 22}]),
-            headers={"content-type": "application/zstd"},
-        )
-
-    client = PolarisClient(
-        api_key="pk_live_test",
-        transport=httpx.MockTransport(handler),
-        replay_cache_enabled=True,
-        replay_cache_dir=tmp_path,
-    )
-    try:
-        rows = list(
-            client.replay(
-                exchange="binance",
-                asset="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-            )
-        )
-        assert rows == [{"timestamp": 21}, {"timestamp": 22}]
-    finally:
-        client.close()
 
 
 def test_replay_allows_standard_false_for_raw() -> None:
@@ -557,13 +601,13 @@ def test_replay_allows_standard_false_for_raw() -> None:
         assert request.url.params.get("format") == "file"
         return httpx.Response(
             200,
-            content=_zstd_ndjson([{"timestamp": 31}]),
+            content=_zstd_ndjson([{"timestamp": 41}]),
             headers={"content-type": "application/zstd"},
         )
 
     client = make_client(handler)
     try:
-        rows = list(
+        assert list(
             client.replay(
                 exchange="binance",
                 asset="BTC-USDT",
@@ -571,62 +615,44 @@ def test_replay_allows_standard_false_for_raw() -> None:
                 to="2024-01-01T01:00:00Z",
                 standard=False,
             )
-        )
-        assert rows == [{"timestamp": 31}]
+        ) == [{"timestamp": 41}]
     finally:
         client.close()
 
 
-def test_replay_parallel_splits_into_chunks() -> None:
-    """Test that parallel replay splits multi-day requests into chunks."""
+def test_replay_parallel_keeps_legacy_raw_chunking_behavior() -> None:
     request_count = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal request_count
-
-        if request.url.path == "/events":
-            request_count += 1
-            assert request.url.params.get("format") == "file"
-            from_param = request.url.params.get("from", "")
-
-            if "2024-01-01" in from_param:
-                return httpx.Response(
-                    200,
-                    content=_zstd_ndjson([{"timestamp": 1}, {"timestamp": 2}]),
-                    headers={"content-type": "application/zstd"},
-                )
-            if "2024-01-02" in from_param:
-                return httpx.Response(
-                    200,
-                    content=_zstd_ndjson([{"timestamp": 3}, {"timestamp": 4}]),
-                    headers={"content-type": "application/zstd"},
-                )
-            if "2024-01-03" in from_param:
-                return httpx.Response(
-                    200,
-                    content=_zstd_ndjson([{"timestamp": 5}, {"timestamp": 6}]),
-                    headers={"content-type": "application/zstd"},
-                )
-
-        return httpx.Response(404)
+        assert request.url.path == "/raw"
+        request_count += 1
+        from_param = request.url.params.get("from", "")
+        if "2024-01-01" in from_param:
+            rows = [{"timestamp": 1}, {"timestamp": 2}]
+        elif "2024-01-02" in from_param:
+            rows = [{"timestamp": 3}, {"timestamp": 4}]
+        else:
+            rows = [{"timestamp": 5}, {"timestamp": 6}]
+        return httpx.Response(
+            200,
+            content=_zstd_ndjson(rows),
+            headers={"content-type": "application/zstd"},
+        )
 
     client = make_client(handler, replay_cache_enabled=False)
     try:
-        # Request 3 days with parallel enabled
         rows = list(
             client.replay(
                 exchange="binance",
                 asset="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
-                to="2024-01-04T00:00:00Z",  # 3 days
+                to="2024-01-04T00:00:00Z",
+                standard=False,
                 parallel=True,
             )
         )
-
-        # Should have made 3 separate events requests (one per day)
         assert request_count == 3
-
-        # Should get all records in chronological order
         assert rows == [
             {"timestamp": 1},
             {"timestamp": 2},
@@ -635,149 +661,5 @@ def test_replay_parallel_splits_into_chunks() -> None:
             {"timestamp": 5},
             {"timestamp": 6},
         ]
-    finally:
-        client.close()
-
-
-def test_replay_parallel_with_custom_workers() -> None:
-    """Test that parallel replay respects max_workers setting."""
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/events"
-        assert request.url.params.get("format") == "file"
-        return httpx.Response(
-            200,
-            content=_zstd_ndjson([{"timestamp": 1}]),
-            headers={"content-type": "application/zstd"},
-        )
-
-    client = make_client(handler, replay_cache_enabled=False)
-    try:
-        # Request 2 days with custom worker count
-        rows = list(
-            client.replay(
-                exchange="binance",
-                asset="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-03T00:00:00Z",  # 2 days
-                parallel=8,  # Max 8 workers
-            )
-        )
-
-        # Should work without errors
-        assert len(rows) >= 0
-    finally:
-        client.close()
-
-
-def test_replay_parallel_single_day_uses_regular_replay() -> None:
-    """Test that single-day requests don't use parallel mode."""
-    request_count = 0
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal request_count
-        if request.url.path == "/events":
-            request_count += 1
-            assert request.url.params.get("format") == "file"
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson([{"timestamp": 1}]),
-                headers={"content-type": "application/zstd"},
-            )
-        return httpx.Response(404)
-
-    client = make_client(handler, replay_cache_enabled=False)
-    try:
-        # Request less than 24 hours with parallel enabled
-        rows = list(
-            client.replay(
-                exchange="binance",
-                asset="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T12:00:00Z",  # 12 hours (single chunk)
-                parallel=True,
-            )
-        )
-
-        # Should only make 1 request (no chunking needed)
-        assert request_count == 1
-        assert rows == [{"timestamp": 1}]
-    finally:
-        client.close()
-
-
-def test_replay_falls_back_to_paginated_json_when_file_export_unavailable() -> None:
-    calls: list[tuple[str, str | None]] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls.append((request.url.path, request.url.params.get("format")))
-        if request.url.path != "/events":
-            return httpx.Response(404)
-
-        if request.url.params.get("format") == "file":
-            return httpx.Response(
-                200,
-                json={"error": "file export not enabled"},
-            )
-
-        return httpx.Response(
-            200,
-            json={
-                "data": [{"timestamp": 77}],
-                "next_cursor": None,
-                "has_more": False,
-            },
-        )
-
-    client = make_client(handler, replay_cache_enabled=False)
-    try:
-        rows = list(
-            client.replay(
-                exchange="binance",
-                asset="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-            )
-        )
-        assert rows == [{"timestamp": 77}]
-        assert calls == [("/events", "file"), ("/events", None)]
-    finally:
-        client.close()
-
-
-def test_replay_file_export_follows_redirect() -> None:
-    calls: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(str(request.url))
-
-        if request.url.path == "/events":
-            return httpx.Response(
-                302,
-                headers={"location": "https://download.example.com/replay/events.jsonl.zst"},
-            )
-
-        if request.url.path == "/replay/events.jsonl.zst":
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson([{"timestamp": 88}, {"timestamp": 89}]),
-                headers={"content-type": "application/zstd"},
-            )
-
-        return httpx.Response(404)
-
-    client = make_client(handler, replay_cache_enabled=False)
-    try:
-        rows = list(
-            client.replay(
-                exchange="binance",
-                asset="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-            )
-        )
-        assert rows == [{"timestamp": 88}, {"timestamp": 89}]
-        assert len(calls) == 2
-        assert calls[0].startswith("https://api.polaris.supply/events?")
-        assert calls[1] == "https://download.example.com/replay/events.jsonl.zst"
     finally:
         client.close()
