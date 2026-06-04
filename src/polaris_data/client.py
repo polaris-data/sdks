@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import httpx
+import orjson
 import zstandard as zstd
 
 from .errors import (
@@ -75,6 +77,42 @@ def _iter_utc_dates(start: datetime, end: datetime) -> list[date]:
         days.append(current)
         current += timedelta(days=1)
     return days
+
+
+class _ChunkStream(io.RawIOBase):
+    """Expose an iterator of byte chunks as a readable stream."""
+
+    def __init__(self, chunks: Iterator[bytes]) -> None:
+        self._chunks = iter(chunks)
+        self._buffer = bytearray()
+        self._exhausted = False
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: bytearray | memoryview) -> int:
+        if self._exhausted and not self._buffer:
+            return 0
+
+        view = memoryview(buffer).cast("B")
+        target_size = len(view)
+        if target_size == 0:
+            return 0
+
+        while len(self._buffer) < target_size and not self._exhausted:
+            try:
+                chunk = next(self._chunks)
+            except StopIteration:
+                self._exhausted = True
+                break
+            if chunk:
+                self._buffer.extend(chunk)
+
+        written = min(target_size, len(self._buffer))
+        if written:
+            view[:written] = self._buffer[:written]
+            del self._buffer[:written]
+        return written
 
 
 class PolarisClient:
@@ -260,74 +298,51 @@ class PolarisClient:
             cursor = next_cursor
 
     def _parse_ndjson_line(self, line: str | bytes) -> JSONDict:
-        if isinstance(line, bytes):
-            decoded = line.decode("utf-8")
-        else:
-            decoded = line
-
         try:
-            payload = json.loads(decoded)
-        except json.JSONDecodeError as exc:
-            raise StreamDecodeError(f"Invalid NDJSON line: {exc.msg}") from exc
+            payload = orjson.loads(line)
+        except orjson.JSONDecodeError as exc:
+            raise StreamDecodeError(f"Invalid NDJSON line: {exc}") from exc
 
         if not isinstance(payload, dict):
             raise StreamDecodeError("Expected NDJSON line to decode to an object")
 
         return payload
 
-    def _iter_ndjson_from_chunks(self, chunks: Iterator[bytes]) -> Iterator[JSONDict]:
-        buffer = b""
-        for chunk in chunks:
-            if not chunk:
+    def _iter_ndjson_lines(self, lines: Iterator[str]) -> Iterator[JSONDict]:
+        for line in lines:
+            raw_line = line.rstrip("\r\n")
+            if not raw_line:
                 continue
-            buffer += chunk
-            while True:
-                line_end = buffer.find(b"\n")
-                if line_end < 0:
-                    break
-                raw_line = buffer[:line_end].rstrip(b"\r")
-                buffer = buffer[line_end + 1 :]
-                if not raw_line:
-                    continue
-                yield self._parse_ndjson_line(raw_line)
+            yield self._parse_ndjson_line(raw_line)
 
-        tail = buffer.rstrip(b"\r")
-        if tail:
-            yield self._parse_ndjson_line(tail)
+    def _iter_ndjson_file(self, path: Path, chunk_size: int) -> Iterator[JSONDict]:
+        with path.open("r", encoding="utf-8", buffering=chunk_size, newline="") as file:
+            yield from self._iter_ndjson_lines(file)
 
-    def _iter_zstd_decompressed_chunks(
-        self, chunks: Iterator[bytes]
-    ) -> Iterator[bytes]:
-        decompressor = zstd.ZstdDecompressor().decompressobj()
+    def _iter_ndjson_zstd_file(self, path: Path, chunk_size: int) -> Iterator[JSONDict]:
         try:
-            for chunk in chunks:
-                if not chunk:
-                    continue
-                decoded = decompressor.decompress(chunk)
-                if decoded:
-                    yield decoded
-            tail = decompressor.flush()
-            if tail:
-                yield tail
+            with path.open("rb", buffering=chunk_size) as file:
+                with zstd.ZstdDecompressor().stream_reader(file) as reader:
+                    with io.TextIOWrapper(
+                        reader,
+                        encoding="utf-8",
+                        newline="",
+                    ) as text_reader:
+                        yield from self._iter_ndjson_lines(text_reader)
         except zstd.ZstdError as exc:
             raise StreamDecodeError(f"Invalid zstd stream: {exc}") from exc
 
-    def _iter_file_chunks(self, path: Path, chunk_size: int) -> Iterator[bytes]:
-        with path.open("rb") as file:
-            while True:
-                chunk = file.read(chunk_size)
-                if not chunk:
-                    break
-                yield chunk
-
-    def _iter_ndjson_file(self, path: Path, chunk_size: int) -> Iterator[JSONDict]:
-        return self._iter_ndjson_from_chunks(self._iter_file_chunks(path, chunk_size))
-
-    def _iter_ndjson_zstd_file(self, path: Path, chunk_size: int) -> Iterator[JSONDict]:
-        decompressed_chunks = self._iter_zstd_decompressed_chunks(
-            self._iter_file_chunks(path, chunk_size)
-        )
-        return self._iter_ndjson_from_chunks(decompressed_chunks)
+    def _iter_ndjson_zstd_stream(self, chunks: Iterator[bytes]) -> Iterator[JSONDict]:
+        try:
+            with zstd.ZstdDecompressor().stream_reader(_ChunkStream(chunks)) as reader:
+                with io.TextIOWrapper(
+                    reader,
+                    encoding="utf-8",
+                    newline="",
+                ) as text_reader:
+                    yield from self._iter_ndjson_lines(text_reader)
+        except zstd.ZstdError as exc:
+            raise StreamDecodeError(f"Invalid zstd stream: {exc}") from exc
 
     def _iter_file_export_data(
         self,
@@ -357,10 +372,9 @@ class PolarisClient:
                     status_code=response.status_code,
                 )
 
-            decompressed_chunks = self._iter_zstd_decompressed_chunks(
+            yield from self._iter_ndjson_zstd_stream(
                 response.iter_bytes(chunk_size=chunk_size)
             )
-            yield from self._iter_ndjson_from_chunks(decompressed_chunks)
 
     def _iter_dataset_data(
         self,
@@ -487,7 +501,7 @@ class PolarisClient:
                 if start_micros is not None and timestamp < start_micros:
                     continue
                 if end_micros is not None and timestamp >= end_micros:
-                    continue
+                    return
                 yield row
 
     def _filter_local_snapshots(
@@ -517,7 +531,15 @@ class PolarisClient:
         *,
         exchange: str,
         asset: str,
+        required_dates: set[date] | None = None,
     ) -> dict[date, Path]:
+        if required_dates is not None:
+            return {
+                day: path
+                for day in sorted(required_dates)
+                if (path := self.layout.daily_path_for_dataset_day(exchange, asset, day)).exists()
+            }
+
         artifacts = self.layout.list_local_daily_artifacts()
         result: dict[date, Path] = {}
         for artifact in artifacts:
@@ -537,7 +559,11 @@ class PolarisClient:
         required_dates: set[date] | None = None,
         force: bool = False,
     ) -> dict[date, Path]:
-        daily_paths = self._daily_artifact_paths(exchange=exchange, asset=asset)
+        daily_paths = self._daily_artifact_paths(
+            exchange=exchange,
+            asset=asset,
+            required_dates=required_dates,
+        )
         snapshots = self._filter_local_snapshots(
             self.layout.list_local_snapshots(),
             exchange=exchange,
@@ -843,9 +869,15 @@ class PolarisClient:
         if start is not None and end is not None and start >= end:
             raise ValueError("from_ must be before to")
 
+        required_dates = (
+            set(_iter_utc_dates(start, end))
+            if start is not None and end is not None
+            else None
+        )
         daily_paths = self._materialize_local_daily_artifacts(
             exchange=exchange,
             asset=asset,
+            required_dates=required_dates,
         )
 
         last_inclusive = (
@@ -1078,11 +1110,11 @@ class PolarisClient:
             try:
                 temp_cache_path = cache_path.with_name(f".{cache_path.name}.part")
                 temp_cache_path.parent.mkdir(parents=True, exist_ok=True)
-                cache_file = temp_cache_path.open("w", encoding="utf-8")
+                cache_file = temp_cache_path.open("wb")
 
                 for row in rows:
-                    line = json.dumps(row, separators=(",", ":"), ensure_ascii=True)
-                    cache_file.write(f"{line}\n")
+                    cache_file.write(orjson.dumps(row))
+                    cache_file.write(b"\n")
                     yield row
 
                 cache_file.close()

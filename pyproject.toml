@@ -14,6 +14,7 @@ authors = [
 ]
 dependencies = [
   "httpx>=0.27.0",
+  "orjson>=3.10.0",
   "zstandard>=0.23.0"
 ]
 keywords = ["polaris", "market-data", "trading", "sdk"]

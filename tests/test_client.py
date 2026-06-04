@@ -338,6 +338,73 @@ def test_replay_reads_local_snapshot_day_files_before_network(tmp_path) -> None:
         client.close()
 
 
+def test_replay_uses_direct_daily_paths_without_scanning_tree(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("network should not be called when local daily files exist")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        daily_path = client.layout.daily_path_for_dataset_day(
+            "binance",
+            "BTC-USDT",
+            date(2024, 1, 1),
+        )
+        daily_path.parent.mkdir(parents=True, exist_ok=True)
+        daily_path.write_bytes(_zstd_ndjson([{"timestamp": 1704067200000000}]))
+
+        def fail_scan():
+            raise AssertionError("daily tree scan should not be used for known replay days")
+
+        client.layout.list_local_daily_artifacts = fail_scan  # type: ignore[method-assign]
+
+        rows = list(
+            client.replay(
+                exchange="binance",
+                asset="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-02T00:00:00Z",
+            )
+        )
+        assert rows == [{"timestamp": 1704067200000000}]
+    finally:
+        client.close()
+
+
+def test_iter_local_events_stops_after_to_boundary_on_ordered_day_files(tmp_path) -> None:
+    client = make_client(lambda request: httpx.Response(500), dataset_root=tmp_path)
+    try:
+        day_one = client.layout.daily_path_for_dataset_day(
+            "binance",
+            "BTC-USDT",
+            date(2024, 1, 1),
+        )
+        day_two = client.layout.daily_path_for_dataset_day(
+            "binance",
+            "BTC-USDT",
+            date(2024, 1, 2),
+        )
+        day_one.parent.mkdir(parents=True, exist_ok=True)
+        day_two.parent.mkdir(parents=True, exist_ok=True)
+        day_one.write_bytes(_zstd_ndjson([{"timestamp": 1704110400000000}]))
+        day_two.write_bytes(
+            zstd.ZstdCompressor().compress(
+                b'{"timestamp":1704175200000000}\nnot-json\n'
+            )
+        )
+
+        rows = list(
+            client.iter_local_events(
+                exchange="binance",
+                asset="BTC-USDT",
+                from_="2024-01-01T12:00:00Z",
+                to="2024-01-02T06:00:00Z",
+            )
+        )
+        assert rows == [{"timestamp": 1704110400000000}]
+    finally:
+        client.close()
+
+
 def test_events_use_snapshot_download_flow_by_default(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/snapshots":
