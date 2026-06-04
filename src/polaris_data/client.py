@@ -38,7 +38,7 @@ DEFAULT_BASE_URL = "https://api.polaris.supply"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_NETWORK_CHUNK_SIZE = 8 * 1024 * 1024  # 8MB for network downloads
 DEFAULT_FILE_CHUNK_SIZE = 1 * 1024 * 1024  # 1MB for file operations
-USER_AGENT = "polaris-py/0.5.0"
+USER_AGENT = "polaris-py/0.5.1"
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 
