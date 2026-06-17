@@ -29,7 +29,6 @@ from .layout import (
 from .models import (
     JSONDict,
     LocalSnapshotEntry,
-    OhlcvParquetResponse,
     SnapshotEntry,
 )
 from .utils import TimeInput, chunk_timerange, to_datetime, to_iso8601
@@ -40,6 +39,16 @@ DEFAULT_NETWORK_CHUNK_SIZE = 8 * 1024 * 1024  # 8MB for network downloads
 DEFAULT_FILE_CHUNK_SIZE = 1 * 1024 * 1024  # 1MB for file operations
 USER_AGENT = "polaris-py/0.5.1"
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+_INTERVAL_US = {
+    "100ms": 100_000,
+    "1s": 1_000_000,
+    "10s": 10_000_000,
+    "1m": 60_000_000,
+    "5m": 300_000_000,
+    "15m": 900_000_000,
+    "1h": 3_600_000_000,
+}
+_VOL_SCALE = 1_000_000_000_000
 
 
 def _safe_filename_fragment(value: str) -> str:
@@ -64,6 +73,106 @@ def _datetime_to_epoch_micros(value: datetime) -> int:
     else:
         value = value.astimezone(timezone.utc)
     return int(value.timestamp() * 1_000_000)
+
+
+def _interval_to_us(interval: str) -> int | None:
+    return _INTERVAL_US.get(interval)
+
+
+def _to_tradingview_ohlcv(
+    bars: list[JSONDict],
+) -> JSONDict:
+    candles: list[JSONDict] = []
+    volumes: list[JSONDict] = []
+    for bar in bars:
+        timestamp = bar["timestamp"] / 1_000_000
+        candles.append(
+            {
+                "time": timestamp,
+                "open": bar["open"],
+                "high": bar["high"],
+                "low": bar["low"],
+                "close": bar["close"],
+            }
+        )
+        volumes.append({"time": timestamp, "value": bar["volume"]})
+    return {"candles": candles, "volumes": volumes}
+
+
+class _LocalOhlcvAggregator:
+    def __init__(self, interval: str) -> None:
+        us = _interval_to_us(interval)
+        if us is None:
+            supported = ", ".join(_INTERVAL_US)
+            raise ValueError(f"Unsupported interval: {interval}. Supported: {supported}")
+        self._interval = interval
+        self._interval_us = us
+        self._bars: dict[int, dict[str, int | float | str]] = {}
+
+    def push(self, event: JSONDict) -> None:
+        if event.get("type") != "trade":
+            return
+
+        timestamp = event.get("timestamp")
+        data = event.get("data")
+        if not isinstance(timestamp, (int, float)) or not isinstance(data, dict):
+            return
+
+        price = data.get("price")
+        quantity = data.get("quantity")
+        if not isinstance(price, (int, float)) or not isinstance(quantity, (int, float)):
+            return
+
+        bucket = int(timestamp // self._interval_us) * self._interval_us
+        bar = self._bars.get(bucket)
+        if bar is None:
+            self._bars[bucket] = {
+                "timestamp": bucket,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume_scaled": round(quantity * _VOL_SCALE),
+                "trades": 1,
+                "interval": self._interval,
+                "open_ts": int(timestamp),
+                "close_ts": int(timestamp),
+            }
+            return
+
+        if price > bar["high"]:
+            bar["high"] = price
+        if price < bar["low"]:
+            bar["low"] = price
+        if timestamp < bar["open_ts"]:
+            bar["open"] = price
+            bar["open_ts"] = int(timestamp)
+        if timestamp >= bar["close_ts"]:
+            bar["close"] = price
+            bar["close_ts"] = int(timestamp)
+        bar["volume_scaled"] += round(quantity * _VOL_SCALE)
+        bar["trades"] += 1
+
+    def finish(self) -> list[JSONDict]:
+        result: list[JSONDict] = []
+        for bar in self._bars.values():
+            result.append(
+                {
+                    "timestamp": int(bar["timestamp"]),
+                    "open": float(bar["open"]),
+                    "high": float(bar["high"]),
+                    "low": float(bar["low"]),
+                    "close": float(bar["close"]),
+                    "volume": int(bar["volume_scaled"]) / _VOL_SCALE,
+                    "trades": int(bar["trades"]),
+                    "interval": str(bar["interval"]),
+                }
+            )
+
+        result.sort(key=lambda item: int(item["timestamp"]))
+        for index in range(1, len(result)):
+            result[index]["open"] = result[index - 1]["close"]
+        return result
 
 
 def _iter_utc_dates(start: datetime, end: datetime) -> list[date]:
@@ -761,6 +870,48 @@ class PolarisClient:
             fallback_limit=fallback_limit,
         )
 
+    def _iter_standard_trades_with_snapshots(
+        self,
+        *,
+        exchange: str,
+        asset: str,
+        from_: TimeInput,
+        to: TimeInput,
+        fallback_limit: int | None = None,
+        chunk_size: int = DEFAULT_NETWORK_CHUNK_SIZE,
+        timeout: float | None = None,
+    ) -> Iterator[JSONDict]:
+        for row in self._iter_standard_events_with_snapshots(
+            exchange=exchange,
+            asset=asset,
+            from_=from_,
+            to=to,
+            fallback_limit=fallback_limit,
+            chunk_size=chunk_size,
+            timeout=timeout,
+        ):
+            if row.get("type") == "trade":
+                yield row
+
+    def _aggregate_ohlcv_from_standard_trades(
+        self,
+        *,
+        exchange: str,
+        asset: str,
+        from_: TimeInput,
+        to: TimeInput,
+        interval: str,
+    ) -> list[JSONDict]:
+        aggregator = _LocalOhlcvAggregator(interval)
+        for row in self._iter_standard_trades_with_snapshots(
+            exchange=exchange,
+            asset=asset,
+            from_=from_,
+            to=to,
+        ):
+            aggregator.push(row)
+        return aggregator.finish()
+
     def health(self) -> JSONDict:
         return self._get_json("health")
 
@@ -1185,9 +1336,13 @@ class PolarisClient:
         to: TimeInput,
         limit: int = 1000,
     ) -> Iterator[JSONDict]:
-        params = self._range_params(exchange, asset, from_, to)
-        params["limit"] = str(limit)
-        return self._iter_paginated_data("trades", params=params, auth_required=True)
+        yield from self._iter_standard_trades_with_snapshots(
+            exchange=exchange,
+            asset=asset,
+            from_=from_,
+            to=to,
+            fallback_limit=limit,
+        )
 
     def events(
         self,
@@ -1275,21 +1430,29 @@ class PolarisClient:
         to: TimeInput,
         interval: str,
         format: str | None = None,
-    ) -> list[JSONDict] | JSONDict | OhlcvParquetResponse:
+    ) -> list[JSONDict] | JSONDict:
+        if _interval_to_us(interval) is None:
+            raise ValueError(
+                "interval must be one of: " + ", ".join(_INTERVAL_US)
+            )
+
         if format is None:
-            params = self._range_params(exchange, asset, from_, to)
-            params["interval"] = interval
-            headers = self._auth_headers(auth_required=True)
-            with self._client.stream("GET", "ohlcv", params=params, headers=headers) as response:
-                self._raise_for_status(response)
-                return [self._parse_ndjson_line(line) for line in response.iter_lines() if line]
+            return self._aggregate_ohlcv_from_standard_trades(
+                exchange=exchange,
+                asset=asset,
+                from_=from_,
+                to=to,
+                interval=interval,
+            )
 
-        if format not in {"tradingview", "parquet"}:
-            raise ValueError("format must be one of: None, 'tradingview', 'parquet'")
+        if format != "tradingview":
+            raise ValueError("format must be one of: None, 'tradingview'")
 
-        params = self._range_params(exchange, asset, from_, to)
-        params["interval"] = interval
-        params["format"] = format
-
-        payload = self._get_json("ohlcv", params=params, auth_required=True)
-        return payload
+        bars = self._aggregate_ohlcv_from_standard_trades(
+            exchange=exchange,
+            asset=asset,
+            from_=from_,
+            to=to,
+            interval=interval,
+        )
+        return _to_tradingview_ohlcv(bars)

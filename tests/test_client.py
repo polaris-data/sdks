@@ -61,7 +61,7 @@ def test_catalog_returns_payload() -> None:
         client.close()
 
 
-def test_unauthorized_requires_api_key_before_request() -> None:
+def test_unauthorized_raw_requires_api_key_before_request() -> None:
     called = False
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -72,7 +72,7 @@ def test_unauthorized_requires_api_key_before_request() -> None:
     client = make_client(handler, api_key=None)
     try:
         with pytest.raises(UnauthorizedError):
-            client.trades(
+            client.raw(
                 exchange="binance",
                 asset="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
@@ -104,20 +104,96 @@ def test_rate_limited_error_maps_reset_at() -> None:
         client.close()
 
 
-def test_trades_paginates() -> None:
+def test_trades_use_snapshot_download_flow_by_default(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/trades"
-        cursor = request.url.params.get("cursor")
-        if cursor is None:
+        if request.url.path == "/snapshots":
             return httpx.Response(
                 200,
-                json={"data": [{"id": 1}], "next_cursor": "cursor-2", "has_more": True},
+                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1}]},
             )
-        assert cursor == "cursor-2"
-        return httpx.Response(
-            200,
-            json={"data": [{"id": 2}], "next_cursor": None, "has_more": False},
-        )
+        if request.url.path == "/snapshots/download":
+            return httpx.Response(
+                302,
+                headers={"location": "https://download.example.com/day-1-trades.jsonl.zst"},
+            )
+        if request.url.host == "download.example.com":
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(
+                    [
+                        {
+                            "timestamp": 1704067200000000,
+                            "type": "trade",
+                            "data": {"price": 100.0, "quantity": 0.5},
+                        },
+                        {
+                            "timestamp": 1704067201000000,
+                            "type": "datapoint",
+                            "data": {"funding": 0.01},
+                        },
+                        {
+                            "timestamp": 1704067202000000,
+                            "type": "trade",
+                            "data": {"price": 101.0, "quantity": 0.25},
+                        },
+                    ]
+                ),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        assert client.trades(
+            exchange="binance",
+            asset="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T01:00:00Z",
+        ) == [
+            {
+                "timestamp": 1704067200000000,
+                "type": "trade",
+                "data": {"price": 100.0, "quantity": 0.5},
+            },
+            {
+                "timestamp": 1704067202000000,
+                "type": "trade",
+                "data": {"price": 101.0, "quantity": 0.25},
+            },
+        ]
+    finally:
+        client.close()
+
+
+def test_trades_fall_back_to_events_when_snapshot_coverage_is_incomplete() -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.path, request.url.params.get("format")))
+        if request.url.path == "/snapshots":
+            return httpx.Response(200, json={"snapshots": []})
+        if request.url.path == "/events":
+            assert request.url.params.get("format") == "file"
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(
+                    [
+                        {
+                            "timestamp": 1,
+                            "type": "trade",
+                            "data": {"price": 100.0, "quantity": 1.0},
+                        },
+                        {"timestamp": 2, "type": "bar", "data": {"close": 100.5}},
+                        {
+                            "timestamp": 3,
+                            "type": "trade",
+                            "data": {"price": 101.0, "quantity": 2.0},
+                        },
+                    ]
+                ),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
 
     client = make_client(handler)
     try:
@@ -126,38 +202,145 @@ def test_trades_paginates() -> None:
             asset="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-01T01:00:00Z",
-            limit=1,
-        ) == [{"id": 1}, {"id": 2}]
+        ) == [
+            {"timestamp": 1, "type": "trade", "data": {"price": 100.0, "quantity": 1.0}},
+            {"timestamp": 3, "type": "trade", "data": {"price": 101.0, "quantity": 2.0}},
+        ]
+        assert calls == [("/snapshots", None), ("/events", "file")]
     finally:
         client.close()
 
 
-def test_ohlcv_tradingview_format_returns_json() -> None:
-    payload = {
-        "candles": [
-            {"time": 1704067200000000, "open": 1, "high": 2, "low": 0, "close": 1.5}
-        ],
-        "volumes": [{"time": 1704067200000000, "value": 10}],
-    }
-
+def test_ohlcv_aggregates_from_snapshot_download_flow(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/ohlcv"
-        assert request.url.params.get("format") == "tradingview"
-        return httpx.Response(200, json=payload)
+        if request.url.path == "/snapshots":
+            return httpx.Response(200, json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1}]})
+        if request.url.path == "/snapshots/download":
+            return httpx.Response(
+                302,
+                headers={"location": "https://download.example.com/day-1-ohlcv.jsonl.zst"},
+            )
+        if request.url.host == "download.example.com":
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(
+                    [
+                        {
+                            "timestamp": 1704067205000000,
+                            "type": "trade",
+                            "data": {"price": 100.0, "quantity": 1.0},
+                        },
+                        {
+                            "timestamp": 1704067201000000,
+                            "type": "trade",
+                            "data": {"price": 95.0, "quantity": 2.0},
+                        },
+                        {
+                            "timestamp": 1704067240000000,
+                            "type": "trade",
+                            "data": {"price": 105.0, "quantity": 3.0},
+                        },
+                        {
+                            "timestamp": 1704067260000000,
+                            "type": "trade",
+                            "data": {"price": 103.0, "quantity": 4.0},
+                        },
+                    ]
+                ),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
 
-    client = make_client(handler)
+    client = make_client(handler, dataset_root=tmp_path)
     try:
-        assert (
+        assert client.ohlcv(
+            exchange="binance",
+            asset="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T00:02:00Z",
+            interval="1m",
+        ) == [
+            {
+                "timestamp": 1704067200000000,
+                "open": 95.0,
+                "high": 105.0,
+                "low": 95.0,
+                "close": 105.0,
+                "volume": 6.0,
+                "trades": 3,
+                "interval": "1m",
+            },
+            {
+                "timestamp": 1704067260000000,
+                "open": 105.0,
+                "high": 103.0,
+                "low": 103.0,
+                "close": 103.0,
+                "volume": 4.0,
+                "trades": 1,
+                "interval": "1m",
+            },
+        ]
+    finally:
+        client.close()
+
+
+def test_ohlcv_tradingview_format_returns_local_json(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshots":
+            return httpx.Response(200, json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1}]})
+        if request.url.path == "/snapshots/download":
+            return httpx.Response(
+                302,
+                headers={"location": "https://download.example.com/day-1-tv.jsonl.zst"},
+            )
+        if request.url.host == "download.example.com":
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(
+                    [
+                        {
+                            "timestamp": 1704067200000000,
+                            "type": "trade",
+                            "data": {"price": 100.0, "quantity": 1.5},
+                        }
+                    ]
+                ),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        assert client.ohlcv(
+            exchange="binance",
+            asset="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T00:01:00Z",
+            interval="1m",
+            format="tradingview",
+        ) == {
+            "candles": [
+                {"time": 1704067200.0, "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0}
+            ],
+            "volumes": [{"time": 1704067200.0, "value": 1.5}],
+        }
+    finally:
+        client.close()
+
+
+def test_ohlcv_rejects_stale_parquet_format() -> None:
+    client = make_client(lambda request: httpx.Response(500))
+    try:
+        with pytest.raises(ValueError, match="format must be one of: None, 'tradingview'"):
             client.ohlcv(
                 exchange="binance",
                 asset="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
+                to="2024-01-01T00:01:00Z",
                 interval="1m",
-                format="tradingview",
+                format="parquet",
             )
-            == payload
-        )
     finally:
         client.close()
 

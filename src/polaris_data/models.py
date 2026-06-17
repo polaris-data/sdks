@@ -21,12 +21,6 @@ class DownloadUrlResponse(TypedDict):
     fileCount: int
 
 
-class OhlcvParquetResponse(TypedDict):
-    url: str
-    sizeBytes: int
-    barCount: int
-
-
 @dataclass(frozen=True)
 class SnapshotEntry:
     """Remote standardized snapshot metadata."""

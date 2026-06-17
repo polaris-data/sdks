@@ -67,10 +67,10 @@ Authenticated endpoints:
 
 - `download_snapshots(exchange=..., asset=..., from_=..., to=..., force=False)`
 - `replay(exchange=..., asset=..., from_=..., to=..., standard=True)` (snapshot-first iterator over standardized events or `/raw`)
-- `trades(exchange=..., asset=..., from_=..., to=..., limit=1000)` (collects all pages)
+- `trades(exchange=..., asset=..., from_=..., to=..., limit=1000)` (snapshot-first list of standardized trade events)
 - `events(exchange=..., asset=..., from_=..., to=..., limit=1000)` (snapshot-first list for standardized events)
 - `raw(exchange=..., asset=..., from_=..., to=..., limit=1000)` (prefers `format=file`, falls back to paginated JSON)
-- `ohlcv(exchange=..., asset=..., from_=..., to=..., interval=..., format=None)`
+- `ohlcv(exchange=..., asset=..., from_=..., to=..., interval=..., format=None)` (snapshot-first local OHLCV aggregation; optional `format="tradingview"`)
 
 For event/data endpoints, `standard=True` is the default. Pass `standard=False` when you explicitly need raw schema payloads.
 
@@ -101,7 +101,7 @@ Pass `dataset_root=...` to `PolarisClient(...)` to override the root explicitly.
 
 ## Snapshot-first replay
 
-For standardized historical events, `replay(...)` and `events(...)` now prefer `/snapshots` + `/snapshots/download` and read from local day files when they already exist:
+For standardized historical data, `replay(...)`, `events(...)`, `trades(...)`, and default/tradingview `ohlcv(...)` now prefer `/snapshots` + `/snapshots/download` and read from local day files when they already exist:
 
 ```python
 from polaris_data import PolarisClient
@@ -143,7 +143,7 @@ with PolarisClient() as client:
     print(len(rows))
 ```
 
-If the requested standardized range cannot be satisfied from daily snapshots, the SDK falls back to the legacy `/events?format=file` flow.
+If the requested standardized range cannot be satisfied from daily snapshots, the SDK falls back to the legacy `/events?format=file` flow for standardized replay, event, trade, and local OHLCV derivation.
 
 ## Legacy replay cache
 
