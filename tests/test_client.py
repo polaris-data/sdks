@@ -386,7 +386,7 @@ def test_list_snapshots_paginates_across_data_and_snapshots_fields() -> None:
         client.close()
 
 
-def test_download_snapshots_saves_files_and_materializes_daily_artifacts(tmp_path) -> None:
+def test__download_snapshots_saves_files_and_materializes_daily_artifacts(tmp_path) -> None:
     calls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -413,7 +413,7 @@ def test_download_snapshots_saves_files_and_materializes_daily_artifacts(tmp_pat
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        entries = client.download_snapshots(
+        entries = client._download_snapshots(
             exchange="binance",
             asset="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
@@ -427,7 +427,7 @@ def test_download_snapshots_saves_files_and_materializes_daily_artifacts(tmp_pat
         client.close()
 
 
-def test_list_local_snapshots_filters_by_exchange_asset_and_date(tmp_path) -> None:
+def test__list_local_snapshots_filters_by_exchange_asset_and_date(tmp_path) -> None:
     client = make_client(lambda request: httpx.Response(500), dataset_root=tmp_path)
     try:
         first = client.layout.data_path_for_key(SNAPSHOT_KEY_DAY_1)
@@ -439,14 +439,14 @@ def test_list_local_snapshots_filters_by_exchange_asset_and_date(tmp_path) -> No
         first.write_bytes(_zstd_ndjson([{"timestamp": 1}]))
         second.write_bytes(_zstd_ndjson([{"timestamp": 2}]))
 
-        assert len(client.list_local_snapshots()) == 2
-        assert len(client.list_local_snapshots(exchange="binance", asset="BTC-USDT")) == 1
-        assert len(client.list_local_snapshots(date="2024-01-01")) == 2
+        assert len(client._list_local_snapshots()) == 2
+        assert len(client._list_local_snapshots(exchange="binance", asset="BTC-USDT")) == 1
+        assert len(client._list_local_snapshots(date="2024-01-01")) == 2
     finally:
         client.close()
 
 
-def test_iter_local_events_filters_across_materialized_days(tmp_path) -> None:
+def test__iter_local_events_filters_across_materialized_days(tmp_path) -> None:
     client = make_client(lambda request: httpx.Response(500), dataset_root=tmp_path)
     try:
         day_one = client.layout.daily_path_for_dataset_day(
@@ -472,7 +472,7 @@ def test_iter_local_events_filters_across_materialized_days(tmp_path) -> None:
         day_two.write_bytes(_zstd_ndjson([{"timestamp": 1704153600000000}]))
 
         rows = list(
-            client.iter_local_events(
+            client._iter_local_events(
                 exchange="binance",
                 asset="BTC-USDT",
                 from_="2024-01-01T12:00:00Z",
@@ -553,7 +553,7 @@ def test_replay_uses_direct_daily_paths_without_scanning_tree(tmp_path) -> None:
         client.close()
 
 
-def test_iter_local_events_stops_after_to_boundary_on_ordered_day_files(tmp_path) -> None:
+def test__iter_local_events_stops_after_to_boundary_on_ordered_day_files(tmp_path) -> None:
     client = make_client(lambda request: httpx.Response(500), dataset_root=tmp_path)
     try:
         day_one = client.layout.daily_path_for_dataset_day(
@@ -576,7 +576,7 @@ def test_iter_local_events_stops_after_to_boundary_on_ordered_day_files(tmp_path
         )
 
         rows = list(
-            client.iter_local_events(
+            client._iter_local_events(
                 exchange="binance",
                 asset="BTC-USDT",
                 from_="2024-01-01T12:00:00Z",

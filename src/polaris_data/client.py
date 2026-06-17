@@ -976,7 +976,7 @@ class PolarisClient:
 
         return [snapshots[key] for key in sorted(snapshots)]
 
-    def download_snapshots(
+    def _download_snapshots(
         self,
         *,
         exchange: str,
@@ -993,7 +993,7 @@ class PolarisClient:
         )
         return self._ensure_local_snapshot_entries(snapshots, force=force)
 
-    def list_local_snapshots(
+    def _list_local_snapshots(
         self,
         *,
         exchange: str | None = None,
@@ -1007,7 +1007,7 @@ class PolarisClient:
             date_filter=date,
         )
 
-    def iter_local_events(
+    def _iter_local_events(
         self,
         *,
         exchange: str,
