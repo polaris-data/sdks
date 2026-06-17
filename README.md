@@ -3,17 +3,24 @@
 Python SDK for the Polaris API, optimized for notebook workflows and trading scripts.
 Documentation can be found at https://polaris.supply/docs
 
-## Install (uv)
+## Install
+
+Install the published SDK from PyPI:
 
 ```bash
-uv sync --group dev
+pip install polaris-data
 ```
 
-Useful commands:
+If you use `uv`, install it into a project with:
 
 ```bash
-uv run python
-uv lock
+uv add polaris-data
+```
+
+Or install it into the active environment with:
+
+```bash
+uv pip install polaris-data
 ```
 
 ## Quickstart
@@ -44,35 +51,63 @@ with PolarisClient(api_key="polaris_key_your_key") as client:
 
 If `api_key` is omitted, the client reads `POLARIS_API_KEY` from the environment.
 
-## Supported input time types
+## PolarisClient API
 
-Methods that take `from_` and `to` accept:
+`PolarisClient` is the main sync client for the SDK:
 
-- ISO 8601 strings (`"2024-01-01T00:00:00Z"`)
-- `datetime.datetime`
-- `datetime.date`
-- Unix epoch microseconds (`int`/`float`)
+```python
+PolarisClient(
+    api_key=None,
+    base_url="https://api.polaris.supply",
+    timeout=30.0,
+    dataset_root=None,
+)
+```
 
-## Methods
+Use it to inspect available data, download snapshots for local reuse, and query historical market data.
 
-Open endpoints:
+### Discovery
 
-- `health()`
-- `catalog(exchange=None, asset=None)`
-- `list_snapshots(exchange=..., asset=..., from_=..., to=..., limit=1000)`
-- `list_local_snapshots(exchange=None, asset=None, date=None)`
-- `iter_local_events(exchange=..., asset=..., from_=None, to=None)`
+- `health()`: Check API availability.
+- `catalog(exchange=None, asset=None)`: Browse supported exchanges and assets.
+- `list_snapshots(exchange=..., asset=..., from_=..., to=..., limit=1000)`: List available snapshot files for a time range.
 
-Authenticated endpoints:
+Example:
 
-- `download_snapshots(exchange=..., asset=..., from_=..., to=..., force=False)`
-- `replay(exchange=..., asset=..., from_=..., to=..., standard=True)` (snapshot-first iterator over standardized events or `/raw`)
-- `trades(exchange=..., asset=..., from_=..., to=..., limit=1000)` (snapshot-first list of standardized trade events)
-- `events(exchange=..., asset=..., from_=..., to=..., limit=1000)` (snapshot-first list for standardized events)
-- `raw(exchange=..., asset=..., from_=..., to=..., limit=1000)` (prefers `format=file`, falls back to paginated JSON)
-- `ohlcv(exchange=..., asset=..., from_=..., to=..., interval=..., format=None)` (snapshot-first local OHLCV aggregation; optional `format="tradingview"`)
+```python
+from polaris_data import PolarisClient
 
-For event/data endpoints, `standard=True` is the default. Pass `standard=False` when you explicitly need raw schema payloads.
+with PolarisClient(api_key="polaris_key_your_key") as client:
+    catalog = client.catalog()
+    print(catalog)
+```
+
+Example response shape:
+
+```python
+{
+    "exchanges": [
+        {"id": "binance", "assets": ["BTC-USDT"]},
+        {"id": "hyperliquid", "assets": ["BTC", "ETH"]},
+    ]
+}
+```
+
+### Local dataset helpers
+
+- `download_snapshots(exchange=..., asset=..., from_=..., to=..., force=False)`: Download snapshot files into the local Polaris dataset cache.
+- `list_local_snapshots(exchange=None, asset=None, date=None)`: Inspect snapshots that already exist on disk.
+- `iter_local_events(exchange=..., asset=..., from_=None, to=None)`: Stream standardized events from local day files without hitting the API.
+
+### Historical data
+
+- `replay(exchange=..., asset=..., from_=..., to=..., standard=True, parallel=False)`: Stream historical events for backfills, notebooks, or replay-style processing.
+- `events(exchange=..., asset=..., from_=..., to=..., limit=1000)`: Return standardized historical events as a list.
+- `trades(exchange=..., asset=..., from_=..., to=..., limit=1000)`: Return standardized trade events as a list.
+- `raw(exchange=..., asset=..., from_=..., to=..., limit=1000)`: Return raw exchange payloads as a list.
+- `ohlcv(exchange=..., asset=..., from_=..., to=..., interval=..., format=None)`: Aggregate OHLCV bars from standardized trade data.
+
+For historical event queries, `standard=True` is the default. Pass `standard=False` when you explicitly want raw schema payloads through `replay(...)`. Methods that take `from_` and `to` accept ISO 8601 strings, `datetime`, `date`, or Unix epoch microseconds.
 
 ## Local dataset storage
 
@@ -144,15 +179,6 @@ with PolarisClient() as client:
 ```
 
 If the requested standardized range cannot be satisfied from daily snapshots, the SDK falls back to the legacy `/events?format=file` flow for standardized replay, event, trade, and local OHLCV derivation.
-
-## Legacy replay cache
-
-`replay_cache_enabled` and `replay_cache_dir` are kept for legacy replay behavior, including `standard=False` raw replays and standardized fallback-to-`/events` cases.
-The default legacy replay cache path is:
-
-- `<dataset_root>/cache/replay`
-
-Use `replay_cache_enabled=False` to disable caching, or `replay_cache_dir=...` to set a custom path.
 
 ## Error handling
 
