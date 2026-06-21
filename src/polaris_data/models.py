@@ -36,8 +36,8 @@ class LocalSnapshotEntry:
     key: str
     path: str
     filename: str
-    exchange: str | None
-    asset: str | None
+    source: str | None
+    market: str | None
     date: str | None
     start: datetime | None
     end: datetime | None

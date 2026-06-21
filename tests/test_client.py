@@ -9,7 +9,12 @@ import pytest
 import zstandard as zstd
 
 from polaris_data import PolarisClient
-from polaris_data.errors import RateLimitedError, StreamDecodeError, UnauthorizedError
+from polaris_data.errors import (
+    PolarisError,
+    RateLimitedError,
+    StreamDecodeError,
+    UnauthorizedError,
+)
 
 SNAPSHOT_KEY_DAY_1 = "snapshots/standard/binance/BTC-USDT/2024-01-01.jsonl.zst"
 SNAPSHOT_KEY_DAY_2 = "snapshots/standard/binance/BTC-USDT/2024-01-02.jsonl.zst"
@@ -43,9 +48,9 @@ def make_client(
 
 def test_catalog_returns_payload() -> None:
     payload = {
-        "exchanges": [
-            {"id": "binance", "assets": ["BTC-USDT"]},
-            {"id": "hyperliquid", "assets": ["BTC", "ETH"]},
+        "sources": [
+            {"id": "binance", "markets": ["BTC-USDT"]},
+            {"id": "hyperliquid", "markets": ["BTC", "ETH"]},
         ]
     }
 
@@ -73,8 +78,8 @@ def test_unauthorized_raw_requires_api_key_before_request() -> None:
     try:
         with pytest.raises(UnauthorizedError):
             client.raw(
-                exchange="binance",
-                asset="BTC-USDT",
+                source="binance",
+                market="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
                 to="2024-01-01T01:00:00Z",
             )
@@ -94,8 +99,8 @@ def test_rate_limited_error_maps_reset_at() -> None:
     try:
         with pytest.raises(RateLimitedError) as exc_info:
             client.trades(
-                exchange="binance",
-                asset="BTC-USDT",
+                source="binance",
+                market="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
                 to="2024-01-01T01:00:00Z",
             )
@@ -145,8 +150,8 @@ def test_trades_use_snapshot_download_flow_by_default(tmp_path) -> None:
     client = make_client(handler, dataset_root=tmp_path)
     try:
         assert client.trades(
-            exchange="binance",
-            asset="BTC-USDT",
+            source="binance",
+            market="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-01T01:00:00Z",
         ) == [
@@ -165,7 +170,7 @@ def test_trades_use_snapshot_download_flow_by_default(tmp_path) -> None:
         client.close()
 
 
-def test_trades_fall_back_to_events_when_snapshot_coverage_is_incomplete() -> None:
+def test_trades_require_snapshot_coverage_and_do_not_fall_back_to_events() -> None:
     calls: list[tuple[str, str | None]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -173,40 +178,22 @@ def test_trades_fall_back_to_events_when_snapshot_coverage_is_incomplete() -> No
         if request.url.path == "/snapshots":
             return httpx.Response(200, json={"snapshots": []})
         if request.url.path == "/events":
-            assert request.url.params.get("format") == "file"
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(
-                    [
-                        {
-                            "timestamp": 1,
-                            "type": "trade",
-                            "data": {"price": 100.0, "quantity": 1.0},
-                        },
-                        {"timestamp": 2, "type": "bar", "data": {"close": 100.5}},
-                        {
-                            "timestamp": 3,
-                            "type": "trade",
-                            "data": {"price": 101.0, "quantity": 2.0},
-                        },
-                    ]
-                ),
-                headers={"content-type": "application/zstd"},
-            )
+            raise AssertionError("trades() should not fall back to /events")
         raise AssertionError(f"unexpected request: {request.url}")
 
     client = make_client(handler)
     try:
-        assert client.trades(
-            exchange="binance",
-            asset="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
-        ) == [
-            {"timestamp": 1, "type": "trade", "data": {"price": 100.0, "quantity": 1.0}},
-            {"timestamp": 3, "type": "trade", "data": {"price": 101.0, "quantity": 2.0}},
-        ]
-        assert calls == [("/snapshots", None), ("/events", "file")]
+        with pytest.raises(
+            PolarisError,
+            match="could not be satisfied from standardized snapshots",
+        ):
+            client.trades(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+            )
+        assert calls == [("/snapshots", None)]
     finally:
         client.close()
 
@@ -254,8 +241,8 @@ def test_ohlcv_aggregates_from_snapshot_download_flow(tmp_path) -> None:
     client = make_client(handler, dataset_root=tmp_path)
     try:
         assert client.ohlcv(
-            exchange="binance",
-            asset="BTC-USDT",
+            source="binance",
+            market="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-01T00:02:00Z",
             interval="1m",
@@ -313,8 +300,8 @@ def test_ohlcv_tradingview_format_returns_local_json(tmp_path) -> None:
     client = make_client(handler, dataset_root=tmp_path)
     try:
         assert client.ohlcv(
-            exchange="binance",
-            asset="BTC-USDT",
+            source="binance",
+            market="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-01T00:01:00Z",
             interval="1m",
@@ -329,13 +316,42 @@ def test_ohlcv_tradingview_format_returns_local_json(tmp_path) -> None:
         client.close()
 
 
+def test_ohlcv_require_snapshot_coverage_and_do_not_fall_back_to_events(tmp_path) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.path, request.url.params.get("format")))
+        if request.url.path == "/snapshots":
+            return httpx.Response(200, json={"snapshots": []})
+        if request.url.path == "/events":
+            raise AssertionError("ohlcv() should not fall back to /events")
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        with pytest.raises(
+            PolarisError,
+            match="could not be satisfied from standardized snapshots",
+        ):
+            client.ohlcv(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T00:02:00Z",
+                interval="1m",
+            )
+        assert calls == [("/snapshots", None)]
+    finally:
+        client.close()
+
+
 def test_ohlcv_rejects_stale_parquet_format() -> None:
     client = make_client(lambda request: httpx.Response(500))
     try:
         with pytest.raises(ValueError, match="format must be one of: None, 'tradingview'"):
             client.ohlcv(
-                exchange="binance",
-                asset="BTC-USDT",
+                source="binance",
+                market="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
                 to="2024-01-01T00:01:00Z",
                 interval="1m",
@@ -348,6 +364,8 @@ def test_ohlcv_rejects_stale_parquet_format() -> None:
 def test_list_snapshots_paginates_across_data_and_snapshots_fields() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/snapshots"
+        assert request.url.params.get("source") == "binance"
+        assert request.url.params.get("market") == "BTC-USDT"
         cursor = request.url.params.get("cursor")
         if cursor is None:
             return httpx.Response(
@@ -369,8 +387,8 @@ def test_list_snapshots_paginates_across_data_and_snapshots_fields() -> None:
     client = make_client(handler)
     try:
         snapshots = client.list_snapshots(
-            exchange="binance",
-            asset="BTC-USDT",
+            source="binance",
+            market="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-03T00:00:00Z",
         )
@@ -414,8 +432,8 @@ def test__download_snapshots_saves_files_and_materializes_daily_artifacts(tmp_pa
     client = make_client(handler, dataset_root=tmp_path)
     try:
         entries = client._download_snapshots(
-            exchange="binance",
-            asset="BTC-USDT",
+            source="binance",
+            market="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-02T00:00:00Z",
         )
@@ -427,7 +445,7 @@ def test__download_snapshots_saves_files_and_materializes_daily_artifacts(tmp_pa
         client.close()
 
 
-def test__list_local_snapshots_filters_by_exchange_asset_and_date(tmp_path) -> None:
+def test__list_local_snapshots_filters_by_source_market_and_date(tmp_path) -> None:
     client = make_client(lambda request: httpx.Response(500), dataset_root=tmp_path)
     try:
         first = client.layout.data_path_for_key(SNAPSHOT_KEY_DAY_1)
@@ -440,7 +458,7 @@ def test__list_local_snapshots_filters_by_exchange_asset_and_date(tmp_path) -> N
         second.write_bytes(_zstd_ndjson([{"timestamp": 2}]))
 
         assert len(client._list_local_snapshots()) == 2
-        assert len(client._list_local_snapshots(exchange="binance", asset="BTC-USDT")) == 1
+        assert len(client._list_local_snapshots(source="binance", market="BTC-USDT")) == 1
         assert len(client._list_local_snapshots(date="2024-01-01")) == 2
     finally:
         client.close()
@@ -473,8 +491,8 @@ def test__iter_local_events_filters_across_materialized_days(tmp_path) -> None:
 
         rows = list(
             client._iter_local_events(
-                exchange="binance",
-                asset="BTC-USDT",
+                source="binance",
+                market="BTC-USDT",
                 from_="2024-01-01T12:00:00Z",
                 to="2024-01-02T00:00:00Z",
             )
@@ -507,8 +525,8 @@ def test_replay_reads_local_snapshot_day_files_before_network(tmp_path) -> None:
 
         rows = list(
             client.replay(
-                exchange="binance",
-                asset="BTC-USDT",
+                source="binance",
+                market="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
                 to="2024-01-02T00:00:00Z",
             )
@@ -542,8 +560,8 @@ def test_replay_uses_direct_daily_paths_without_scanning_tree(tmp_path) -> None:
 
         rows = list(
             client.replay(
-                exchange="binance",
-                asset="BTC-USDT",
+                source="binance",
+                market="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
                 to="2024-01-02T00:00:00Z",
             )
@@ -577,8 +595,8 @@ def test__iter_local_events_stops_after_to_boundary_on_ordered_day_files(tmp_pat
 
         rows = list(
             client._iter_local_events(
-                exchange="binance",
-                asset="BTC-USDT",
+                source="binance",
+                market="BTC-USDT",
                 from_="2024-01-01T12:00:00Z",
                 to="2024-01-02T06:00:00Z",
             )
@@ -613,8 +631,8 @@ def test_events_use_snapshot_download_flow_by_default(tmp_path) -> None:
     client = make_client(handler, dataset_root=tmp_path)
     try:
         assert client.events(
-            exchange="binance",
-            asset="BTC-USDT",
+            source="binance",
+            market="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-02T00:00:00Z",
         ) == [
@@ -625,7 +643,7 @@ def test_events_use_snapshot_download_flow_by_default(tmp_path) -> None:
         client.close()
 
 
-def test_replay_falls_back_to_events_when_snapshot_coverage_is_incomplete(tmp_path) -> None:
+def test_events_require_snapshot_coverage_and_do_not_fall_back_to_events(tmp_path) -> None:
     calls: list[tuple[str, str | None]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -633,26 +651,52 @@ def test_replay_falls_back_to_events_when_snapshot_coverage_is_incomplete(tmp_pa
         if request.url.path == "/snapshots":
             return httpx.Response(200, json={"snapshots": []})
         if request.url.path == "/events":
-            assert request.url.params.get("format") == "file"
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson([{"timestamp": 21}, {"timestamp": 22}]),
-                headers={"content-type": "application/zstd"},
+            raise AssertionError("events() should not fall back to /events")
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        with pytest.raises(
+            PolarisError,
+            match="could not be satisfied from standardized snapshots",
+        ):
+            client.events(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-02T00:00:00Z",
             )
+        assert calls == [("/snapshots", None)]
+    finally:
+        client.close()
+
+
+def test_replay_requires_snapshot_coverage_and_do_not_fall_back_to_events(tmp_path) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.path, request.url.params.get("format")))
+        if request.url.path == "/snapshots":
+            return httpx.Response(200, json={"snapshots": []})
+        if request.url.path == "/events":
+            raise AssertionError("replay() should not fall back to /events")
         raise AssertionError(f"unexpected request: {request.url}")
 
     client = make_client(handler, dataset_root=tmp_path, replay_cache_enabled=False)
     try:
-        rows = list(
-            client.replay(
-                exchange="binance",
-                asset="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-02T00:00:00Z",
+        with pytest.raises(
+            PolarisError,
+            match="could not be satisfied from standardized snapshots",
+        ):
+            list(
+                client.replay(
+                    source="binance",
+                    market="BTC-USDT",
+                    from_="2024-01-01T00:00:00Z",
+                    to="2024-01-02T00:00:00Z",
+                )
             )
-        )
-        assert rows == [{"timestamp": 21}, {"timestamp": 22}]
-        assert calls == [("/snapshots", None), ("/events", "file")]
+        assert calls == [("/snapshots", None)]
     finally:
         client.close()
 
@@ -683,8 +727,8 @@ def test_raw_paginates() -> None:
     client = make_client(handler)
     try:
         assert client.raw(
-            exchange="binance",
-            asset="BTC-USDT",
+            source="binance",
+            market="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-01T01:00:00Z",
             limit=1,
@@ -697,6 +741,8 @@ def test_raw_uses_file_export_by_default() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/raw"
         assert request.url.params.get("format") == "file"
+        assert request.url.params.get("source") == "binance"
+        assert request.url.params.get("market") == "BTC-USDT"
         return httpx.Response(
             200,
             content=_zstd_ndjson([{"exchange_payload": {"id": 42}}]),
@@ -706,8 +752,8 @@ def test_raw_uses_file_export_by_default() -> None:
     client = make_client(handler)
     try:
         assert client.raw(
-            exchange="binance",
-            asset="BTC-USDT",
+            source="binance",
+            market="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-01T01:00:00Z",
         ) == [{"exchange_payload": {"id": 42}}]
@@ -731,8 +777,8 @@ def test_raw_replay_raises_stream_decode_error_for_invalid_cached_zstd(tmp_path)
     )
     try:
         cache_name = client._default_dataset_filename(
-            exchange="binance",
-            asset="BTC-USDT",
+            source="binance",
+            market="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-01T01:00:00Z",
             standard=False,
@@ -742,8 +788,8 @@ def test_raw_replay_raises_stream_decode_error_for_invalid_cached_zstd(tmp_path)
         with pytest.raises(StreamDecodeError):
             list(
                 client.replay(
-                    exchange="binance",
-                    asset="BTC-USDT",
+                    source="binance",
+                    market="BTC-USDT",
                     from_="2024-01-01T00:00:00Z",
                     to="2024-01-01T01:00:00Z",
                     standard=False,
@@ -770,8 +816,8 @@ def test_raw_replay_reads_cached_rows_without_api_call(tmp_path) -> None:
     )
     try:
         cache_name = client._default_dataset_filename(
-            exchange="binance",
-            asset="BTC-USDT",
+            source="binance",
+            market="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-01T01:00:00Z",
             standard=False,
@@ -780,8 +826,8 @@ def test_raw_replay_reads_cached_rows_without_api_call(tmp_path) -> None:
 
         rows = list(
             client.replay(
-                exchange="binance",
-                asset="BTC-USDT",
+                source="binance",
+                market="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
                 to="2024-01-01T01:00:00Z",
                 standard=False,
@@ -812,8 +858,8 @@ def test_raw_replay_populates_cache_and_reuses_on_new_client(tmp_path) -> None:
     try:
         assert list(
             online_client.replay(
-                exchange="binance",
-                asset="BTC-USDT",
+                source="binance",
+                market="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
                 to="2024-01-01T01:00:00Z",
                 standard=False,
@@ -834,8 +880,8 @@ def test_raw_replay_populates_cache_and_reuses_on_new_client(tmp_path) -> None:
     try:
         assert list(
             offline_client.replay(
-                exchange="binance",
-                asset="BTC-USDT",
+                source="binance",
+                market="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
                 to="2024-01-01T01:00:00Z",
                 standard=False,
@@ -859,8 +905,8 @@ def test_replay_allows_standard_false_for_raw() -> None:
     try:
         assert list(
             client.replay(
-                exchange="binance",
-                asset="BTC-USDT",
+                source="binance",
+                market="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
                 to="2024-01-01T01:00:00Z",
                 standard=False,
@@ -894,8 +940,8 @@ def test_replay_parallel_keeps_legacy_raw_chunking_behavior() -> None:
     try:
         rows = list(
             client.replay(
-                exchange="binance",
-                asset="BTC-USDT",
+                source="binance",
+                market="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
                 to="2024-01-04T00:00:00Z",
                 standard=False,
