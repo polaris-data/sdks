@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import io
 import os
@@ -15,6 +16,7 @@ import orjson
 import zstandard as zstd
 
 from .errors import (
+    AccessDeniedError,
     NotFoundError,
     PolarisError,
     RateLimitedError,
@@ -23,7 +25,6 @@ from .errors import (
 )
 from .layout import (
     LocalDatasetLayout,
-    infer_snapshot_date_from_key,
     resolve_dataset_root,
 )
 from .models import (
@@ -331,6 +332,15 @@ class PolarisClient:
 
         if status == 401:
             raise UnauthorizedError(message=message, status_code=status, body=body_text)
+        if status == 402:
+            raise AccessDeniedError(
+                message=(
+                    f"{message}. This dataset requires an active subscription. "
+                    "See https://docs.polaris.supply/guides/authentication"
+                ),
+                status_code=status,
+                body=body_text,
+            )
         if status == 404:
             raise NotFoundError(message=message, status_code=status, body=body_text)
         if status == 429:
@@ -546,13 +556,11 @@ class PolarisClient:
         if not isinstance(key, str) or not key:
             raise PolarisError("Snapshot entry did not include a key")
 
-        filename = raw.get("filename")
-        if not isinstance(filename, str) or not filename:
-            filename = key.rsplit("/", 1)[-1]
-        if not filename:
-            raise PolarisError("Snapshot entry did not include a filename")
+        entry_date = raw.get("date")
+        if not isinstance(entry_date, str) or not entry_date:
+            entry_date = None
 
-        return SnapshotEntry(key=key, filename=filename)
+        return SnapshotEntry(key=key, date=entry_date)
 
     def _iter_local_snapshot_rows(
         self,
@@ -590,23 +598,14 @@ class PolarisClient:
         self,
         entries: list[LocalSnapshotEntry],
         *,
-        source: str | None = None,
-        market: str | None = None,
         date_filter: str | date | None = None,
     ) -> list[LocalSnapshotEntry]:
         date_text = (
             date_filter.isoformat() if isinstance(date_filter, date) else date_filter
         )
-        filtered = []
-        for entry in entries:
-            if source is not None and entry.source != source:
-                continue
-            if market is not None and entry.market != market:
-                continue
-            if date_text is not None and entry.date != date_text:
-                continue
-            filtered.append(entry)
-        return filtered
+        if date_text is None:
+            return entries
+        return [e for e in entries if e.date == date_text]
 
     def _daily_artifact_paths(
         self,
@@ -646,11 +645,7 @@ class PolarisClient:
             market=market,
             required_dates=required_dates,
         )
-        snapshots = self._filter_local_snapshots(
-            self.layout.list_local_snapshots(),
-            source=source,
-            market=market,
-        )
+        snapshots = self.layout.list_local_snapshots()
 
         candidates: list[LocalSnapshotEntry] = []
         for snapshot in snapshots:
@@ -694,7 +689,7 @@ class PolarisClient:
             with self._client.stream(
                 "GET",
                 "snapshots/download",
-                params={"key": snapshot.key, "filename": snapshot.filename},
+                params={"key": snapshot.key},
                 headers=self._auth_headers(
                     auth_required=False,
                     include_auth_if_available=True,
@@ -722,15 +717,17 @@ class PolarisClient:
             if temp_path.exists():
                 temp_path.unlink()
 
-        for entry in self.layout.list_local_snapshots():
-            if entry.key == snapshot.key:
-                self.layout.materialize_daily_artifact(
-                    entry,
-                    force=force_materialize,
-                )
-                return entry
-
-        raise PolarisError(f"Downloaded snapshot {snapshot.key} could not be indexed locally")
+        entry = LocalSnapshotEntry(
+            key=snapshot.key,
+            path=str(local_path),
+            source=snapshot.source,
+            market=snapshot.market,
+            date=snapshot.date,
+            start=None,
+            end=None,
+        )
+        self.layout.materialize_daily_artifact(entry, force=force_materialize)
+        return entry
 
     def _ensure_local_snapshot_entries(
         self,
@@ -790,8 +787,13 @@ class PolarisClient:
         )
         snapshots_by_day: dict[date, SnapshotEntry] = {}
         for snapshot in remote_snapshots:
-            day = infer_snapshot_date_from_key(snapshot.key)
-            if day is not None and day not in snapshots_by_day:
+            if snapshot.date is None:
+                continue
+            try:
+                day = date.fromisoformat(snapshot.date)
+            except ValueError:
+                continue
+            if day not in snapshots_by_day:
                 snapshots_by_day[day] = snapshot
 
         missing_remote_days = [day for day in missing_days if day not in snapshots_by_day]
@@ -872,6 +874,7 @@ class PolarisClient:
 
         snapshots: dict[str, SnapshotEntry] = {}
         cursor: str | None = None
+        access_info: dict[str, Any] | None = None
         while True:
             page_params = dict(params)
             if cursor is not None:
@@ -883,6 +886,41 @@ class PolarisClient:
                 include_auth_if_available=True,
             )
 
+            # Capture access policy from first page (present on every page).
+            if access_info is None:
+                access_info = payload.get("access")
+
+            # Proactive check: surface clear errors for unauthenticated users
+            # requesting data that requires authentication.
+            if access_info is not None and self.api_key is None:
+                status = access_info.get("status")
+                if status == "restricted":
+                    raise AccessDeniedError(
+                        message=(
+                            f"Dataset '{source}/{market}' requires authentication. "
+                            "Set POLARIS_API_KEY or pass api_key to PolarisClient. "
+                            "See https://docs.polaris.supply/guides/authentication"
+                        )
+                    )
+                if status == "preview":
+                    cutoff_raw = access_info.get("public_cutoff_date")
+                    if isinstance(cutoff_raw, str) and cutoff_raw:
+                        try:
+                            cutoff_date = date.fromisoformat(cutoff_raw)
+                            requested_end = to_datetime(to).date()
+                            if requested_end > cutoff_date:
+                                raise AccessDeniedError(
+                                    message=(
+                                        f"Dataset '{source}/{market}' data after "
+                                        f"{cutoff_raw} requires authentication. "
+                                        "Set POLARIS_API_KEY or pass api_key to "
+                                        "PolarisClient. "
+                                        "See https://docs.polaris.supply/guides/authentication"
+                                    )
+                                )
+                        except (ValueError, TypeError):
+                            pass  # malformed date — skip check, never block accidentally
+
             raw_entries = []
             data = payload.get("data")
             if isinstance(data, list):
@@ -893,6 +931,10 @@ class PolarisClient:
 
             for raw in raw_entries:
                 entry = self._parse_snapshot_entry(raw)
+                if entry.source is None:
+                    entry = dataclasses.replace(entry, source=source)
+                if entry.market is None:
+                    entry = dataclasses.replace(entry, market=market)
                 snapshots[entry.key] = entry
 
             next_cursor = payload.get("next_cursor")
@@ -922,14 +964,10 @@ class PolarisClient:
     def _list_local_snapshots(
         self,
         *,
-        source: str | None = None,
-        market: str | None = None,
         date: str | date | None = None,
     ) -> list[LocalSnapshotEntry]:
         return self._filter_local_snapshots(
             self.layout.list_local_snapshots(),
-            source=source,
-            market=market,
             date_filter=date,
         )
 

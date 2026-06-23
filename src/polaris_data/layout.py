@@ -8,9 +8,8 @@ import shutil
 import sys
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
-from typing import Iterable
 
 from .models import LocalSnapshotEntry
 
@@ -153,11 +152,12 @@ class LocalDatasetLayout:
         return FileLock(self.lock_path)
 
     def data_path_for_key(self, key: str) -> Path:
-        segments = validated_key_segments(key)
-        path = self.data_root
-        for segment in segments:
-            path /= segment
-        return path
+        normalized = key.strip()
+        if not normalized:
+            raise ValueError("snapshot key must not be empty")
+        if "/" in normalized or "\\" in normalized or normalized in {".", ".."}:
+            raise ValueError(f"invalid snapshot key: {normalized}")
+        return self.data_root / normalized
 
     def temp_path_for_key(self, key: str) -> Path:
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
@@ -192,19 +192,16 @@ class LocalDatasetLayout:
                 continue
 
             relative = path.relative_to(self.data_root).as_posix()
-            filename = path.name
-            source, market, day = infer_snapshot_identity(relative, filename)
-            start, end = parse_snapshot_times(filename)
+            day = infer_date_from_text(relative)
             files.append(
                 LocalSnapshotEntry(
                     key=relative,
                     path=str(path),
-                    filename=filename,
-                    source=source,
-                    market=market,
+                    source=None,
+                    market=None,
                     date=day.isoformat() if day is not None else None,
-                    start=start,
-                    end=end,
+                    start=None,
+                    end=None,
                 )
             )
 
@@ -280,91 +277,14 @@ class LocalDatasetLayout:
         return target
 
 
-def validated_key_segments(key: str) -> list[str]:
-    trimmed = key.strip()
-    if not trimmed:
-        raise ValueError("snapshot key must not be empty")
-
-    segments: list[str] = []
-    for segment in trimmed.split("/"):
-        if not segment or segment in {".", ".."} or "\\" in segment:
-            raise ValueError(f"invalid remote key segment in {trimmed}")
-        segments.append(segment)
-    return segments
-
-
-def infer_snapshot_date_from_key(key: str) -> date | None:
-    segments = key.split("/")
-    return infer_date_from_segments(segments) or infer_date_from_text(segments[-1])
-
-
-def parse_snapshot_times(filename: str) -> tuple[datetime | None, datetime | None]:
-    start = None
-    end = None
-
-    if "_s" in filename and "_e" in filename:
-        raw_start = filename.split("_s", 1)[1].split("_e", 1)[0]
-        raw_end = filename.split("_e", 1)[1].split(".", 1)[0]
-        start = parse_snapshot_timestamp(raw_start)
-        end = parse_snapshot_timestamp(raw_end)
-
-    return start, end
-
-
-def parse_snapshot_timestamp(raw: str) -> datetime | None:
-    try:
-        return datetime.strptime(raw, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
-
-
-def infer_snapshot_identity(
-    key: str, filename: str
-) -> tuple[str | None, str | None, date | None]:
-    segments = key.split("/")
-    if not segments:
-        return None, None, None
-
-    indexed = infer_date_segment_index(segments)
-    if indexed is not None:
-        index, day = indexed
-        source = segments[index - 2] if index >= 2 else None
-        market = segments[index - 1] if index >= 1 else None
-        return source, market, day
-
-    day = infer_date_from_text(filename)
-    if day is not None:
-        source = segments[-3] if len(segments) >= 3 else None
-        market = segments[-2] if len(segments) >= 2 else None
-        return source, market, day
-
-    source = segments[-4] if len(segments) >= 4 else None
-    market = segments[-3] if len(segments) >= 3 else None
-    return source, market, None
-
-
-def infer_date_from_segments(segments: Iterable[str]) -> date | None:
-    indexed = infer_date_segment_index(list(segments))
-    if indexed is None:
-        return None
-    return indexed[1]
-
-
-def infer_date_segment_index(segments: list[str]) -> tuple[int, date] | None:
-    for index, segment in enumerate(segments):
-        day = infer_date_from_text(segment)
-        if day is not None:
-            return index, day
-    return None
-
-
 def infer_date_from_text(text: str) -> date | None:
     tokens = "".join(ch if ch.isdigit() or ch == "-" else " " for ch in text).split()
     for token in tokens:
-        if len(token) != 10:
+        stripped = token.strip("-")
+        if len(stripped) != 10:
             continue
         try:
-            return date.fromisoformat(token)
+            return date.fromisoformat(stripped)
         except ValueError:
             continue
     return None

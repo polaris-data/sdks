@@ -2,6 +2,7 @@
 
 from .client import PolarisClient
 from .errors import (
+    AccessDeniedError,
     DownloadNotAllowedError,
     NotFoundError,
     PolarisError,
@@ -12,6 +13,7 @@ from .errors import (
 from .models import LocalSnapshotEntry, SnapshotEntry
 
 __all__ = [
+    "AccessDeniedError",
     "NotFoundError",
     "DownloadNotAllowedError",
     "LocalSnapshotEntry",
