@@ -38,6 +38,7 @@ DEFAULT_BASE_URL = "https://api.polaris.supply"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_NETWORK_CHUNK_SIZE = 8 * 1024 * 1024  # 8MB for network downloads
 DEFAULT_FILE_CHUNK_SIZE = 1 * 1024 * 1024  # 1MB for file operations
+DEFAULT_INFERRED_LOOKBACK = timedelta(days=7)
 USER_AGENT = "polaris-py/0.5.1"
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 _INTERVAL_US = {
@@ -187,6 +188,23 @@ def _iter_utc_dates(start: datetime, end: datetime) -> list[date]:
         days.append(current)
         current += timedelta(days=1)
     return days
+
+
+@dataclasses.dataclass(frozen=True)
+class _CatalogAssetBounds:
+    start: datetime
+    end: datetime
+    access_status: str | None
+    public_cutoff_date: date | None
+
+
+def _end_of_public_cutoff_day(cutoff_date: date) -> datetime:
+    return datetime(
+        cutoff_date.year,
+        cutoff_date.month,
+        cutoff_date.day,
+        tzinfo=timezone.utc,
+    ) + timedelta(days=1)
 
 
 class _ChunkStream(io.RawIOBase):
@@ -848,14 +866,145 @@ class PolarisClient:
     ) -> JSONDict:
         params: dict[str, str] = {}
         if source is not None:
-            params["source"] = source
+            params["exchange"] = source
         if market is not None:
-            params["market"] = market
+            params["asset"] = market
         return self._get_json(
             "catalog",
             params=params or None,
             include_auth_if_available=True,
         )
+
+    def _catalog_asset_bounds(
+        self,
+        *,
+        source: str,
+        market: str,
+    ) -> _CatalogAssetBounds:
+        payload = self.catalog(source=source, market=market)
+        exchanges = payload.get("exchanges")
+        if not isinstance(exchanges, list):
+            raise PolarisError(
+                message=(
+                    "Catalog response did not include exchange/asset metadata needed "
+                    f"to infer a default range for '{source}/{market}'"
+                )
+            )
+
+        for exchange in exchanges:
+            if not isinstance(exchange, dict):
+                continue
+            exchange_id = exchange.get("id")
+            if exchange_id is not None and exchange_id != source:
+                continue
+
+            assets = exchange.get("assets")
+            if not isinstance(assets, list):
+                continue
+
+            for asset in assets:
+                if not isinstance(asset, dict):
+                    continue
+                asset_id = asset.get("id")
+                if asset_id != market:
+                    continue
+
+                start_raw = asset.get("start")
+                end_raw = asset.get("end")
+                if not isinstance(start_raw, str) or not isinstance(end_raw, str):
+                    raise PolarisError(
+                        message=(
+                            "Catalog asset metadata did not include valid start/end "
+                            f"timestamps for '{source}/{market}'"
+                        )
+                    )
+
+                access = asset.get("access")
+                access_status: str | None = None
+                public_cutoff_date: date | None = None
+                if isinstance(access, dict):
+                    raw_status = access.get("status")
+                    if isinstance(raw_status, str) and raw_status:
+                        access_status = raw_status
+
+                    raw_cutoff = access.get("public_cutoff_date")
+                    if isinstance(raw_cutoff, str) and raw_cutoff:
+                        try:
+                            public_cutoff_date = date.fromisoformat(raw_cutoff)
+                        except ValueError:
+                            public_cutoff_date = None
+
+                return _CatalogAssetBounds(
+                    start=to_datetime(start_raw),
+                    end=to_datetime(end_raw),
+                    access_status=access_status,
+                    public_cutoff_date=public_cutoff_date,
+                )
+
+        raise NotFoundError(
+            message=f"Catalog did not include dataset '{source}/{market}'"
+        )
+
+    def _resolve_historical_range(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None,
+        to: TimeInput | None,
+    ) -> tuple[datetime, datetime]:
+        if from_ is not None and to is not None:
+            start = to_datetime(from_)
+            end = to_datetime(to)
+            if start >= end:
+                raise ValueError("from_ must be before to")
+            return start, end
+
+        bounds = self._catalog_asset_bounds(source=source, market=market)
+        lower_bound = bounds.start
+        upper_bound = min(bounds.end, datetime.now(timezone.utc))
+
+        if bounds.access_status == "restricted" and self.api_key is None:
+            raise AccessDeniedError(
+                message=(
+                    f"Dataset '{source}/{market}' requires authentication. "
+                    "Set POLARIS_API_KEY or pass api_key to PolarisClient. "
+                    "See https://docs.polaris.supply/guides/authentication"
+                )
+            )
+
+        if (
+            bounds.access_status == "preview"
+            and self.api_key is None
+            and bounds.public_cutoff_date is not None
+        ):
+            upper_bound = min(
+                upper_bound,
+                _end_of_public_cutoff_day(bounds.public_cutoff_date),
+            )
+
+        if lower_bound >= upper_bound:
+            raise PolarisError(
+                message=(
+                    f"Catalog reported no queryable historical range for "
+                    f"'{source}/{market}'"
+                )
+            )
+
+        if from_ is None and to is None:
+            resolved_to = upper_bound
+            resolved_from = max(lower_bound, resolved_to - DEFAULT_INFERRED_LOOKBACK)
+        elif from_ is None:
+            resolved_to = min(to_datetime(to), upper_bound)
+            resolved_from = max(lower_bound, resolved_to - DEFAULT_INFERRED_LOOKBACK)
+        else:
+            resolved_from = max(to_datetime(from_), lower_bound)
+            resolved_to = min(resolved_from + DEFAULT_INFERRED_LOOKBACK, upper_bound)
+
+        if resolved_from >= resolved_to:
+            raise ValueError("from_ must resolve to a time before to")
+
+        return resolved_from, resolved_to
 
     def list_snapshots(
         self,
@@ -907,8 +1056,8 @@ class PolarisClient:
                     if isinstance(cutoff_raw, str) and cutoff_raw:
                         try:
                             cutoff_date = date.fromisoformat(cutoff_raw)
-                            requested_end = to_datetime(to).date()
-                            if requested_end > cutoff_date:
+                            requested_end = to_datetime(to)
+                            if requested_end > _end_of_public_cutoff_day(cutoff_date):
                                 raise AccessDeniedError(
                                     message=(
                                         f"Dataset '{source}/{market}' data after "
@@ -1013,13 +1162,20 @@ class PolarisClient:
         *,
         source: str,
         market: str,
-        from_: TimeInput,
-        to: TimeInput,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
         standard: bool = True,
         chunk_size: int | None = None,
         timeout: float | None = None,
         parallel: bool | int = False,
     ) -> Iterator[JSONDict]:
+        from_, to = self._resolve_historical_range(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+        )
+
         # Keep chunk_size validation for compatibility with prior replay signature.
         effective_chunk_size = (
             chunk_size if chunk_size is not None else DEFAULT_NETWORK_CHUNK_SIZE
@@ -1262,9 +1418,15 @@ class PolarisClient:
         *,
         source: str,
         market: str,
-        from_: TimeInput,
-        to: TimeInput,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
     ) -> list[JSONDict]:
+        from_, to = self._resolve_historical_range(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+        )
         return list(
             self._iter_trades_data(
                 source=source,
@@ -1301,9 +1463,15 @@ class PolarisClient:
         *,
         source: str,
         market: str,
-        from_: TimeInput,
-        to: TimeInput,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
     ) -> list[JSONDict]:
+        from_, to = self._resolve_historical_range(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+        )
         return list(
             self._iter_events_data(
                 source=source,
@@ -1338,10 +1506,16 @@ class PolarisClient:
         *,
         source: str,
         market: str,
-        from_: TimeInput,
-        to: TimeInput,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
         limit: int = 1000,
     ) -> list[JSONDict]:
+        from_, to = self._resolve_historical_range(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+        )
         return list(
             self._iter_raw_data(
                 source=source,
@@ -1376,11 +1550,17 @@ class PolarisClient:
         *,
         source: str,
         market: str,
-        from_: TimeInput,
-        to: TimeInput,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
         interval: str,
         format: str | None = None,
     ) -> list[JSONDict] | JSONDict:
+        from_, to = self._resolve_historical_range(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+        )
         if _interval_to_us(interval) is None:
             raise ValueError(
                 "interval must be one of: " + ", ".join(_INTERVAL_US)

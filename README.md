@@ -66,13 +66,13 @@ Use it to inspect available data and query historical market data.
 
 ### Historical data
 
-- `replay(source=..., market=..., from_=..., to=..., standard=True, parallel=False)`: Stream historical events for backfills, notebooks, or replay-style processing.
-- `events(source=..., market=..., from_=..., to=...)`: Return standardized historical events as a list.
-- `trades(source=..., market=..., from_=..., to=...)`: Return standardized trade events as a list.
-- `raw(source=..., market=..., from_=..., to=..., limit=1000)`: Return raw source payloads as a list.
-- `ohlcv(source=..., market=..., from_=..., to=..., interval=..., format=None)`: Aggregate OHLCV bars from standardized trade data.
+- `replay(source=..., market=..., from_=None, to=None, standard=True, parallel=False)`: Stream historical events for backfills, notebooks, or replay-style processing.
+- `events(source=..., market=..., from_=None, to=None)`: Return standardized historical events as a list.
+- `trades(source=..., market=..., from_=None, to=None)`: Return standardized trade events as a list.
+- `raw(source=..., market=..., from_=None, to=None, limit=1000)`: Return raw source payloads as a list.
+- `ohlcv(source=..., market=..., from_=None, to=None, interval=..., format=None)`: Aggregate OHLCV bars from standardized trade data.
 
-For historical event queries, `standard=True` is the default. Pass `standard=False` when you explicitly want raw schema payloads through `replay(...)`. Methods that take `from_` and `to` accept ISO 8601 strings, `datetime`, `date`, or Unix epoch microseconds.
+For historical event queries, `standard=True` is the default. Pass `standard=False` when you explicitly want raw schema payloads through `replay(...)`. Methods that take `from_` and `to` accept ISO 8601 strings, `datetime`, `date`, or Unix epoch microseconds. If you omit one or both bounds, the SDK uses catalog metadata to infer a bounded range. For open datasets that defaults to the most recent 7 days capped by the dataset `start`/`end`. For unauthenticated preview datasets, `to` is capped at the public cutoff date.
 
 Example:
 
@@ -96,10 +96,22 @@ Example response shape:
 
 ```python
 {
-    "sources": [
-        {"id": "binance", "markets": ["BTC-USDT"]},
-        {"id": "hyperliquid", "markets": ["BTC", "ETH"]},
-    ]
+    "exchanges": [
+        {
+            "id": "binance",
+            "assets": [
+                {
+                    "id": "BTC-USDT",
+                    "start": "2024-01-01T00:00:00.000Z",
+                    "end": "2024-01-10T00:00:00.000Z",
+                    "source": "manifest",
+                    "categories": ["perp"],
+                    "access": {"status": "open"},
+                }
+            ],
+        }
+    ],
+    "updatedAt": "2026-05-19T10:28:00.000Z",
 }
 ```
 

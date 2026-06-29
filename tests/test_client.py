@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import httpx
@@ -48,6 +48,46 @@ def make_client(
     )
 
 
+def _catalog_payload(
+    *,
+    source: str = "binance",
+    market: str = "BTC-USDT",
+    start: str,
+    end: str,
+    access_status: str = "open",
+    public_cutoff_date: str | None = None,
+) -> dict:
+    access: dict[str, str] = {"status": access_status}
+    if public_cutoff_date is not None:
+        access["public_cutoff_date"] = public_cutoff_date
+
+    return {
+        "exchanges": [
+            {
+                "id": source,
+                "assets": [
+                    {
+                        "id": market,
+                        "start": start,
+                        "end": end,
+                        "source": "manifest",
+                        "categories": ["perp"],
+                        "access": access,
+                    }
+                ],
+            }
+        ],
+        "updatedAt": "2026-05-19T10:28:00.000Z",
+    }
+
+
+def _ts(iso8601: str) -> int:
+    return int(
+        datetime.fromisoformat(iso8601.replace("Z", "+00:00")).timestamp()
+        * 1_000_000
+    )
+
+
 def test_catalog_returns_payload() -> None:
     payload = {
         "sources": [
@@ -64,6 +104,127 @@ def test_catalog_returns_payload() -> None:
     client = make_client(handler)
     try:
         assert client.catalog() == payload
+    finally:
+        client.close()
+
+
+def test_raw_infers_last_7_days_from_catalog_for_open_dataset() -> None:
+    rows = [{"timestamp": _ts("2024-01-09T12:00:00Z"), "payload": "ok"}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/catalog":
+            assert request.url.params.get("exchange") == "binance"
+            assert request.url.params.get("asset") == "BTC-USDT"
+            return httpx.Response(
+                200,
+                json=_catalog_payload(
+                    start="2024-01-01T00:00:00Z",
+                    end="2024-01-10T00:00:00Z",
+                ),
+            )
+        if request.url.path == "/raw":
+            assert request.url.params.get("from") == "2024-01-03T00:00:00Z"
+            assert request.url.params.get("to") == "2024-01-10T00:00:00Z"
+            assert request.url.params.get("format") == "file"
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(rows),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler)
+    try:
+        assert client.raw(source="binance", market="BTC-USDT") == rows
+    finally:
+        client.close()
+
+
+def test_raw_infers_bounded_range_when_dataset_is_shorter_than_7_days() -> None:
+    rows = [{"timestamp": _ts("2024-01-09T12:00:00Z"), "payload": "ok"}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/catalog":
+            return httpx.Response(
+                200,
+                json=_catalog_payload(
+                    start="2024-01-08T00:00:00Z",
+                    end="2024-01-10T00:00:00Z",
+                ),
+            )
+        if request.url.path == "/raw":
+            assert request.url.params.get("from") == "2024-01-08T00:00:00Z"
+            assert request.url.params.get("to") == "2024-01-10T00:00:00Z"
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(rows),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler)
+    try:
+        assert client.raw(source="binance", market="BTC-USDT") == rows
+    finally:
+        client.close()
+
+
+def test_events_infer_preview_cutoff_window_without_api_key(tmp_path) -> None:
+    snapshot_dates = [f"2024-01-{day:02d}" for day in range(9, 16)]
+    snapshot_keys = {
+        f"standard-binance-BTC-USDT-{date_text}": date_text for date_text in snapshot_dates
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/catalog":
+            assert request.headers.get("authorization") is None
+            return httpx.Response(
+                200,
+                json=_catalog_payload(
+                    start="2024-01-01T00:00:00Z",
+                    end="2024-01-20T00:00:00Z",
+                    access_status="preview",
+                    public_cutoff_date="2024-01-15",
+                ),
+            )
+        if request.url.path == "/snapshots":
+            assert request.url.params.get("from") == "2024-01-09T00:00:00Z"
+            assert request.url.params.get("to") == "2024-01-16T00:00:00Z"
+            return httpx.Response(
+                200,
+                json={
+                    "snapshots": [
+                        {"key": key, "date": date_text}
+                        for key, date_text in snapshot_keys.items()
+                    ],
+                    "access": {
+                        "status": "preview",
+                        "public_cutoff_date": "2024-01-15",
+                    },
+                },
+            )
+        if request.url.path == "/snapshots/download":
+            key = request.url.params.get("key")
+            assert key in snapshot_keys
+            date_text = snapshot_keys[key]
+            row = {
+                "timestamp": _ts(f"{date_text}T12:00:00Z"),
+                "type": "trade",
+                "data": {"price": 100.0, "quantity": 1.0},
+            }
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson([row]),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, api_key=None, dataset_root=tmp_path)
+    try:
+        rows = client.events(source="binance", market="BTC-USDT")
+        assert [row["timestamp"] for row in rows] == [
+            _ts(f"{date_text}T12:00:00Z") for date_text in snapshot_dates
+        ]
     finally:
         client.close()
 
