@@ -39,7 +39,7 @@ DEFAULT_TIMEOUT = 30.0
 DEFAULT_NETWORK_CHUNK_SIZE = 8 * 1024 * 1024  # 8MB for network downloads
 DEFAULT_FILE_CHUNK_SIZE = 1 * 1024 * 1024  # 1MB for file operations
 DEFAULT_INFERRED_LOOKBACK = timedelta(days=7)
-USER_AGENT = "polaris-py/0.5.1"
+USER_AGENT = "polaris-py/0.8.2"
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 _INTERVAL_US = {
     "100ms": 100_000,
@@ -866,9 +866,9 @@ class PolarisClient:
     ) -> JSONDict:
         params: dict[str, str] = {}
         if source is not None:
-            params["exchange"] = source
+            params["source"] = source
         if market is not None:
-            params["asset"] = market
+            params["market"] = market
         return self._get_json(
             "catalog",
             params=params or None,
@@ -882,44 +882,44 @@ class PolarisClient:
         market: str,
     ) -> _CatalogAssetBounds:
         payload = self.catalog(source=source, market=market)
-        exchanges = payload.get("exchanges")
-        if not isinstance(exchanges, list):
+        sources = payload.get("sources")
+        if not isinstance(sources, list):
             raise PolarisError(
                 message=(
-                    "Catalog response did not include exchange/asset metadata needed "
+                    "Catalog response did not include source/market metadata needed "
                     f"to infer a default range for '{source}/{market}'"
                 )
             )
 
-        for exchange in exchanges:
-            if not isinstance(exchange, dict):
+        for source_entry in sources:
+            if not isinstance(source_entry, dict):
                 continue
-            exchange_id = exchange.get("id")
-            if exchange_id is not None and exchange_id != source:
-                continue
-
-            assets = exchange.get("assets")
-            if not isinstance(assets, list):
+            source_id = source_entry.get("id")
+            if source_id is not None and source_id != source:
                 continue
 
-            for asset in assets:
-                if not isinstance(asset, dict):
+            markets = source_entry.get("markets")
+            if not isinstance(markets, list):
+                continue
+
+            for market_entry in markets:
+                if not isinstance(market_entry, dict):
                     continue
-                asset_id = asset.get("id")
-                if asset_id != market:
+                market_id = market_entry.get("id")
+                if market_id != market:
                     continue
 
-                start_raw = asset.get("start")
-                end_raw = asset.get("end")
+                start_raw = market_entry.get("start")
+                end_raw = market_entry.get("end")
                 if not isinstance(start_raw, str) or not isinstance(end_raw, str):
                     raise PolarisError(
                         message=(
-                            "Catalog asset metadata did not include valid start/end "
+                            "Catalog market metadata did not include valid start/end "
                             f"timestamps for '{source}/{market}'"
                         )
                     )
 
-                access = asset.get("access")
+                access = market_entry.get("access")
                 access_status: str | None = None
                 public_cutoff_date: date | None = None
                 if isinstance(access, dict):

@@ -62,10 +62,10 @@ def _catalog_payload(
         access["public_cutoff_date"] = public_cutoff_date
 
     return {
-        "exchanges": [
+        "sources": [
             {
                 "id": source,
-                "assets": [
+                "markets": [
                     {
                         "id": market,
                         "start": start,
@@ -113,8 +113,8 @@ def test_raw_infers_last_7_days_from_catalog_for_open_dataset() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/catalog":
-            assert request.url.params.get("exchange") == "binance"
-            assert request.url.params.get("asset") == "BTC-USDT"
+            assert request.url.params.get("source") == "binance"
+            assert request.url.params.get("market") == "BTC-USDT"
             return httpx.Response(
                 200,
                 json=_catalog_payload(
