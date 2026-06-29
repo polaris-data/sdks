@@ -19,6 +19,7 @@ from polaris_data.errors import (
 
 SNAPSHOT_KEY_DAY_1 = "standard-binance-BTC-USDT-2024-01-01"
 SNAPSHOT_KEY_DAY_2 = "standard-binance-BTC-USDT-2024-01-02"
+LEGACY_SNAPSHOT_KEY_DAY_1 = "standard-binance-BTC-USDT-2024-01-01"
 
 
 def _zstd_ndjson(rows: list[dict]) -> bytes:
@@ -435,7 +436,15 @@ def test__download_snapshots_saves_files_and_materializes_daily_artifacts(tmp_pa
             to="2024-01-02T00:00:00Z",
         )
         assert [entry.key for entry in entries] == [SNAPSHOT_KEY_DAY_1]
-        assert (tmp_path / "data" / SNAPSHOT_KEY_DAY_1).exists()
+        assert (
+            tmp_path
+            / "data"
+            / "standard"
+            / "binance"
+            / "BTC-USDT"
+            / "2024-01-01"
+            / f"{SNAPSHOT_KEY_DAY_1}.jsonl.zst"
+        ).exists()
         assert (tmp_path / "daily" / "binance" / "BTC-USDT" / "2024-01-01.jsonl.zst").exists()
         assert len(calls) == 3
     finally:
@@ -456,6 +465,74 @@ def test__list_local_snapshots_filters_by_date(tmp_path) -> None:
 
         assert len(client._list_local_snapshots()) == 2
         assert len(client._list_local_snapshots(date="2024-01-01")) == 2
+    finally:
+        client.close()
+
+
+def test_replay_materializes_local_snapshot_data_files_before_network(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("network should not be called when local snapshot files exist")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        snapshot_path = client.layout.data_path_for_key(SNAPSHOT_KEY_DAY_1)
+        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        snapshot_path.write_bytes(
+            _zstd_ndjson(
+                [
+                    {"timestamp": 1704067200000000},
+                    {"timestamp": 1704067260000000},
+                ]
+            )
+        )
+
+        rows = list(
+            client.replay(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T00:02:00Z",
+            )
+        )
+
+        assert rows == [
+            {"timestamp": 1704067200000000},
+            {"timestamp": 1704067260000000},
+        ]
+    finally:
+        client.close()
+
+
+def test_replay_materializes_legacy_flat_snapshot_data_files_before_network(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("network should not be called when legacy local snapshot files exist")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        snapshot_path = tmp_path / "data" / LEGACY_SNAPSHOT_KEY_DAY_1
+        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        snapshot_path.write_bytes(
+            _zstd_ndjson(
+                [
+                    {"timestamp": 1704067200000000},
+                    {"timestamp": 1704067260000000},
+                ]
+            )
+        )
+
+        rows = list(
+            client.replay(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T00:02:00Z",
+            )
+        )
+
+        assert rows == [
+            {"timestamp": 1704067200000000},
+            {"timestamp": 1704067260000000},
+        ]
     finally:
         client.close()
 

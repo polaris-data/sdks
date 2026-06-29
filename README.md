@@ -124,6 +124,30 @@ Within that root, the SDK uses the same layout as the CLI:
   locks/
 ```
 
+Standardized snapshot downloads are stored under:
+
+```text
+<root>/data/<tier>/<source>/<market>/<YYYY-MM-DD>/<opaque-key>.jsonl.zst
+```
+
+The opaque key is the flat upstream snapshot identifier, for example:
+
+```text
+standard-aster-ASTERUSDT-2026-06-01-00
+```
+
+which is stored on disk as:
+
+```text
+<root>/data/standard/aster/ASTERUSDT/2026-06-01/standard-aster-ASTERUSDT-2026-06-01-00.jsonl.zst
+```
+
+Materialized day files used for replay-style reads are stored under:
+
+```text
+<root>/daily/<source>/<market>/<YYYY-MM-DD>.jsonl.zst
+```
+
 Pass `dataset_root=...` to `PolarisClient(...)` to override the root explicitly.
 `POLARIS_ROOT` overrides the shared root globally.
 `POLARIS_DATASET_DOWNLOAD_DIR` is still accepted as a deprecated compatibility override.

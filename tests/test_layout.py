@@ -29,3 +29,15 @@ def test_default_dataset_root_matches_platform_contract() -> None:
 def test_validated_key_segments_rejects_path_traversal() -> None:
     with pytest.raises(ValueError):
         validated_key_segments("../escape.jsonl.zst")
+
+
+def test_validated_key_segments_accepts_snapshot_path_schema() -> None:
+    assert validated_key_segments(
+        "standard-binance-BTC-USDT-2024-01-01"
+    ) == (
+        "standard",
+        "binance",
+        "BTC-USDT",
+        "2024-01-01",
+        "standard-binance-BTC-USDT-2024-01-01.jsonl.zst",
+    )

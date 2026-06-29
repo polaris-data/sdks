@@ -152,12 +152,7 @@ class LocalDatasetLayout:
         return FileLock(self.lock_path)
 
     def data_path_for_key(self, key: str) -> Path:
-        normalized = key.strip()
-        if not normalized:
-            raise ValueError("snapshot key must not be empty")
-        if "/" in normalized or "\\" in normalized or normalized in {".", ".."}:
-            raise ValueError(f"invalid snapshot key: {normalized}")
-        return self.data_root / normalized
+        return self.data_root.joinpath(*validated_key_segments(key))
 
     def temp_path_for_key(self, key: str) -> Path:
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
@@ -192,14 +187,21 @@ class LocalDatasetLayout:
                 continue
 
             relative = path.relative_to(self.data_root).as_posix()
-            day = infer_date_from_text(relative)
+            snapshot_key, source, market, snapshot_date = infer_snapshot_file_metadata(
+                relative
+            )
+            if snapshot_date is None:
+                day = infer_date_from_text(relative)
+                snapshot_date = day.isoformat() if day is not None else None
+            if snapshot_key is None:
+                snapshot_key = relative
             files.append(
                 LocalSnapshotEntry(
-                    key=relative,
+                    key=snapshot_key,
                     path=str(path),
-                    source=None,
-                    market=None,
-                    date=day.isoformat() if day is not None else None,
+                    source=source,
+                    market=market,
+                    date=snapshot_date,
                     start=None,
                     end=None,
                 )
@@ -288,3 +290,83 @@ def infer_date_from_text(text: str) -> date | None:
         except ValueError:
             continue
     return None
+
+
+def validated_key_segments(key: str) -> tuple[str, ...]:
+    normalized = normalize_snapshot_key(key)
+    tier, source, market, date_text = parse_snapshot_key(normalized)
+    return (
+        tier,
+        source,
+        market,
+        date_text,
+        f"{normalized}.jsonl.zst",
+    )
+
+
+def normalize_snapshot_key(key: str) -> str:
+    normalized = key.strip()
+    if not normalized:
+        raise ValueError("snapshot key must not be empty")
+    if "/" in normalized or "\\" in normalized or normalized in {".", ".."}:
+        raise ValueError(f"invalid snapshot key: {normalized}")
+    if normalized.endswith(".jsonl.zst"):
+        normalized = normalized.removesuffix(".jsonl.zst")
+    return normalized
+
+
+def parse_snapshot_key(key: str) -> tuple[str, str, str, str]:
+    parts = tuple(part for part in key.split("-") if part)
+    if len(parts) < 6:
+        raise ValueError(f"invalid snapshot key: {key}")
+
+    tier = parts[0]
+    source = parts[1]
+    for date_index in range(len(parts) - 3, 2, -1):
+        date_text = "-".join(parts[date_index : date_index + 3])
+        try:
+            parsed_date = date.fromisoformat(date_text).isoformat()
+        except ValueError:
+            continue
+
+        market = "-".join(parts[2:date_index])
+        if market:
+            return tier, source, market, parsed_date
+
+    raise ValueError(f"invalid snapshot key: {key}")
+
+
+def infer_snapshot_file_metadata(
+    relative_path: str,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    path_parts = tuple(part for part in relative_path.split("/") if part)
+    if len(path_parts) == 5 and path_parts[-1].endswith(".jsonl.zst"):
+        tier, source, market, date_text, filename = path_parts
+        try:
+            parsed_date = date.fromisoformat(date_text).isoformat()
+        except ValueError:
+            parsed_date = None
+        snapshot_key = filename.removesuffix(".jsonl.zst")
+        if parsed_date is not None:
+            try:
+                parsed_tier, parsed_source, parsed_market, key_date = parse_snapshot_key(
+                    snapshot_key
+                )
+                if (
+                    parsed_tier == tier
+                    and parsed_source == source
+                    and parsed_market == market
+                    and key_date == parsed_date
+                ):
+                    return snapshot_key, source, market, parsed_date
+            except ValueError:
+                pass
+
+    filename = path_parts[-1] if path_parts else relative_path
+    if filename.endswith(".jsonl.zst"):
+        filename = filename.removesuffix(".jsonl.zst")
+    try:
+        _, source, market, parsed_date = parse_snapshot_key(filename)
+        return filename, source, market, parsed_date
+    except ValueError:
+        return None, None, None, None

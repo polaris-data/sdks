@@ -743,7 +743,7 @@ class PolarisClient:
                 local_entry = indexed.get(snapshot.key)
                 local_path = self.layout.data_path_for_key(snapshot.key)
 
-                if local_entry is not None and local_path.exists() and not force:
+                if local_entry is not None and Path(local_entry.path).exists() and not force:
                     self.layout.materialize_daily_artifact(local_entry)
                     results.append(local_entry)
                     continue
