@@ -117,7 +117,7 @@ Example response shape:
 
 ## Local dataset storage
 
-Standardized snapshots and local day files are stored under the shared Polaris app-data root so the Python SDK and CLI can reuse the same files.
+Standardized snapshots are stored under the shared Polaris app-data root so the Python SDK and CLI can reuse the same files. Legacy materialized day files are also recognized when present.
 
 Default roots:
 
@@ -154,7 +154,7 @@ which is stored on disk as:
 <root>/data/standard/aster/ASTERUSDT/2026-06-01/standard-aster-ASTERUSDT-2026-06-01-00.jsonl.zst
 ```
 
-Materialized day files used for replay-style reads are stored under:
+Compatible materialized day files, when present, are stored under:
 
 ```text
 <root>/daily/<source>/<market>/<YYYY-MM-DD>.jsonl.zst
@@ -166,7 +166,7 @@ Pass `dataset_root=...` to `PolarisClient(...)` to override the root explicitly.
 
 ## Snapshot-first replay
 
-For standardized historical data, `replay(...)`, `events(...)`, `trades(...)`, and default/tradingview `ohlcv(...)` now prefer `/snapshots` + `/snapshots/download` and read from local day files when they already exist:
+For standardized historical data, `replay(...)`, `events(...)`, `trades(...)`, and default/tradingview `ohlcv(...)` now prefer `/snapshots` + `/download` and reuse local snapshot files when they already exist:
 
 ```python
 from polaris_data import PolarisClient
@@ -181,7 +181,7 @@ with PolarisClient(api_key="polaris_key_your_key") as client:
         print(row)
 ```
 
-If the requested standardized range cannot be satisfied from daily snapshots, `replay(...)`, `events(...)`, `trades(...)`, and `ohlcv(...)` now raise instead of falling back.
+If the requested standardized range cannot be satisfied from available standardized snapshots, `replay(...)`, `events(...)`, `trades(...)`, and `ohlcv(...)` now raise instead of falling back.
 
 ## Error handling
 

@@ -41,6 +41,7 @@ DEFAULT_FILE_CHUNK_SIZE = 1 * 1024 * 1024  # 1MB for file operations
 DEFAULT_INFERRED_LOOKBACK = timedelta(days=7)
 USER_AGENT = "polaris-py/0.8.2"
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+_SNAPSHOT_DOWNLOAD_PATHS = ("download", "snapshots/download")
 _INTERVAL_US = {
     "100ms": 100_000,
     "1s": 1_000_000,
@@ -334,19 +335,16 @@ class PolarisClient:
             return
 
         status = response.status_code
-        body_text = response.text
+        body_text = self._response_text(response)
         message = body_text or f"HTTP error {status}"
         reset_at: str | None = None
 
-        try:
-            payload = response.json()
-            if isinstance(payload, dict):
-                message = str(payload.get("error") or payload.get("message") or message)
-                raw_reset = payload.get("reset_at")
-                if isinstance(raw_reset, str):
-                    reset_at = raw_reset
-        except json.JSONDecodeError:
-            pass
+        payload = self._response_json_object(response)
+        if payload is not None:
+            message = str(payload.get("error") or payload.get("message") or message)
+            raw_reset = payload.get("reset_at")
+            if isinstance(raw_reset, str):
+                reset_at = raw_reset
 
         if status == 401:
             raise UnauthorizedError(message=message, status_code=status, body=body_text)
@@ -370,6 +368,34 @@ class PolarisClient:
             )
 
         raise PolarisError(message=message, status_code=status, body=body_text)
+
+    def _response_text(self, response: httpx.Response) -> str:
+        try:
+            return response.text
+        except httpx.ResponseNotRead:
+            try:
+                body = response.read()
+            except httpx.HTTPError:
+                return ""
+            encoding = response.encoding or "utf-8"
+            return body.decode(encoding, errors="replace")
+
+    def _response_json_object(self, response: httpx.Response) -> JSONDict | None:
+        try:
+            payload = response.json()
+        except (json.JSONDecodeError, httpx.ResponseNotRead):
+            try:
+                response.read()
+            except httpx.HTTPError:
+                return None
+            try:
+                payload = response.json()
+            except json.JSONDecodeError:
+                return None
+
+        if isinstance(payload, dict):
+            return payload
+        return None
 
     def _get_json(
         self,
@@ -578,7 +604,53 @@ class PolarisClient:
         if not isinstance(entry_date, str) or not entry_date:
             entry_date = None
 
-        return SnapshotEntry(key=key, date=entry_date)
+        entry_hour = raw.get("hour")
+        if not isinstance(entry_hour, int) or not 0 <= entry_hour <= 23:
+            entry_hour = None
+
+        return SnapshotEntry(key=key, date=entry_date, hour=entry_hour)
+
+    def _required_snapshot_hours_by_day(
+        self,
+        *,
+        from_: TimeInput,
+        to: TimeInput,
+    ) -> dict[date, set[int]]:
+        start = to_datetime(from_)
+        end = to_datetime(to)
+        required_hours: dict[date, set[int]] = {}
+        cursor = start.replace(minute=0, second=0, microsecond=0)
+        while cursor < end:
+            required_hours.setdefault(cursor.date(), set()).add(cursor.hour)
+            cursor += timedelta(hours=1)
+        return required_hours
+
+    def _snapshot_entries_cover_hours(
+        self,
+        entries: list[SnapshotEntry] | list[LocalSnapshotEntry],
+        required_hours: set[int],
+    ) -> bool:
+        if any(entry.hour is None for entry in entries):
+            return True
+        return required_hours.issubset(
+            {entry.hour for entry in entries if entry.hour is not None}
+        )
+
+    def _select_covering_snapshot_entries(
+        self,
+        entries: list[SnapshotEntry] | list[LocalSnapshotEntry],
+        required_hours: set[int],
+    ) -> list[SnapshotEntry] | list[LocalSnapshotEntry]:
+        daily_entries = [entry for entry in entries if entry.hour is None]
+        if daily_entries:
+            return [sorted(daily_entries, key=lambda entry: entry.key)[0]]
+
+        hourly_entries = {
+            entry.hour: entry
+            for entry in sorted(entries, key=lambda entry: entry.key)
+            if entry.hour is not None and entry.hour in required_hours
+        }
+        return [hourly_entries[hour] for hour in sorted(required_hours)]
 
     def _iter_local_snapshot_rows(
         self,
@@ -704,31 +776,40 @@ class PolarisClient:
             temp_path.unlink()
 
         try:
-            with self._client.stream(
-                "GET",
-                "snapshots/download",
-                params={"key": snapshot.key},
-                headers=self._auth_headers(
-                    auth_required=False,
-                    include_auth_if_available=True,
-                ),
-                follow_redirects=True,
-            ) as response:
-                self._raise_for_status(response)
+            for index, download_path in enumerate(_SNAPSHOT_DOWNLOAD_PATHS):
+                try:
+                    with self._client.stream(
+                        "GET",
+                        download_path,
+                        params={"key": snapshot.key},
+                        headers=self._auth_headers(
+                            auth_required=False,
+                            include_auth_if_available=True,
+                        ),
+                        follow_redirects=True,
+                    ) as response:
+                        self._raise_for_status(response)
 
-                content_type = response.headers.get("content-type", "").lower()
-                if "application/json" in content_type:
-                    raise PolarisError(
-                        message="Expected compressed snapshot download, received JSON",
-                        status_code=response.status_code,
-                    )
+                        content_type = response.headers.get("content-type", "").lower()
+                        if "application/json" in content_type:
+                            raise PolarisError(
+                                message="Expected compressed snapshot download, received JSON",
+                                status_code=response.status_code,
+                            )
 
-                with temp_path.open("wb") as file:
-                    for chunk in response.iter_bytes(chunk_size=DEFAULT_NETWORK_CHUNK_SIZE):
-                        if chunk:
-                            file.write(chunk)
-                    file.flush()
-                    os.fsync(file.fileno())
+                        with temp_path.open("wb") as file:
+                            for chunk in response.iter_bytes(
+                                chunk_size=DEFAULT_NETWORK_CHUNK_SIZE
+                            ):
+                                if chunk:
+                                    file.write(chunk)
+                            file.flush()
+                            os.fsync(file.fileno())
+                    break
+                except NotFoundError:
+                    if index == len(_SNAPSHOT_DOWNLOAD_PATHS) - 1:
+                        raise
+                    continue
 
             os.replace(temp_path, local_path)
         finally:
@@ -743,8 +824,10 @@ class PolarisClient:
             date=snapshot.date,
             start=None,
             end=None,
+            hour=snapshot.hour,
         )
-        self.layout.materialize_daily_artifact(entry, force=force_materialize)
+        if snapshot.hour is None:
+            self.layout.materialize_daily_artifact(entry, force=force_materialize)
         return entry
 
     def _ensure_local_snapshot_entries(
@@ -762,7 +845,8 @@ class PolarisClient:
                 local_path = self.layout.data_path_for_key(snapshot.key)
 
                 if local_entry is not None and Path(local_entry.path).exists() and not force:
-                    self.layout.materialize_daily_artifact(local_entry)
+                    if local_entry.hour is None:
+                        self.layout.materialize_daily_artifact(local_entry)
                     results.append(local_entry)
                     continue
 
@@ -775,7 +859,7 @@ class PolarisClient:
 
         return results
 
-    def _resolve_snapshot_day_files(
+    def _resolve_snapshot_paths(
         self,
         *,
         source: str,
@@ -786,15 +870,49 @@ class PolarisClient:
         start = to_datetime(from_)
         end = to_datetime(to)
         required_days = _iter_utc_dates(start, end)
-        required_day_set = set(required_days)
+        required_hours_by_day = self._required_snapshot_hours_by_day(
+            from_=from_,
+            to=to,
+        )
 
-        daily_paths = self._materialize_local_daily_artifacts(
+        local_snapshot_entries_by_day: dict[date, list[LocalSnapshotEntry]] = {}
+        for entry in self.layout.list_local_snapshots():
+            if entry.source != source or entry.market != market or entry.date is None:
+                continue
+            try:
+                day = date.fromisoformat(entry.date)
+            except ValueError:
+                continue
+            if day not in required_hours_by_day:
+                continue
+            if entry.hour is not None and entry.hour not in required_hours_by_day[day]:
+                continue
+            if not Path(entry.path).exists():
+                continue
+            local_snapshot_entries_by_day.setdefault(day, []).append(entry)
+
+        if all(
+            self._snapshot_entries_cover_hours(
+                local_snapshot_entries_by_day.get(day, []),
+                required_hours_by_day[day],
+            )
+            for day in required_days
+        ):
+            selected_paths: list[Path] = []
+            for day in required_days:
+                day_entries = self._select_covering_snapshot_entries(
+                    local_snapshot_entries_by_day[day],
+                    required_hours_by_day[day],
+                )
+                selected_paths.extend(Path(entry.path) for entry in day_entries)
+            return selected_paths
+
+        daily_paths = self._daily_artifact_paths(
             source=source,
             market=market,
-            required_dates=required_day_set,
+            required_dates=set(required_days),
         )
-        missing_days = [day for day in required_days if day not in daily_paths]
-        if not missing_days:
+        if all(day in daily_paths for day in required_days):
             return [daily_paths[day] for day in required_days]
 
         remote_snapshots = self.list_snapshots(
@@ -803,7 +921,7 @@ class PolarisClient:
             from_=from_,
             to=to,
         )
-        snapshots_by_day: dict[date, SnapshotEntry] = {}
+        remote_snapshots_by_day: dict[date, list[SnapshotEntry]] = {}
         for snapshot in remote_snapshots:
             if snapshot.date is None:
                 continue
@@ -811,25 +929,48 @@ class PolarisClient:
                 day = date.fromisoformat(snapshot.date)
             except ValueError:
                 continue
-            if day not in snapshots_by_day:
-                snapshots_by_day[day] = snapshot
+            if day not in required_hours_by_day:
+                continue
+            if snapshot.hour is not None and snapshot.hour not in required_hours_by_day[day]:
+                continue
+            remote_snapshots_by_day.setdefault(day, []).append(snapshot)
 
-        missing_remote_days = [day for day in missing_days if day not in snapshots_by_day]
-        if missing_remote_days:
+        if not all(
+            self._snapshot_entries_cover_hours(
+                remote_snapshots_by_day.get(day, []),
+                required_hours_by_day[day],
+            )
+            for day in required_days
+        ):
             return None
 
-        self._ensure_local_snapshot_entries(
-            [snapshots_by_day[day] for day in missing_days],
-            force=False,
-        )
-        daily_paths = self._materialize_local_daily_artifacts(
-            source=source,
-            market=market,
-            required_dates=required_day_set,
-        )
-        if any(day not in daily_paths for day in required_days):
-            return None
-        return [daily_paths[day] for day in required_days]
+        selected_snapshots: list[SnapshotEntry] = []
+        for day in required_days:
+            selected_snapshots.extend(
+                self._select_covering_snapshot_entries(
+                    remote_snapshots_by_day[day],
+                    required_hours_by_day[day],
+                )
+            )
+
+        local_by_key = {entry.key: entry for entry in self.layout.list_local_snapshots()}
+        missing_snapshots = [
+            snapshot
+            for snapshot in selected_snapshots
+            if snapshot.key not in local_by_key
+            or not Path(local_by_key[snapshot.key].path).exists()
+        ]
+        if missing_snapshots:
+            for entry in self._ensure_local_snapshot_entries(missing_snapshots, force=False):
+                local_by_key[entry.key] = entry
+
+        resolved_paths: list[Path] = []
+        for snapshot in selected_snapshots:
+            local_entry = local_by_key.get(snapshot.key)
+            if local_entry is None or not Path(local_entry.path).exists():
+                return None
+            resolved_paths.append(Path(local_entry.path))
+        return resolved_paths
 
     def _aggregate_ohlcv_from_standard_trades(
         self,
@@ -840,18 +981,18 @@ class PolarisClient:
         to: TimeInput,
         interval: str,
     ) -> list[JSONDict]:
-        day_paths = self._resolve_snapshot_day_files(
+        snapshot_paths = self._resolve_snapshot_paths(
             source=source,
             market=market,
             from_=from_,
             to=to,
         )
-        if day_paths is None:
+        if snapshot_paths is None:
             raise PolarisError(
                 "Requested OHLCV range could not be satisfied from standardized snapshots"
             )
         aggregator = _LocalOhlcvAggregator(interval)
-        for row in self._iter_local_snapshot_rows(day_paths, from_=from_, to=to):
+        for row in self._iter_local_snapshot_rows(snapshot_paths, from_=from_, to=to):
             aggregator.push(row)
         return aggregator.finish()
 
@@ -1202,14 +1343,18 @@ class PolarisClient:
             )
 
         if standard:
-            day_paths = self._resolve_snapshot_day_files(
+            snapshot_paths = self._resolve_snapshot_paths(
                 source=source,
                 market=market,
                 from_=from_,
                 to=to,
             )
-            if day_paths is not None:
-                return self._iter_local_snapshot_rows(day_paths, from_=from_, to=to)
+            if snapshot_paths is not None:
+                return self._iter_local_snapshot_rows(
+                    snapshot_paths,
+                    from_=from_,
+                    to=to,
+                )
             raise PolarisError(
                 "Requested replay range could not be satisfied from standardized snapshots"
             )
@@ -1444,17 +1589,17 @@ class PolarisClient:
         from_: TimeInput,
         to: TimeInput,
     ) -> Iterator[JSONDict]:
-        day_paths = self._resolve_snapshot_day_files(
+        snapshot_paths = self._resolve_snapshot_paths(
             source=source,
             market=market,
             from_=from_,
             to=to,
         )
-        if day_paths is None:
+        if snapshot_paths is None:
             raise PolarisError(
                 "Requested trade range could not be satisfied from standardized snapshots"
             )
-        for row in self._iter_local_snapshot_rows(day_paths, from_=from_, to=to):
+        for row in self._iter_local_snapshot_rows(snapshot_paths, from_=from_, to=to):
             if row.get("type") == "trade":
                 yield row
 
@@ -1489,17 +1634,17 @@ class PolarisClient:
         from_: TimeInput,
         to: TimeInput,
     ) -> Iterator[JSONDict]:
-        day_paths = self._resolve_snapshot_day_files(
+        snapshot_paths = self._resolve_snapshot_paths(
             source=source,
             market=market,
             from_=from_,
             to=to,
         )
-        if day_paths is None:
+        if snapshot_paths is None:
             raise PolarisError(
                 "Requested event range could not be satisfied from standardized snapshots"
             )
-        yield from self._iter_local_snapshot_rows(day_paths, from_=from_, to=to)
+        yield from self._iter_local_snapshot_rows(snapshot_paths, from_=from_, to=to)
 
     def raw(
         self,

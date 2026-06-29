@@ -11,6 +11,7 @@ import zstandard as zstd
 from polaris_data import PolarisClient
 from polaris_data.errors import (
     AccessDeniedError,
+    NotFoundError,
     PolarisError,
     RateLimitedError,
     StreamDecodeError,
@@ -203,7 +204,7 @@ def test_events_infer_preview_cutoff_window_without_api_key(tmp_path) -> None:
                     },
                 },
             )
-        if request.url.path == "/snapshots/download":
+        if request.url.path == "/download":
             key = request.url.params.get("key")
             assert key in snapshot_keys
             date_text = snapshot_keys[key]
@@ -279,7 +280,7 @@ def test_trades_use_snapshot_download_flow_by_default(tmp_path) -> None:
                 200,
                 json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
             )
-        if request.url.path == "/snapshots/download":
+        if request.url.path == "/download":
             return httpx.Response(
                 302,
                 headers={"location": "https://download.example.com/day-1-trades.jsonl.zst"},
@@ -333,6 +334,100 @@ def test_trades_use_snapshot_download_flow_by_default(tmp_path) -> None:
         client.close()
 
 
+def test_trades_download_404_raises_not_found_for_streaming_response(tmp_path) -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
+            )
+        if request.url.path in {"/download", "/snapshots/download"}:
+            return httpx.Response(404, text="snapshot missing")
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        with pytest.raises(NotFoundError, match="snapshot missing"):
+            client.trades(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+            )
+        assert calls == ["/snapshots", "/download", "/snapshots/download"]
+    finally:
+        client.close()
+
+
+def test_trades_download_hourly_snapshots_for_partial_day_ranges(tmp_path) -> None:
+    snapshot_rows = {
+        "standard-binance-BTC-USDT-2024-01-01-00": [
+            {
+                "timestamp": _ts("2024-01-01T00:00:01Z"),
+                "type": "trade",
+                "data": {"price": 100.0, "quantity": 1.0},
+            }
+        ],
+        "standard-binance-BTC-USDT-2024-01-01-01": [
+            {
+                "timestamp": _ts("2024-01-01T01:00:01Z"),
+                "type": "trade",
+                "data": {"price": 101.0, "quantity": 2.0},
+            }
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={
+                    "snapshots": [
+                        {
+                            "key": key,
+                            "date": "2024-01-01",
+                            "hour": hour,
+                        }
+                        for hour, key in enumerate(snapshot_rows)
+                    ]
+                },
+            )
+        if request.url.path == "/download":
+            key = request.url.params.get("key")
+            assert key in snapshot_rows
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(snapshot_rows[key]),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        assert client.trades(
+            source="binance",
+            market="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T02:00:00Z",
+        ) == [
+            {
+                "timestamp": _ts("2024-01-01T00:00:01Z"),
+                "type": "trade",
+                "data": {"price": 100.0, "quantity": 1.0},
+            },
+            {
+                "timestamp": _ts("2024-01-01T01:00:01Z"),
+                "type": "trade",
+                "data": {"price": 101.0, "quantity": 2.0},
+            },
+        ]
+    finally:
+        client.close()
+
+
 def test_trades_require_snapshot_coverage_and_do_not_fall_back_to_events() -> None:
     calls: list[tuple[str, str | None]] = []
 
@@ -365,7 +460,7 @@ def test_ohlcv_aggregates_from_snapshot_download_flow(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/snapshots":
             return httpx.Response(200, json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]})
-        if request.url.path == "/snapshots/download":
+        if request.url.path == "/download":
             return httpx.Response(
                 302,
                 headers={"location": "https://download.example.com/day-1-ohlcv.jsonl.zst"},
@@ -439,7 +534,7 @@ def test_ohlcv_tradingview_format_returns_local_json(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/snapshots":
             return httpx.Response(200, json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]})
-        if request.url.path == "/snapshots/download":
+        if request.url.path == "/download":
             return httpx.Response(
                 302,
                 headers={"location": "https://download.example.com/day-1-tv.jsonl.zst"},
@@ -574,7 +669,7 @@ def test__download_snapshots_saves_files_and_materializes_daily_artifacts(tmp_pa
                 200,
                 json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
             )
-        if request.url.path == "/snapshots/download":
+        if request.url.path == "/download":
             assert request.url.params.get("key") == SNAPSHOT_KEY_DAY_1
             return httpx.Response(
                 302,
@@ -844,7 +939,7 @@ def test_events_use_snapshot_download_flow_by_default(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/snapshots":
             return httpx.Response(200, json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]})
-        if request.url.path == "/snapshots/download":
+        if request.url.path == "/download":
             return httpx.Response(
                 302,
                 headers={"location": "https://download.example.com/day-1.jsonl.zst"},

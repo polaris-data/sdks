@@ -29,6 +29,7 @@ class SnapshotEntry:
     source: str | None = None
     market: str | None = None
     date: str | None = None
+    hour: int | None = None
 
 
 @dataclass(frozen=True)
@@ -42,3 +43,4 @@ class LocalSnapshotEntry:
     date: str | None
     start: datetime | None
     end: datetime | None
+    hour: int | None = None

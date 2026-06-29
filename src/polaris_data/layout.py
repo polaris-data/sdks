@@ -204,6 +204,7 @@ class LocalDatasetLayout:
                     date=snapshot_date,
                     start=None,
                     end=None,
+                    hour=_infer_snapshot_hour(snapshot_key),
                 )
             )
 
@@ -294,7 +295,7 @@ def infer_date_from_text(text: str) -> date | None:
 
 def validated_key_segments(key: str) -> tuple[str, ...]:
     normalized = normalize_snapshot_key(key)
-    tier, source, market, date_text = parse_snapshot_key(normalized)
+    tier, source, market, date_text, _ = parse_snapshot_key_metadata(normalized)
     return (
         tier,
         source,
@@ -316,6 +317,11 @@ def normalize_snapshot_key(key: str) -> str:
 
 
 def parse_snapshot_key(key: str) -> tuple[str, str, str, str]:
+    tier, source, market, date_text, _ = parse_snapshot_key_metadata(key)
+    return tier, source, market, date_text
+
+
+def parse_snapshot_key_metadata(key: str) -> tuple[str, str, str, str, int | None]:
     parts = tuple(part for part in key.split("-") if part)
     if len(parts) < 6:
         raise ValueError(f"invalid snapshot key: {key}")
@@ -331,7 +337,13 @@ def parse_snapshot_key(key: str) -> tuple[str, str, str, str]:
 
         market = "-".join(parts[2:date_index])
         if market:
-            return tier, source, market, parsed_date
+            suffix = parts[date_index + 3 :]
+            parsed_hour: int | None = None
+            if len(suffix) == 1 and suffix[0].isdigit():
+                hour_value = int(suffix[0])
+                if 0 <= hour_value <= 23:
+                    parsed_hour = hour_value
+            return tier, source, market, parsed_date, parsed_hour
 
     raise ValueError(f"invalid snapshot key: {key}")
 
@@ -370,3 +382,13 @@ def infer_snapshot_file_metadata(
         return filename, source, market, parsed_date
     except ValueError:
         return None, None, None, None
+
+
+def _infer_snapshot_hour(key: str | None) -> int | None:
+    if not key:
+        return None
+    try:
+        *_, parsed_hour = parse_snapshot_key_metadata(key)
+    except ValueError:
+        return None
+    return parsed_hour
