@@ -66,13 +66,13 @@ Use it to inspect available data and query historical market data.
 
 ### Historical data
 
-- `replay(source=..., market=..., from_=None, to=None, standard=True, parallel=False)`: Stream historical events for backfills, notebooks, or replay-style processing.
-- `events(source=..., market=..., from_=None, to=None)`: Return standardized historical events as a list.
-- `trades(source=..., market=..., from_=None, to=None)`: Return standardized trade events as a list.
+- `replay(source=..., market=..., from_=None, to=None, standard=True, allow_gaps=False, parallel=False)`: Stream historical events for backfills, notebooks, or replay-style processing.
+- `events(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Return standardized historical events as a list.
+- `trades(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Return standardized trade events as a list.
 - `raw(source=..., market=..., from_=None, to=None, limit=1000)`: Return raw source payloads as a list.
-- `ohlcv(source=..., market=..., from_=None, to=None, interval=..., format=None)`: Aggregate OHLCV bars from standardized trade data.
+- `ohlcv(source=..., market=..., from_=None, to=None, interval=..., format=None, allow_gaps=False)`: Aggregate OHLCV bars from standardized trade data.
 
-For historical event queries, `standard=True` is the default. Pass `standard=False` when you explicitly want raw schema payloads through `replay(...)`. Methods that take `from_` and `to` accept ISO 8601 strings, `datetime`, `date`, or Unix epoch microseconds. If you omit one or both bounds, the SDK uses catalog metadata to infer a bounded range. For open datasets that defaults to the most recent 7 days capped by the dataset `start`/`end`. For unauthenticated preview datasets, `to` is capped at the public cutoff date.
+For historical event queries, `standard=True` is the default. Pass `standard=False` when you explicitly want raw schema payloads through `replay(...)`. Methods that take `from_` and `to` accept ISO 8601 strings, `datetime`, `date`, or Unix epoch microseconds. If you omit one or both bounds, the SDK uses catalog metadata to infer a bounded range. For open datasets that defaults to the most recent 7 days capped by the dataset `start`/`end`. For unauthenticated preview datasets, `to` is capped at the public cutoff date. Standardized methods also accept `allow_gaps=True` to return rows from covered snapshots only; when gaps are detected the SDK emits a warning naming the skipped intervals instead of fabricating data for the outage.
 
 Example:
 
@@ -181,7 +181,7 @@ with PolarisClient(api_key="polaris_key_your_key") as client:
         print(row)
 ```
 
-If the requested standardized range cannot be satisfied from available standardized snapshots, `replay(...)`, `events(...)`, `trades(...)`, and `ohlcv(...)` now raise instead of falling back.
+If the requested standardized range cannot be satisfied from available standardized snapshots, `replay(...)`, `events(...)`, `trades(...)`, and `ohlcv(...)` raise by default instead of falling back. Pass `allow_gaps=True` on standardized methods to return only covered data and receive a warning with the missing intervals.
 
 ## Error handling
 

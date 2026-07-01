@@ -6,6 +6,7 @@ import dataclasses
 import json
 import io
 import os
+import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -174,7 +175,10 @@ class _LocalOhlcvAggregator:
 
         result.sort(key=lambda item: int(item["timestamp"]))
         for index in range(1, len(result)):
-            result[index]["open"] = result[index - 1]["close"]
+            previous_timestamp = int(result[index - 1]["timestamp"])
+            current_timestamp = int(result[index]["timestamp"])
+            if current_timestamp == previous_timestamp + self._interval_us:
+                result[index]["open"] = result[index - 1]["close"]
         return result
 
 
@@ -197,6 +201,18 @@ class _CatalogAssetBounds:
     end: datetime
     access_status: str | None
     public_cutoff_date: date | None
+
+
+@dataclasses.dataclass(frozen=True)
+class _GapInterval:
+    start: datetime
+    end: datetime
+
+
+@dataclasses.dataclass(frozen=True)
+class _ResolvedSnapshotCoverage:
+    paths: list[Path]
+    gaps: list[_GapInterval]
 
 
 def _end_of_public_cutoff_day(cutoff_date: date) -> datetime:
@@ -652,6 +668,69 @@ class PolarisClient:
         }
         return [hourly_entries[hour] for hour in sorted(required_hours)]
 
+    def _select_present_snapshot_entries(
+        self,
+        entries: list[SnapshotEntry] | list[LocalSnapshotEntry],
+        required_hours: set[int],
+    ) -> list[SnapshotEntry] | list[LocalSnapshotEntry]:
+        daily_entries = [entry for entry in entries if entry.hour is None]
+        if daily_entries:
+            return [sorted(daily_entries, key=lambda entry: entry.key)[0]]
+
+        hourly_entries = {
+            entry.hour: entry
+            for entry in sorted(entries, key=lambda entry: entry.key)
+            if entry.hour is not None and entry.hour in required_hours
+        }
+        return [hourly_entries[hour] for hour in sorted(hourly_entries)]
+
+    def _gap_intervals_from_missing_hours(
+        self,
+        *,
+        start: datetime,
+        end: datetime,
+        missing_hours_by_day: dict[date, set[int]],
+    ) -> list[_GapInterval]:
+        gaps: list[_GapInterval] = []
+        cursor = start
+        while cursor < end:
+            hour_start = cursor.replace(minute=0, second=0, microsecond=0)
+            hour_end = hour_start + timedelta(hours=1)
+            segment_start = max(start, hour_start)
+            segment_end = min(end, hour_end)
+            if hour_start.hour in missing_hours_by_day.get(hour_start.date(), set()):
+                if gaps and gaps[-1].end == segment_start:
+                    gaps[-1] = _GapInterval(start=gaps[-1].start, end=segment_end)
+                else:
+                    gaps.append(_GapInterval(start=segment_start, end=segment_end))
+            cursor = hour_end
+        return gaps
+
+    def _warn_snapshot_gaps(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput,
+        to: TimeInput,
+        gaps: list[_GapInterval],
+    ) -> None:
+        if not gaps:
+            return
+
+        gap_text = ", ".join(
+            f"{to_iso8601(gap.start)}..{to_iso8601(gap.end)}" for gap in gaps
+        )
+        warnings.warn(
+            (
+                f"Standardized snapshot coverage for '{source}/{market}' has gaps in "
+                f"{to_iso8601(from_)}..{to_iso8601(to)}; skipped missing intervals: "
+                f"{gap_text}"
+            ),
+            UserWarning,
+            stacklevel=3,
+        )
+
     def _iter_local_snapshot_rows(
         self,
         paths: list[Path],
@@ -859,14 +938,14 @@ class PolarisClient:
 
         return results
 
-    def _resolve_snapshot_paths(
+    def _resolve_snapshot_coverage(
         self,
         *,
         source: str,
         market: str,
         from_: TimeInput,
         to: TimeInput,
-    ) -> list[Path] | None:
+    ) -> _ResolvedSnapshotCoverage:
         start = to_datetime(from_)
         end = to_datetime(to)
         required_days = _iter_utc_dates(start, end)
@@ -905,7 +984,7 @@ class PolarisClient:
                     required_hours_by_day[day],
                 )
                 selected_paths.extend(Path(entry.path) for entry in day_entries)
-            return selected_paths
+            return _ResolvedSnapshotCoverage(paths=selected_paths, gaps=[])
 
         daily_paths = self._daily_artifact_paths(
             source=source,
@@ -913,7 +992,10 @@ class PolarisClient:
             required_dates=set(required_days),
         )
         if all(day in daily_paths for day in required_days):
-            return [daily_paths[day] for day in required_days]
+            return _ResolvedSnapshotCoverage(
+                paths=[daily_paths[day] for day in required_days],
+                gaps=[],
+            )
 
         remote_snapshots = self.list_snapshots(
             source=source,
@@ -935,23 +1017,28 @@ class PolarisClient:
                 continue
             remote_snapshots_by_day.setdefault(day, []).append(snapshot)
 
-        if not all(
-            self._snapshot_entries_cover_hours(
-                remote_snapshots_by_day.get(day, []),
-                required_hours_by_day[day],
-            )
-            for day in required_days
-        ):
-            return None
-
         selected_snapshots: list[SnapshotEntry] = []
+        missing_hours_by_day: dict[date, set[int]] = {}
         for day in required_days:
-            selected_snapshots.extend(
-                self._select_covering_snapshot_entries(
-                    remote_snapshots_by_day[day],
-                    required_hours_by_day[day],
+            day_entries = remote_snapshots_by_day.get(day, [])
+            required_hours = required_hours_by_day[day]
+            if self._snapshot_entries_cover_hours(day_entries, required_hours):
+                selected_snapshots.extend(
+                    self._select_covering_snapshot_entries(day_entries, required_hours)
                 )
+                continue
+
+            selected_snapshots.extend(
+                self._select_present_snapshot_entries(day_entries, required_hours)
             )
+            present_hours = {
+                entry.hour
+                for entry in day_entries
+                if entry.hour is not None and entry.hour in required_hours
+            }
+            missing_hours = required_hours - present_hours
+            if missing_hours:
+                missing_hours_by_day[day] = missing_hours
 
         local_by_key = {entry.key: entry for entry in self.layout.list_local_snapshots()}
         missing_snapshots = [
@@ -968,9 +1055,36 @@ class PolarisClient:
         for snapshot in selected_snapshots:
             local_entry = local_by_key.get(snapshot.key)
             if local_entry is None or not Path(local_entry.path).exists():
-                return None
+                raise PolarisError(
+                    "Selected standardized snapshots could not be materialized locally"
+                )
             resolved_paths.append(Path(local_entry.path))
-        return resolved_paths
+        return _ResolvedSnapshotCoverage(
+            paths=resolved_paths,
+            gaps=self._gap_intervals_from_missing_hours(
+                start=start,
+                end=end,
+                missing_hours_by_day=missing_hours_by_day,
+            ),
+        )
+
+    def _resolve_snapshot_paths(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput,
+        to: TimeInput,
+    ) -> list[Path] | None:
+        coverage = self._resolve_snapshot_coverage(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+        )
+        if coverage.gaps or not coverage.paths:
+            return None
+        return coverage.paths
 
     def _aggregate_ohlcv_from_standard_trades(
         self,
@@ -980,19 +1094,28 @@ class PolarisClient:
         from_: TimeInput,
         to: TimeInput,
         interval: str,
+        allow_gaps: bool = False,
     ) -> list[JSONDict]:
-        snapshot_paths = self._resolve_snapshot_paths(
+        coverage = self._resolve_snapshot_coverage(
             source=source,
             market=market,
             from_=from_,
             to=to,
         )
-        if snapshot_paths is None:
+        if not coverage.paths or (coverage.gaps and not allow_gaps):
             raise PolarisError(
                 "Requested OHLCV range could not be satisfied from standardized snapshots"
             )
+        if allow_gaps:
+            self._warn_snapshot_gaps(
+                source=source,
+                market=market,
+                from_=from_,
+                to=to,
+                gaps=coverage.gaps,
+            )
         aggregator = _LocalOhlcvAggregator(interval)
-        for row in self._iter_local_snapshot_rows(snapshot_paths, from_=from_, to=to):
+        for row in self._iter_local_snapshot_rows(coverage.paths, from_=from_, to=to):
             aggregator.push(row)
         return aggregator.finish()
 
@@ -1306,6 +1429,7 @@ class PolarisClient:
         from_: TimeInput | None = None,
         to: TimeInput | None = None,
         standard: bool = True,
+        allow_gaps: bool = False,
         chunk_size: int | None = None,
         timeout: float | None = None,
         parallel: bool | int = False,
@@ -1337,21 +1461,30 @@ class PolarisClient:
                 from_=from_,
                 to=to,
                 standard=standard,
+                allow_gaps=allow_gaps,
                 chunk_size=effective_chunk_size,
                 timeout=timeout,
                 max_workers=max_workers,
             )
 
         if standard:
-            snapshot_paths = self._resolve_snapshot_paths(
+            coverage = self._resolve_snapshot_coverage(
                 source=source,
                 market=market,
                 from_=from_,
                 to=to,
             )
-            if snapshot_paths is not None:
+            if coverage.paths and (allow_gaps or not coverage.gaps):
+                if allow_gaps:
+                    self._warn_snapshot_gaps(
+                        source=source,
+                        market=market,
+                        from_=from_,
+                        to=to,
+                        gaps=coverage.gaps,
+                    )
                 return self._iter_local_snapshot_rows(
-                    snapshot_paths,
+                    coverage.paths,
                     from_=from_,
                     to=to,
                 )
@@ -1409,6 +1542,7 @@ class PolarisClient:
         from_: TimeInput,
         to: TimeInput,
         standard: bool = True,
+        allow_gaps: bool = False,
         chunk_size: int,
         timeout: float | None = None,
         max_workers: int = 4,
@@ -1430,6 +1564,7 @@ class PolarisClient:
                 from_=from_,
                 to=to,
                 standard=standard,
+                allow_gaps=allow_gaps,
                 chunk_size=chunk_size,
                 timeout=timeout,
                 parallel=False,
@@ -1449,6 +1584,7 @@ class PolarisClient:
                         from_=chunk_start,
                         to=chunk_end,
                         standard=standard,
+                        allow_gaps=allow_gaps,
                         chunk_size=chunk_size,
                         timeout=timeout,
                     )
@@ -1480,6 +1616,7 @@ class PolarisClient:
         from_: TimeInput,
         to: TimeInput,
         standard: bool,
+        allow_gaps: bool,
         chunk_size: int,
         timeout: float | None,
     ) -> list[JSONDict]:
@@ -1491,6 +1628,7 @@ class PolarisClient:
             from_=from_,
             to=to,
             standard=standard,
+            allow_gaps=allow_gaps,
             chunk_size=chunk_size,
             timeout=timeout,
             parallel=False,  # Prevent recursive parallel calls
@@ -1565,6 +1703,7 @@ class PolarisClient:
         market: str,
         from_: TimeInput | None = None,
         to: TimeInput | None = None,
+        allow_gaps: bool = False,
     ) -> list[JSONDict]:
         from_, to = self._resolve_historical_range(
             source=source,
@@ -1578,6 +1717,7 @@ class PolarisClient:
                 market=market,
                 from_=from_,
                 to=to,
+                allow_gaps=allow_gaps,
             )
         )
 
@@ -1588,18 +1728,27 @@ class PolarisClient:
         market: str,
         from_: TimeInput,
         to: TimeInput,
+        allow_gaps: bool = False,
     ) -> Iterator[JSONDict]:
-        snapshot_paths = self._resolve_snapshot_paths(
+        coverage = self._resolve_snapshot_coverage(
             source=source,
             market=market,
             from_=from_,
             to=to,
         )
-        if snapshot_paths is None:
+        if not coverage.paths or (coverage.gaps and not allow_gaps):
             raise PolarisError(
                 "Requested trade range could not be satisfied from standardized snapshots"
             )
-        for row in self._iter_local_snapshot_rows(snapshot_paths, from_=from_, to=to):
+        if allow_gaps:
+            self._warn_snapshot_gaps(
+                source=source,
+                market=market,
+                from_=from_,
+                to=to,
+                gaps=coverage.gaps,
+            )
+        for row in self._iter_local_snapshot_rows(coverage.paths, from_=from_, to=to):
             if row.get("type") == "trade":
                 yield row
 
@@ -1610,6 +1759,7 @@ class PolarisClient:
         market: str,
         from_: TimeInput | None = None,
         to: TimeInput | None = None,
+        allow_gaps: bool = False,
     ) -> list[JSONDict]:
         from_, to = self._resolve_historical_range(
             source=source,
@@ -1623,6 +1773,7 @@ class PolarisClient:
                 market=market,
                 from_=from_,
                 to=to,
+                allow_gaps=allow_gaps,
             )
         )
 
@@ -1633,18 +1784,27 @@ class PolarisClient:
         market: str,
         from_: TimeInput,
         to: TimeInput,
+        allow_gaps: bool = False,
     ) -> Iterator[JSONDict]:
-        snapshot_paths = self._resolve_snapshot_paths(
+        coverage = self._resolve_snapshot_coverage(
             source=source,
             market=market,
             from_=from_,
             to=to,
         )
-        if snapshot_paths is None:
+        if not coverage.paths or (coverage.gaps and not allow_gaps):
             raise PolarisError(
                 "Requested event range could not be satisfied from standardized snapshots"
             )
-        yield from self._iter_local_snapshot_rows(snapshot_paths, from_=from_, to=to)
+        if allow_gaps:
+            self._warn_snapshot_gaps(
+                source=source,
+                market=market,
+                from_=from_,
+                to=to,
+                gaps=coverage.gaps,
+            )
+        yield from self._iter_local_snapshot_rows(coverage.paths, from_=from_, to=to)
 
     def raw(
         self,
@@ -1699,6 +1859,7 @@ class PolarisClient:
         to: TimeInput | None = None,
         interval: str,
         format: str | None = None,
+        allow_gaps: bool = False,
     ) -> list[JSONDict] | JSONDict:
         from_, to = self._resolve_historical_range(
             source=source,
@@ -1718,6 +1879,7 @@ class PolarisClient:
                 from_=from_,
                 to=to,
                 interval=interval,
+                allow_gaps=allow_gaps,
             )
 
         if format != "tradingview":
@@ -1729,5 +1891,6 @@ class PolarisClient:
             from_=from_,
             to=to,
             interval=interval,
+            allow_gaps=allow_gaps,
         )
         return _to_tradingview_ohlcv(bars)

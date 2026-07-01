@@ -89,6 +89,63 @@ def _ts(iso8601: str) -> int:
     )
 
 
+def _hourly_snapshot_key(source: str, market: str, day: str, hour: int) -> str:
+    return f"standard-{source}-{market}-{day}-{hour:02d}"
+
+
+def _partial_snapshot_handler(calls: list[tuple[str, str | None]]):
+    snapshot_rows = {
+        _hourly_snapshot_key("binance", "BTC-USDT", "2024-01-01", 0): [
+            {
+                "timestamp": _ts("2024-01-01T00:00:01Z"),
+                "type": "trade",
+                "data": {"price": 100.0, "quantity": 1.0},
+            },
+            {
+                "timestamp": _ts("2024-01-01T00:00:20Z"),
+                "type": "trade",
+                "data": {"price": 105.0, "quantity": 2.0},
+            },
+        ],
+        _hourly_snapshot_key("binance", "BTC-USDT", "2024-01-01", 2): [
+            {
+                "timestamp": _ts("2024-01-01T02:00:05Z"),
+                "type": "trade",
+                "data": {"price": 110.0, "quantity": 3.0},
+            }
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.path, request.url.params.get("format")))
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={
+                    "snapshots": [
+                        {"key": key, "date": "2024-01-01", "hour": hour}
+                        for key, hour in (
+                            (_hourly_snapshot_key("binance", "BTC-USDT", "2024-01-01", 0), 0),
+                            (_hourly_snapshot_key("binance", "BTC-USDT", "2024-01-01", 2), 2),
+                        )
+                    ]
+                },
+            )
+        if request.url.path == "/download":
+            key = request.url.params.get("key")
+            assert key in snapshot_rows
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(snapshot_rows[key]),
+                headers={"content-type": "application/zstd"},
+            )
+        if request.url.path == "/events":
+            raise AssertionError("standardized readers should not fall back to /events")
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    return handler
+
+
 def test_catalog_returns_payload() -> None:
     payload = {
         "sources": [
@@ -456,6 +513,35 @@ def test_trades_require_snapshot_coverage_and_do_not_fall_back_to_events() -> No
         client.close()
 
 
+def test_trades_allow_gaps_returns_covered_rows_and_warns(tmp_path) -> None:
+    calls: list[tuple[str, str | None]] = []
+    client = make_client(_partial_snapshot_handler(calls), dataset_root=tmp_path)
+    try:
+        with pytest.warns(
+            UserWarning,
+            match="skipped missing intervals: 2024-01-01T01:00:00Z..2024-01-01T02:00:00Z",
+        ):
+            rows = client.trades(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T03:00:00Z",
+                allow_gaps=True,
+            )
+        assert [row["timestamp"] for row in rows] == [
+            _ts("2024-01-01T00:00:01Z"),
+            _ts("2024-01-01T00:00:20Z"),
+            _ts("2024-01-01T02:00:05Z"),
+        ]
+        assert calls == [
+            ("/snapshots", None),
+            ("/download", None),
+            ("/download", None),
+        ]
+    finally:
+        client.close()
+
+
 def test_ohlcv_aggregates_from_snapshot_download_flow(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/snapshots":
@@ -599,6 +685,53 @@ def test_ohlcv_require_snapshot_coverage_and_do_not_fall_back_to_events(tmp_path
                 interval="1m",
             )
         assert calls == [("/snapshots", None)]
+    finally:
+        client.close()
+
+
+def test_ohlcv_allow_gaps_skips_missing_hours_and_preserves_gap_open(tmp_path) -> None:
+    calls: list[tuple[str, str | None]] = []
+    client = make_client(_partial_snapshot_handler(calls), dataset_root=tmp_path)
+    try:
+        with pytest.warns(
+            UserWarning,
+            match="skipped missing intervals: 2024-01-01T01:00:00Z..2024-01-01T02:00:00Z",
+        ):
+            bars = client.ohlcv(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T03:00:00Z",
+                interval="1h",
+                allow_gaps=True,
+            )
+        assert bars == [
+            {
+                "timestamp": _ts("2024-01-01T00:00:00Z"),
+                "open": 100.0,
+                "high": 105.0,
+                "low": 100.0,
+                "close": 105.0,
+                "volume": 3.0,
+                "trades": 2,
+                "interval": "1h",
+            },
+            {
+                "timestamp": _ts("2024-01-01T02:00:00Z"),
+                "open": 110.0,
+                "high": 110.0,
+                "low": 110.0,
+                "close": 110.0,
+                "volume": 3.0,
+                "trades": 1,
+                "interval": "1h",
+            },
+        ]
+        assert calls == [
+            ("/snapshots", None),
+            ("/download", None),
+            ("/download", None),
+        ]
     finally:
         client.close()
 
@@ -1000,6 +1133,35 @@ def test_events_require_snapshot_coverage_and_do_not_fall_back_to_events(tmp_pat
         client.close()
 
 
+def test_events_allow_gaps_returns_covered_rows_and_warns(tmp_path) -> None:
+    calls: list[tuple[str, str | None]] = []
+    client = make_client(_partial_snapshot_handler(calls), dataset_root=tmp_path)
+    try:
+        with pytest.warns(
+            UserWarning,
+            match="skipped missing intervals: 2024-01-01T01:00:00Z..2024-01-01T02:00:00Z",
+        ):
+            rows = client.events(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T03:00:00Z",
+                allow_gaps=True,
+            )
+        assert [row["timestamp"] for row in rows] == [
+            _ts("2024-01-01T00:00:01Z"),
+            _ts("2024-01-01T00:00:20Z"),
+            _ts("2024-01-01T02:00:05Z"),
+        ]
+        assert calls == [
+            ("/snapshots", None),
+            ("/download", None),
+            ("/download", None),
+        ]
+    finally:
+        client.close()
+
+
 def test_replay_requires_snapshot_coverage_and_do_not_fall_back_to_events(tmp_path) -> None:
     calls: list[tuple[str, str | None]] = []
 
@@ -1026,6 +1188,41 @@ def test_replay_requires_snapshot_coverage_and_do_not_fall_back_to_events(tmp_pa
                 )
             )
         assert calls == [("/snapshots", None)]
+    finally:
+        client.close()
+
+
+def test_replay_allow_gaps_returns_covered_rows_and_warns(tmp_path) -> None:
+    calls: list[tuple[str, str | None]] = []
+    client = make_client(
+        _partial_snapshot_handler(calls),
+        dataset_root=tmp_path,
+        replay_cache_enabled=False,
+    )
+    try:
+        with pytest.warns(
+            UserWarning,
+            match="skipped missing intervals: 2024-01-01T01:00:00Z..2024-01-01T02:00:00Z",
+        ):
+            rows = list(
+                client.replay(
+                    source="binance",
+                    market="BTC-USDT",
+                    from_="2024-01-01T00:00:00Z",
+                    to="2024-01-01T03:00:00Z",
+                    allow_gaps=True,
+                )
+            )
+        assert [row["timestamp"] for row in rows] == [
+            _ts("2024-01-01T00:00:01Z"),
+            _ts("2024-01-01T00:00:20Z"),
+            _ts("2024-01-01T02:00:05Z"),
+        ]
+        assert calls == [
+            ("/snapshots", None),
+            ("/download", None),
+            ("/download", None),
+        ]
     finally:
         client.close()
 
