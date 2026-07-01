@@ -40,7 +40,7 @@ DEFAULT_TIMEOUT = 30.0
 DEFAULT_NETWORK_CHUNK_SIZE = 8 * 1024 * 1024  # 8MB for network downloads
 DEFAULT_FILE_CHUNK_SIZE = 1 * 1024 * 1024  # 1MB for file operations
 DEFAULT_INFERRED_LOOKBACK = timedelta(days=7)
-USER_AGENT = "polaris-py/0.8.3"
+USER_AGENT = "polaris-py/0.8.4"
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 _SNAPSHOT_DOWNLOAD_PATHS = ("download", "snapshots/download")
 _INTERVAL_US = {
