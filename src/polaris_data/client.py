@@ -1146,64 +1146,84 @@ class PolarisClient:
         market: str,
     ) -> _CatalogAssetBounds:
         payload = self.catalog(source=source, market=market)
-        sources = payload.get("sources")
-        if not isinstance(sources, list):
-            raise PolarisError(
-                message=(
-                    "Catalog response did not include source/market metadata needed "
-                    f"to infer a default range for '{source}/{market}'"
-                )
-            )
-
-        for source_entry in sources:
-            if not isinstance(source_entry, dict):
-                continue
-            source_id = source_entry.get("id")
-            if source_id is not None and source_id != source:
-                continue
-
-            markets = source_entry.get("markets")
-            if not isinstance(markets, list):
-                continue
-
-            for market_entry in markets:
-                if not isinstance(market_entry, dict):
-                    continue
-                market_id = market_entry.get("id")
-                if market_id != market:
-                    continue
-
-                start_raw = market_entry.get("start")
-                end_raw = market_entry.get("end")
-                if not isinstance(start_raw, str) or not isinstance(end_raw, str):
-                    raise PolarisError(
-                        message=(
-                            "Catalog market metadata did not include valid start/end "
-                            f"timestamps for '{source}/{market}'"
-                        )
+        market_entries = payload.get("markets")
+        if isinstance(market_entries, list):
+            candidates = market_entries
+        else:
+            sources = payload.get("sources")
+            if not isinstance(sources, list):
+                raise PolarisError(
+                    message=(
+                        "Catalog response did not include source/market metadata needed "
+                        f"to infer a default range for '{source}/{market}'"
                     )
-
-                access = market_entry.get("access")
-                access_status: str | None = None
-                public_cutoff_date: date | None = None
-                if isinstance(access, dict):
-                    raw_status = access.get("status")
-                    if isinstance(raw_status, str) and raw_status:
-                        access_status = raw_status
-
-                    raw_cutoff = access.get("public_cutoff_date")
-                    if isinstance(raw_cutoff, str) and raw_cutoff:
-                        try:
-                            public_cutoff_date = date.fromisoformat(raw_cutoff)
-                        except ValueError:
-                            public_cutoff_date = None
-
-                return _CatalogAssetBounds(
-                    start=to_datetime(start_raw),
-                    end=to_datetime(end_raw),
-                    access_status=access_status,
-                    public_cutoff_date=public_cutoff_date,
                 )
+
+            candidates = []
+            for source_entry in sources:
+                if not isinstance(source_entry, dict):
+                    continue
+                source_id = source_entry.get("id")
+                if source_id is not None and source_id != source:
+                    continue
+
+                legacy_markets = source_entry.get("markets")
+                if not isinstance(legacy_markets, list):
+                    continue
+
+                for market_entry in legacy_markets:
+                    if not isinstance(market_entry, dict):
+                        continue
+                    normalized_entry = dict(market_entry)
+                    legacy_source_type = normalized_entry.get("source")
+                    if "source_type" not in normalized_entry and isinstance(
+                        legacy_source_type, str
+                    ):
+                        normalized_entry["source_type"] = legacy_source_type
+                    normalized_entry["source"] = source_id
+                    normalized_entry["market"] = market_entry.get("id")
+                    candidates.append(normalized_entry)
+
+        for market_entry in candidates:
+            if not isinstance(market_entry, dict):
+                continue
+
+            market_source = market_entry.get("source")
+            market_id = market_entry.get("market")
+            if market_source != source or market_id != market:
+                continue
+
+            start_raw = market_entry.get("start")
+            end_raw = market_entry.get("end")
+            if not isinstance(start_raw, str) or not isinstance(end_raw, str):
+                raise PolarisError(
+                    message=(
+                        "Catalog market metadata did not include valid start/end "
+                        f"timestamps for '{source}/{market}'"
+                    )
+                )
+
+            access = market_entry.get("access")
+            access_status: str | None = None
+            public_cutoff_date: date | None = None
+            if isinstance(access, dict):
+                raw_status = access.get("status")
+                if isinstance(raw_status, str) and raw_status:
+                    access_status = raw_status
+
+                raw_cutoff = access.get("public_cutoff_date")
+                if isinstance(raw_cutoff, str) and raw_cutoff:
+                    try:
+                        public_cutoff_date = date.fromisoformat(raw_cutoff)
+                    except ValueError:
+                        public_cutoff_date = None
+
+            return _CatalogAssetBounds(
+                start=to_datetime(start_raw),
+                end=to_datetime(end_raw),
+                access_status=access_status,
+                public_cutoff_date=public_cutoff_date,
+            )
 
         raise NotFoundError(
             message=f"Catalog did not include dataset '{source}/{market}'"

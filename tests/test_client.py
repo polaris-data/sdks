@@ -57,10 +57,27 @@ def _catalog_payload(
     end: str,
     access_status: str = "open",
     public_cutoff_date: str | None = None,
+    flattened: bool = True,
 ) -> dict:
     access: dict[str, str] = {"status": access_status}
     if public_cutoff_date is not None:
         access["public_cutoff_date"] = public_cutoff_date
+
+    market_entry = {
+        "source": source,
+        "market": market,
+        "start": start,
+        "end": end,
+        "source_type": "manifest",
+        "categories": ["perp"],
+        "access": access,
+    }
+
+    if flattened:
+        return {
+            "markets": [market_entry],
+            "updatedAt": "2026-05-19T10:28:00.000Z",
+        }
 
     return {
         "sources": [
@@ -148,9 +165,10 @@ def _partial_snapshot_handler(calls: list[tuple[str, str | None]]):
 
 def test_catalog_returns_payload() -> None:
     payload = {
-        "sources": [
-            {"id": "binance", "markets": ["BTC-USDT"]},
-            {"id": "hyperliquid", "markets": ["BTC", "ETH"]},
+        "markets": [
+            {"source": "binance", "market": "BTC-USDT"},
+            {"source": "hyperliquid", "market": "BTC"},
+            {"source": "hyperliquid", "market": "ETH"},
         ]
     }
 
@@ -283,6 +301,36 @@ def test_events_infer_preview_cutoff_window_without_api_key(tmp_path) -> None:
         assert [row["timestamp"] for row in rows] == [
             _ts(f"{date_text}T12:00:00Z") for date_text in snapshot_dates
         ]
+    finally:
+        client.close()
+
+
+def test_raw_infers_last_7_days_from_legacy_catalog_shape() -> None:
+    rows = [{"timestamp": _ts("2024-01-09T12:00:00Z"), "payload": "ok"}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/catalog":
+            return httpx.Response(
+                200,
+                json=_catalog_payload(
+                    start="2024-01-01T00:00:00Z",
+                    end="2024-01-10T00:00:00Z",
+                    flattened=False,
+                ),
+            )
+        if request.url.path == "/raw":
+            assert request.url.params.get("from") == "2024-01-03T00:00:00Z"
+            assert request.url.params.get("to") == "2024-01-10T00:00:00Z"
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(rows),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler)
+    try:
+        assert client.raw(source="binance", market="BTC-USDT") == rows
     finally:
         client.close()
 
