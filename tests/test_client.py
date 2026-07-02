@@ -1207,6 +1207,116 @@ def test_events_allow_gaps_returns_covered_rows_and_warns(tmp_path) -> None:
         client.close()
 
 
+def test_l2_snapshots_use_snapshot_download_flow_by_default(tmp_path) -> None:
+    snapshot_rows = [
+        {
+            "timestamp": _ts("2024-01-01T00:00:00Z"),
+            "type": "l2_snapshot",
+            "data": {
+                "bids": [[100.0, 1.25], [99.5, 2.0]],
+                "asks": [[100.5, 0.75], [101.0, 1.0]],
+            },
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:00:01Z"),
+            "type": "trade",
+            "data": {"price": 100.25, "quantity": 0.5},
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:00:02Z"),
+            "type": "l2_snapshot",
+            "bids": [[100.1, 1.0]],
+            "asks": [[100.6, 1.5]],
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
+            )
+        if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(snapshot_rows),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        assert client.l2_snapshots(
+            source="binance",
+            market="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T01:00:00Z",
+        ) == [snapshot_rows[0], snapshot_rows[2]]
+    finally:
+        client.close()
+
+
+def test_bbo_derives_best_prices_and_quantities_from_l2_snapshots(tmp_path) -> None:
+    snapshot_rows = [
+        {
+            "timestamp": _ts("2024-01-01T00:00:00Z"),
+            "type": "l2_snapshot",
+            "data": {
+                "bids": [[99.0, 2.0], [100.0, 1.25], ["98.5", "5.0"]],
+                "asks": [[101.0, 3.0], [100.5, 0.75]],
+            },
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:00:01Z"),
+            "type": "l2_snapshot",
+            "data": {
+                "bids": [{"price": "100.1", "size": "1.5"}],
+                "asks": [{"price": 100.4, "quantity": 0.25}],
+            },
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
+            )
+        if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(snapshot_rows),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        assert client.bbo(
+            source="binance",
+            market="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T01:00:00Z",
+        ) == [
+            {
+                "timestamp": _ts("2024-01-01T00:00:00Z"),
+                "bid_price": 100.0,
+                "bid_quantity": 1.25,
+                "ask_price": 100.5,
+                "ask_quantity": 0.75,
+            },
+            {
+                "timestamp": _ts("2024-01-01T00:00:01Z"),
+                "bid_price": 100.1,
+                "bid_quantity": 1.5,
+                "ask_price": 100.4,
+                "ask_quantity": 0.25,
+            },
+        ]
+    finally:
+        client.close()
+
+
 def test_replay_requires_snapshot_coverage_and_do_not_fall_back_to_events(tmp_path) -> None:
     calls: list[tuple[str, str | None]] = []
 

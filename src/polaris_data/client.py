@@ -102,6 +102,111 @@ def _to_tradingview_ohlcv(
     return {"candles": candles, "volumes": volumes}
 
 
+def _coerce_numeric(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_orderbook_sides(row: JSONDict) -> tuple[list[object], list[object]] | None:
+    candidates: list[object] = [row]
+    data = row.get("data")
+    if isinstance(data, dict):
+        candidates.append(data)
+
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        bids = candidate.get("bids")
+        asks = candidate.get("asks")
+        if isinstance(bids, list) and isinstance(asks, list):
+            return bids, asks
+
+    return None
+
+
+def _parse_orderbook_level(level: object) -> tuple[float, float] | None:
+    price_raw: object | None = None
+    quantity_raw: object | None = None
+
+    if isinstance(level, dict):
+        price_raw = level.get("price")
+        quantity_raw = level.get("quantity")
+        if quantity_raw is None:
+            quantity_raw = level.get("size")
+        if quantity_raw is None:
+            quantity_raw = level.get("amount")
+    elif isinstance(level, (list, tuple)) and len(level) >= 2:
+        price_raw = level[0]
+        quantity_raw = level[1]
+
+    price = _coerce_numeric(price_raw)
+    quantity = _coerce_numeric(quantity_raw)
+    if price is None or quantity is None:
+        return None
+    return price, quantity
+
+
+def _best_orderbook_level(
+    levels: list[object], *, side: str
+) -> tuple[float, float] | None:
+    best_price: float | None = None
+    best_quantity: float | None = None
+
+    for level in levels:
+        parsed = _parse_orderbook_level(level)
+        if parsed is None:
+            continue
+        price, quantity = parsed
+        if best_price is None:
+            best_price = price
+            best_quantity = quantity
+            continue
+        if side == "bid" and price > best_price:
+            best_price = price
+            best_quantity = quantity
+        if side == "ask" and price < best_price:
+            best_price = price
+            best_quantity = quantity
+
+    if best_price is None or best_quantity is None:
+        return None
+    return best_price, best_quantity
+
+
+def _derive_bbo(row: JSONDict) -> JSONDict | None:
+    timestamp = row.get("timestamp")
+    if not isinstance(timestamp, (int, float)):
+        return None
+
+    sides = _extract_orderbook_sides(row)
+    if sides is None:
+        return None
+
+    bids, asks = sides
+    best_bid = _best_orderbook_level(bids, side="bid")
+    best_ask = _best_orderbook_level(asks, side="ask")
+    if best_bid is None or best_ask is None:
+        return None
+
+    bid_price, bid_quantity = best_bid
+    ask_price, ask_quantity = best_ask
+    return {
+        "timestamp": timestamp,
+        "bid_price": bid_price,
+        "bid_quantity": bid_quantity,
+        "ask_price": ask_price,
+        "ask_quantity": ask_quantity,
+    }
+
+
 class _LocalOhlcvAggregator:
     def __init__(self, interval: str) -> None:
         us = _interval_to_us(interval)
@@ -1714,25 +1819,14 @@ class PolarisClient:
         to: TimeInput,
         allow_gaps: bool = False,
     ) -> Iterator[JSONDict]:
-        coverage = self._resolve_snapshot_coverage(
+        for row in self._iter_standardized_snapshot_rows(
             source=source,
             market=market,
             from_=from_,
             to=to,
-        )
-        if not coverage.paths or (coverage.gaps and not allow_gaps):
-            raise PolarisError(
-                "Requested trade range could not be satisfied from standardized snapshots"
-            )
-        if allow_gaps:
-            self._warn_snapshot_gaps(
-                source=source,
-                market=market,
-                from_=from_,
-                to=to,
-                gaps=coverage.gaps,
-            )
-        for row in self._iter_local_snapshot_rows(coverage.paths, from_=from_, to=to):
+            allow_gaps=allow_gaps,
+            dataset_label="trade",
+        ):
             if row.get("type") == "trade":
                 yield row
 
@@ -1770,6 +1864,25 @@ class PolarisClient:
         to: TimeInput,
         allow_gaps: bool = False,
     ) -> Iterator[JSONDict]:
+        yield from self._iter_standardized_snapshot_rows(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+            allow_gaps=allow_gaps,
+            dataset_label="event",
+        )
+
+    def _iter_standardized_snapshot_rows(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput,
+        to: TimeInput,
+        allow_gaps: bool = False,
+        dataset_label: str,
+    ) -> Iterator[JSONDict]:
         coverage = self._resolve_snapshot_coverage(
             source=source,
             market=market,
@@ -1778,7 +1891,7 @@ class PolarisClient:
         )
         if not coverage.paths or (coverage.gaps and not allow_gaps):
             raise PolarisError(
-                "Requested event range could not be satisfied from standardized snapshots"
+                f"Requested {dataset_label} range could not be satisfied from standardized snapshots"
             )
         if allow_gaps:
             self._warn_snapshot_gaps(
@@ -1789,6 +1902,79 @@ class PolarisClient:
                 gaps=coverage.gaps,
             )
         yield from self._iter_local_snapshot_rows(coverage.paths, from_=from_, to=to)
+
+    def l2_snapshots(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        allow_gaps: bool = False,
+    ) -> list[JSONDict]:
+        from_, to = self._resolve_historical_range(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+        )
+        return list(
+            self._iter_l2_snapshots_data(
+                source=source,
+                market=market,
+                from_=from_,
+                to=to,
+                allow_gaps=allow_gaps,
+            )
+        )
+
+    def _iter_l2_snapshots_data(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput,
+        to: TimeInput,
+        allow_gaps: bool = False,
+    ) -> Iterator[JSONDict]:
+        for row in self._iter_standardized_snapshot_rows(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+            allow_gaps=allow_gaps,
+            dataset_label="L2 snapshot",
+        ):
+            if _extract_orderbook_sides(row) is not None:
+                yield row
+
+    def bbo(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        allow_gaps: bool = False,
+    ) -> list[JSONDict]:
+        from_, to = self._resolve_historical_range(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+        )
+        rows: list[JSONDict] = []
+        for row in self._iter_l2_snapshots_data(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+            allow_gaps=allow_gaps,
+        ):
+            derived = _derive_bbo(row)
+            if derived is not None:
+                rows.append(derived)
+        return rows
 
     def raw(
         self,
