@@ -305,9 +305,7 @@ def test_events_infer_preview_cutoff_window_without_api_key(tmp_path) -> None:
         client.close()
 
 
-def test_raw_infers_last_7_days_from_legacy_catalog_shape() -> None:
-    rows = [{"timestamp": _ts("2024-01-09T12:00:00Z"), "payload": "ok"}]
-
+def test_raw_rejects_legacy_catalog_shape() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/catalog":
             return httpx.Response(
@@ -319,18 +317,16 @@ def test_raw_infers_last_7_days_from_legacy_catalog_shape() -> None:
                 ),
             )
         if request.url.path == "/raw":
-            assert request.url.params.get("from") == "2024-01-03T00:00:00Z"
-            assert request.url.params.get("to") == "2024-01-10T00:00:00Z"
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(rows),
-                headers={"content-type": "application/zstd"},
-            )
+            raise AssertionError("raw endpoint should not be called for legacy catalog shape")
         raise AssertionError(f"unexpected request: {request.url}")
 
     client = make_client(handler)
     try:
-        assert client.raw(source="binance", market="BTC-USDT") == rows
+        with pytest.raises(
+            PolarisError,
+            match="Catalog response did not include market metadata needed",
+        ):
+            client.raw(source="binance", market="BTC-USDT")
     finally:
         client.close()
 
@@ -449,7 +445,7 @@ def test_trades_download_404_raises_not_found_for_streaming_response(tmp_path) -
                 200,
                 json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
             )
-        if request.url.path in {"/download", "/snapshots/download"}:
+        if request.url.path == "/download":
             return httpx.Response(404, text="snapshot missing")
         raise AssertionError(f"unexpected request: {request.url}")
 
@@ -462,7 +458,7 @@ def test_trades_download_404_raises_not_found_for_streaming_response(tmp_path) -
                 from_="2024-01-01T00:00:00Z",
                 to="2024-01-01T01:00:00Z",
             )
-        assert calls == ["/snapshots", "/download", "/snapshots/download"]
+        assert calls == ["/snapshots", "/download"]
     finally:
         client.close()
 
@@ -940,9 +936,11 @@ def test_replay_materializes_local_snapshot_data_files_before_network(tmp_path) 
         client.close()
 
 
-def test_replay_materializes_legacy_flat_snapshot_data_files_before_network(tmp_path) -> None:
+def test_replay_ignores_legacy_flat_snapshot_data_files(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError("network should not be called when legacy local snapshot files exist")
+        if request.url.path == "/snapshots":
+            return httpx.Response(200, json={"snapshots": []})
+        raise AssertionError(f"unexpected request: {request.url}")
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
@@ -957,19 +955,18 @@ def test_replay_materializes_legacy_flat_snapshot_data_files_before_network(tmp_
             )
         )
 
-        rows = list(
-            client.replay(
-                source="binance",
-                market="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T00:02:00Z",
+        with pytest.raises(
+            PolarisError,
+            match="Requested replay range could not be satisfied from standardized snapshots",
+        ):
+            list(
+                client.replay(
+                    source="binance",
+                    market="BTC-USDT",
+                    from_="2024-01-01T00:00:00Z",
+                    to="2024-01-01T00:02:00Z",
+                )
             )
-        )
-
-        assert rows == [
-            {"timestamp": 1704067200000000},
-            {"timestamp": 1704067260000000},
-        ]
     finally:
         client.close()
 

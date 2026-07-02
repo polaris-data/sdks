@@ -190,11 +190,13 @@ class LocalDatasetLayout:
             snapshot_key, source, market, snapshot_date = infer_snapshot_file_metadata(
                 relative
             )
-            if snapshot_date is None:
-                day = infer_date_from_text(relative)
-                snapshot_date = day.isoformat() if day is not None else None
-            if snapshot_key is None:
-                snapshot_key = relative
+            if (
+                snapshot_key is None
+                or source is None
+                or market is None
+                or snapshot_date is None
+            ):
+                continue
             files.append(
                 LocalSnapshotEntry(
                     key=snapshot_key,
@@ -280,19 +282,6 @@ class LocalDatasetLayout:
         return target
 
 
-def infer_date_from_text(text: str) -> date | None:
-    tokens = "".join(ch if ch.isdigit() or ch == "-" else " " for ch in text).split()
-    for token in tokens:
-        stripped = token.strip("-")
-        if len(stripped) != 10:
-            continue
-        try:
-            return date.fromisoformat(stripped)
-        except ValueError:
-            continue
-    return None
-
-
 def validated_key_segments(key: str) -> tuple[str, ...]:
     normalized = normalize_snapshot_key(key)
     tier, source, market, date_text, _ = parse_snapshot_key_metadata(normalized)
@@ -372,16 +361,9 @@ def infer_snapshot_file_metadata(
                 ):
                     return snapshot_key, source, market, parsed_date
             except ValueError:
-                pass
+                return None, None, None, None
 
-    filename = path_parts[-1] if path_parts else relative_path
-    if filename.endswith(".jsonl.zst"):
-        filename = filename.removesuffix(".jsonl.zst")
-    try:
-        _, source, market, parsed_date = parse_snapshot_key(filename)
-        return filename, source, market, parsed_date
-    except ValueError:
-        return None, None, None, None
+    return None, None, None, None
 
 
 def _infer_snapshot_hour(key: str | None) -> int | None:

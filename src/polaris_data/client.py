@@ -42,7 +42,6 @@ DEFAULT_FILE_CHUNK_SIZE = 1 * 1024 * 1024  # 1MB for file operations
 DEFAULT_INFERRED_LOOKBACK = timedelta(days=7)
 USER_AGENT = "polaris-py/0.8.4"
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
-_SNAPSHOT_DOWNLOAD_PATHS = ("download", "snapshots/download")
 _INTERVAL_US = {
     "100ms": 100_000,
     "1s": 1_000_000,
@@ -855,40 +854,33 @@ class PolarisClient:
             temp_path.unlink()
 
         try:
-            for index, download_path in enumerate(_SNAPSHOT_DOWNLOAD_PATHS):
-                try:
-                    with self._client.stream(
-                        "GET",
-                        download_path,
-                        params={"key": snapshot.key},
-                        headers=self._auth_headers(
-                            auth_required=False,
-                            include_auth_if_available=True,
-                        ),
-                        follow_redirects=True,
-                    ) as response:
-                        self._raise_for_status(response)
+            with self._client.stream(
+                "GET",
+                "download",
+                params={"key": snapshot.key},
+                headers=self._auth_headers(
+                    auth_required=False,
+                    include_auth_if_available=True,
+                ),
+                follow_redirects=True,
+            ) as response:
+                self._raise_for_status(response)
 
-                        content_type = response.headers.get("content-type", "").lower()
-                        if "application/json" in content_type:
-                            raise PolarisError(
-                                message="Expected compressed snapshot download, received JSON",
-                                status_code=response.status_code,
-                            )
+                content_type = response.headers.get("content-type", "").lower()
+                if "application/json" in content_type:
+                    raise PolarisError(
+                        message="Expected compressed snapshot download, received JSON",
+                        status_code=response.status_code,
+                    )
 
-                        with temp_path.open("wb") as file:
-                            for chunk in response.iter_bytes(
-                                chunk_size=DEFAULT_NETWORK_CHUNK_SIZE
-                            ):
-                                if chunk:
-                                    file.write(chunk)
-                            file.flush()
-                            os.fsync(file.fileno())
-                    break
-                except NotFoundError:
-                    if index == len(_SNAPSHOT_DOWNLOAD_PATHS) - 1:
-                        raise
-                    continue
+                with temp_path.open("wb") as file:
+                    for chunk in response.iter_bytes(
+                        chunk_size=DEFAULT_NETWORK_CHUNK_SIZE
+                    ):
+                        if chunk:
+                            file.write(chunk)
+                    file.flush()
+                    os.fsync(file.fileno())
 
             os.replace(temp_path, local_path)
         finally:
@@ -1147,42 +1139,14 @@ class PolarisClient:
     ) -> _CatalogAssetBounds:
         payload = self.catalog(source=source, market=market)
         market_entries = payload.get("markets")
-        if isinstance(market_entries, list):
-            candidates = market_entries
-        else:
-            sources = payload.get("sources")
-            if not isinstance(sources, list):
-                raise PolarisError(
-                    message=(
-                        "Catalog response did not include source/market metadata needed "
-                        f"to infer a default range for '{source}/{market}'"
-                    )
+        if not isinstance(market_entries, list):
+            raise PolarisError(
+                message=(
+                    "Catalog response did not include market metadata needed "
+                    f"to infer a default range for '{source}/{market}'"
                 )
-
-            candidates = []
-            for source_entry in sources:
-                if not isinstance(source_entry, dict):
-                    continue
-                source_id = source_entry.get("id")
-                if source_id is not None and source_id != source:
-                    continue
-
-                legacy_markets = source_entry.get("markets")
-                if not isinstance(legacy_markets, list):
-                    continue
-
-                for market_entry in legacy_markets:
-                    if not isinstance(market_entry, dict):
-                        continue
-                    normalized_entry = dict(market_entry)
-                    legacy_source_type = normalized_entry.get("source")
-                    if "source_type" not in normalized_entry and isinstance(
-                        legacy_source_type, str
-                    ):
-                        normalized_entry["source_type"] = legacy_source_type
-                    normalized_entry["source"] = source_id
-                    normalized_entry["market"] = market_entry.get("id")
-                    candidates.append(normalized_entry)
+            )
+        candidates = market_entries
 
         for market_entry in candidates:
             if not isinstance(market_entry, dict):
