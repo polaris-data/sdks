@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import dataclasses
-import json
 import io
+import json
+import math
 import os
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -472,6 +473,79 @@ class _LocalVwapAggregator:
             )
 
         result.sort(key=lambda item: int(item["timestamp"]))
+        return result
+
+
+class _LocalVolatilityAggregator:
+    def __init__(self, interval: str, method: str) -> None:
+        us = _interval_to_us(interval)
+        if us is None:
+            supported = ", ".join(_INTERVAL_US)
+            raise ValueError(f"Unsupported interval: {interval}. Supported: {supported}")
+        if method != "log_returns":
+            raise ValueError("method must be 'log_returns'")
+        self._interval_us = us
+        self._points: list[tuple[int, float]] = []
+
+    def push(self, event: JSONDict) -> None:
+        if event.get("type") != "trade":
+            return
+
+        timestamp = event.get("timestamp")
+        data = event.get("data")
+        if not isinstance(timestamp, (int, float)) or not isinstance(data, dict):
+            return
+
+        price = _coerce_numeric(data.get("price"))
+        if price is None or price <= 0:
+            return
+
+        self._points.append((int(timestamp), price))
+
+    def finish(self) -> list[JSONDict]:
+        points = sorted(self._points, key=lambda item: item[0])
+        buckets: dict[int, dict[str, int | float | None]] = {}
+
+        for timestamp, price in points:
+            bucket = int(timestamp // self._interval_us) * self._interval_us
+            state = buckets.get(bucket)
+            if state is None:
+                state = {
+                    "timestamp": bucket,
+                    "returns": 0,
+                    "mean": 0.0,
+                    "m2": 0.0,
+                    "last_price": None,
+                }
+                buckets[bucket] = state
+
+            last_price = state["last_price"]
+            if isinstance(last_price, float):
+                log_return = math.log(price / last_price)
+                returns = int(state["returns"]) + 1
+                delta = log_return - float(state["mean"])
+                mean = float(state["mean"]) + delta / returns
+                delta2 = log_return - mean
+                state["returns"] = returns
+                state["mean"] = mean
+                state["m2"] = float(state["m2"]) + delta * delta2
+
+            state["last_price"] = price
+
+        result: list[JSONDict] = []
+        for bucket in sorted(buckets):
+            state = buckets[bucket]
+            returns = int(state["returns"])
+            if returns < 2:
+                continue
+            variance = float(state["m2"]) / (returns - 1)
+            result.append(
+                {
+                    "timestamp": int(state["timestamp"]),
+                    "volatility": math.sqrt(variance),
+                    "returns": returns,
+                }
+            )
         return result
 
 
@@ -1438,6 +1512,40 @@ class PolarisClient:
             aggregator.push(row)
         return aggregator.finish()
 
+    def _aggregate_volatility_from_standard_trades(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput,
+        to: TimeInput,
+        interval: str,
+        method: str,
+        allow_gaps: bool = False,
+    ) -> list[JSONDict]:
+        coverage = self._resolve_snapshot_coverage(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+        )
+        if not coverage.paths or (coverage.gaps and not allow_gaps):
+            raise PolarisError(
+                "Requested volatility range could not be satisfied from standardized snapshots"
+            )
+        if allow_gaps:
+            self._warn_snapshot_gaps(
+                source=source,
+                market=market,
+                from_=from_,
+                to=to,
+                gaps=coverage.gaps,
+            )
+        aggregator = _LocalVolatilityAggregator(interval, method)
+        for row in self._iter_local_snapshot_rows(coverage.paths, from_=from_, to=to):
+            aggregator.push(row)
+        return aggregator.finish()
+
     def health(self) -> JSONDict:
         return self._get_json("health")
 
@@ -2058,6 +2166,39 @@ class PolarisClient:
             from_=from_,
             to=to,
             interval=interval,
+            allow_gaps=allow_gaps,
+        )
+
+    def volatility(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        interval: str,
+        method: str = "log_returns",
+        allow_gaps: bool = False,
+    ) -> list[JSONDict]:
+        if _interval_to_us(interval) is None:
+            raise ValueError(
+                "interval must be one of: " + ", ".join(_INTERVAL_US)
+            )
+        if method != "log_returns":
+            raise ValueError("method must be 'log_returns'")
+        from_, to = self._resolve_historical_range(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+        )
+        return self._aggregate_volatility_from_standard_trades(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+            interval=interval,
+            method=method,
             allow_gaps=allow_gaps,
         )
 

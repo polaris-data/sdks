@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import date, datetime
 from pathlib import Path
 
@@ -799,6 +800,158 @@ def test_vwap_buckets_trades_by_interval(tmp_path) -> None:
                 },
             ]
         )
+    finally:
+        client.close()
+
+
+def test_volatility_aggregates_log_return_stddev_by_bucket(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
+            )
+        if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(
+                    [
+                        {
+                            "timestamp": _ts("2024-01-01T00:00:20Z"),
+                            "type": "trade",
+                            "data": {"price": 102.0, "quantity": 2.0},
+                        },
+                        {
+                            "timestamp": _ts("2024-01-01T00:00:10Z"),
+                            "type": "trade",
+                            "data": {"price": 100.0, "quantity": 1.0},
+                        },
+                        {
+                            "timestamp": _ts("2024-01-01T00:00:40Z"),
+                            "type": "trade",
+                            "data": {"price": 104.0, "quantity": 3.0},
+                        },
+                        {
+                            "timestamp": _ts("2024-01-01T00:01:05Z"),
+                            "type": "trade",
+                            "data": {"price": 99.0, "quantity": 4.0},
+                        },
+                        {
+                            "timestamp": _ts("2024-01-01T00:01:25Z"),
+                            "type": "trade",
+                            "data": {"price": 101.0, "quantity": 5.0},
+                        },
+                        {
+                            "timestamp": _ts("2024-01-01T00:02:10Z"),
+                            "type": "trade",
+                            "data": {"price": 110.0, "quantity": 6.0},
+                        },
+                    ]
+                ),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        rows = client.volatility(
+            source="binance",
+            market="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T00:03:00Z",
+            interval="1m",
+        )
+        assert rows == [
+            {
+                "timestamp": _ts("2024-01-01T00:00:00Z"),
+                "volatility": rows[0]["volatility"],
+                "returns": 2,
+            }
+        ]
+        assert rows[0]["volatility"] == pytest.approx(
+            abs(math.log(1.02) - math.log(104.0 / 102.0)) / math.sqrt(2.0)
+        )
+    finally:
+        client.close()
+
+
+def test_volatility_require_snapshot_coverage_and_do_not_fall_back_to_events(
+    tmp_path,
+) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.path, request.url.params.get("format")))
+        if request.url.path == "/snapshots":
+            return httpx.Response(200, json={"snapshots": []})
+        if request.url.path == "/events":
+            raise AssertionError("volatility() should not fall back to /events")
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        with pytest.raises(
+            PolarisError,
+            match="could not be satisfied from standardized snapshots",
+        ):
+            client.volatility(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+                interval="1m",
+            )
+        assert calls == [("/snapshots", None)]
+    finally:
+        client.close()
+
+
+def test_volatility_validates_interval_and_method() -> None:
+    client = make_client(lambda request: httpx.Response(500))
+    try:
+        with pytest.raises(
+            ValueError,
+            match="interval must be one of:",
+        ):
+            client.volatility(
+                source="binance",
+                market="BTC-USDT",
+                interval="2m",
+            )
+
+        with pytest.raises(ValueError, match="method must be 'log_returns'"):
+            client.volatility(
+                source="binance",
+                market="BTC-USDT",
+                interval="1m",
+                method="simple_returns",
+            )
+    finally:
+        client.close()
+
+
+def test_volatility_allow_gaps_returns_covered_rows_and_warns(tmp_path) -> None:
+    calls: list[tuple[str, str | None]] = []
+    client = make_client(_partial_snapshot_handler(calls), dataset_root=tmp_path)
+    try:
+        with pytest.warns(
+            UserWarning,
+            match="skipped missing intervals: 2024-01-01T01:00:00Z..2024-01-01T02:00:00Z",
+        ):
+            rows = client.volatility(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T03:00:00Z",
+                interval="1h",
+                allow_gaps=True,
+            )
+        assert rows == []
+        assert calls == [
+            ("/snapshots", None),
+            ("/download", None),
+            ("/download", None),
+        ]
     finally:
         client.close()
 

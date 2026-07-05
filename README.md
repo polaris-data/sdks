@@ -70,6 +70,7 @@ Use it to inspect available data and query historical market data.
 - `events(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Return standardized historical events as a list.
 - `trades(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Return standardized trade events as a list.
 - `vwap(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False)`: Aggregate bucketed volume-weighted average price from standardized trade data.
+- `volatility(source=..., market=..., from_=None, to=None, interval=..., method="log_returns", allow_gaps=False)`: Aggregate bucketed trade-price volatility as the sample standard deviation of within-bucket log returns.
 - `l2_snapshots(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Return standardized orderbook snapshot rows as a list.
 - `bbo(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Derive best bid/offer quotes from standardized orderbook snapshots.
 - `depth_metrics(source=..., market=..., from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0, allow_gaps=False)`: Derive orderbook depth, spread, imbalance, and slippage metrics from standardized orderbook snapshots.
@@ -170,7 +171,7 @@ Pass `dataset_root=...` to `PolarisClient(...)` to override the root explicitly.
 
 ## Snapshot-first replay
 
-For standardized historical data, `replay(...)`, `events(...)`, `trades(...)`, `vwap(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, and default/tradingview `ohlcv(...)` now prefer `/snapshots` + `/download` and reuse local snapshot files when they already exist:
+For standardized historical data, `replay(...)`, `events(...)`, `trades(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, and default/tradingview `ohlcv(...)` now prefer `/snapshots` + `/download` and reuse local snapshot files when they already exist:
 
 ```python
 from polaris_data import PolarisClient
@@ -185,7 +186,7 @@ with PolarisClient(api_key="polaris_key_your_key") as client:
         print(row)
 ```
 
-If the requested standardized range cannot be satisfied from available standardized snapshots, `replay(...)`, `events(...)`, `trades(...)`, `vwap(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, and `ohlcv(...)` raise by default instead of falling back. Pass `allow_gaps=True` on standardized methods to return only covered data and receive a warning with the missing intervals.
+If the requested standardized range cannot be satisfied from available standardized snapshots, `replay(...)`, `events(...)`, `trades(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, and `ohlcv(...)` raise by default instead of falling back. Pass `allow_gaps=True` on standardized methods to return only covered data and receive a warning with the missing intervals.
 
 ## Error handling
 
