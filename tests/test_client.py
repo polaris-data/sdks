@@ -1317,6 +1317,124 @@ def test_bbo_derives_best_prices_and_quantities_from_l2_snapshots(tmp_path) -> N
         client.close()
 
 
+def test_depth_metrics_derive_depth_spread_and_slippage_from_l2_snapshots(
+    tmp_path,
+) -> None:
+    snapshot_rows = [
+        {
+            "timestamp": _ts("2024-01-01T00:00:00Z"),
+            "type": "l2_snapshot",
+            "data": {
+                "bids": [[100.0, 2.0], [99.5, 3.0], [98.0, 4.0]],
+                "asks": [[100.5, 1.0], [101.0, 2.0], [102.0, 4.0]],
+            },
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:00:01Z"),
+            "type": "l2_snapshot",
+            "data": {
+                "bids": [{"price": "100.1", "size": "0.4"}],
+                "asks": [{"price": 100.4, "quantity": 0.3}],
+            },
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
+            )
+        if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(snapshot_rows),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        rows = client.depth_metrics(
+            source="binance",
+            market="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T01:00:00Z",
+            depth_pct=0.01,
+            slippage_notional=100.25,
+        )
+    finally:
+        client.close()
+
+    assert len(rows) == 2
+
+    assert rows[0] == pytest.approx(
+        {
+            "timestamp": _ts("2024-01-01T00:00:00Z"),
+            "bid_price": 100.0,
+            "ask_price": 100.5,
+            "mid_price": 100.25,
+            "bid_ask_spread": 0.5,
+            "bid_ask_spread_bps": 49.87531172069825,
+            "depth_pct": 0.01,
+            "bid_depth_notional": 498.5,
+            "ask_depth_notional": 302.5,
+            "depth_imbalance": 0.24469413233458176,
+            "slippage_notional": 100.25,
+            "target_base_quantity": 1.0,
+            "buy_average_price": 100.5,
+            "sell_average_price": 100.0,
+            "buy_slippage": 0.25,
+            "sell_slippage": 0.25,
+            "buy_slippage_bps": 24.937655860349125,
+            "sell_slippage_bps": 24.937655860349125,
+        }
+    )
+    assert rows[1] == pytest.approx(
+        {
+            "timestamp": _ts("2024-01-01T00:00:01Z"),
+            "bid_price": 100.1,
+            "ask_price": 100.4,
+            "mid_price": 100.25,
+            "bid_ask_spread": 0.30000000000001137,
+            "bid_ask_spread_bps": 29.92518703241909,
+            "depth_pct": 0.01,
+            "bid_depth_notional": 40.04,
+            "ask_depth_notional": 30.119999999999997,
+            "depth_imbalance": 0.14139110604332952,
+            "slippage_notional": 100.25,
+            "target_base_quantity": 1.0,
+            "buy_average_price": None,
+            "sell_average_price": None,
+            "buy_slippage": None,
+            "sell_slippage": None,
+            "buy_slippage_bps": None,
+            "sell_slippage_bps": None,
+        }
+    )
+
+
+def test_depth_metrics_validate_positive_inputs() -> None:
+    client = make_client(lambda request: httpx.Response(500))
+    try:
+        with pytest.raises(ValueError, match="depth_pct must be greater than 0"):
+            client.depth_metrics(
+                source="binance",
+                market="BTC-USDT",
+                depth_pct=0,
+            )
+        with pytest.raises(
+            ValueError, match="slippage_notional must be greater than 0"
+        ):
+            client.depth_metrics(
+                source="binance",
+                market="BTC-USDT",
+                slippage_notional=0,
+            )
+    finally:
+        client.close()
+
+
 def test_replay_requires_snapshot_coverage_and_do_not_fall_back_to_events(tmp_path) -> None:
     calls: list[tuple[str, str | None]] = []
 

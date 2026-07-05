@@ -181,6 +181,23 @@ def _best_orderbook_level(
     return best_price, best_quantity
 
 
+def _sorted_orderbook_levels(
+    levels: list[object], *, side: str
+) -> list[tuple[float, float]]:
+    parsed_levels: list[tuple[float, float]] = []
+    for level in levels:
+        parsed = _parse_orderbook_level(level)
+        if parsed is None:
+            continue
+        price, quantity = parsed
+        if price <= 0 or quantity <= 0:
+            continue
+        parsed_levels.append((price, quantity))
+
+    parsed_levels.sort(key=lambda item: item[0], reverse=side == "bid")
+    return parsed_levels
+
+
 def _derive_bbo(row: JSONDict) -> JSONDict | None:
     timestamp = row.get("timestamp")
     if not isinstance(timestamp, (int, float)):
@@ -204,6 +221,122 @@ def _derive_bbo(row: JSONDict) -> JSONDict | None:
         "bid_quantity": bid_quantity,
         "ask_price": ask_price,
         "ask_quantity": ask_quantity,
+    }
+
+
+def _depth_notional_within_pct(
+    levels: list[tuple[float, float]], *, side: str, mid_price: float, depth_pct: float
+) -> float:
+    if side == "bid":
+        cutoff = mid_price * (1.0 - depth_pct)
+        return sum(price * quantity for price, quantity in levels if price >= cutoff)
+
+    cutoff = mid_price * (1.0 + depth_pct)
+    return sum(price * quantity for price, quantity in levels if price <= cutoff)
+
+
+def _quote_total_for_base_quantity(
+    levels: list[tuple[float, float]], target_quantity: float
+) -> float | None:
+    remaining_quantity = target_quantity
+    quote_total = 0.0
+
+    for price, available_quantity in levels:
+        fill_quantity = min(available_quantity, remaining_quantity)
+        quote_total += fill_quantity * price
+        remaining_quantity -= fill_quantity
+        if remaining_quantity <= 1e-12:
+            return quote_total
+
+    return None
+
+
+def _derive_depth_metrics(
+    row: JSONDict, *, depth_pct: float, slippage_notional: float
+) -> JSONDict | None:
+    timestamp = row.get("timestamp")
+    if not isinstance(timestamp, (int, float)):
+        return None
+
+    sides = _extract_orderbook_sides(row)
+    if sides is None:
+        return None
+
+    raw_bids, raw_asks = sides
+    bids = _sorted_orderbook_levels(raw_bids, side="bid")
+    asks = _sorted_orderbook_levels(raw_asks, side="ask")
+    if not bids or not asks:
+        return None
+
+    bid_price, _ = bids[0]
+    ask_price, _ = asks[0]
+    if ask_price < bid_price:
+        return None
+
+    mid_price = (bid_price + ask_price) / 2.0
+    spread = ask_price - bid_price
+    spread_bps = (spread / mid_price) * 10_000 if mid_price > 0 else None
+
+    bid_depth_notional = _depth_notional_within_pct(
+        bids, side="bid", mid_price=mid_price, depth_pct=depth_pct
+    )
+    ask_depth_notional = _depth_notional_within_pct(
+        asks, side="ask", mid_price=mid_price, depth_pct=depth_pct
+    )
+    total_depth_notional = bid_depth_notional + ask_depth_notional
+    depth_imbalance = (
+        (bid_depth_notional - ask_depth_notional) / total_depth_notional
+        if total_depth_notional > 0
+        else None
+    )
+
+    target_base_quantity = slippage_notional / mid_price if mid_price > 0 else None
+    buy_quote_total: float | None = None
+    sell_quote_total: float | None = None
+    buy_average_price: float | None = None
+    sell_average_price: float | None = None
+    buy_slippage: float | None = None
+    sell_slippage: float | None = None
+    buy_slippage_bps: float | None = None
+    sell_slippage_bps: float | None = None
+
+    if target_base_quantity is not None and target_base_quantity > 0:
+        buy_quote_total = _quote_total_for_base_quantity(asks, target_base_quantity)
+        sell_quote_total = _quote_total_for_base_quantity(bids, target_base_quantity)
+
+        if buy_quote_total is not None:
+            buy_average_price = buy_quote_total / target_base_quantity
+            buy_slippage = buy_quote_total - slippage_notional
+            buy_slippage_bps = (
+                ((buy_average_price - mid_price) / mid_price) * 10_000
+            )
+
+        if sell_quote_total is not None:
+            sell_average_price = sell_quote_total / target_base_quantity
+            sell_slippage = slippage_notional - sell_quote_total
+            sell_slippage_bps = (
+                ((mid_price - sell_average_price) / mid_price) * 10_000
+            )
+
+    return {
+        "timestamp": int(timestamp),
+        "bid_price": bid_price,
+        "ask_price": ask_price,
+        "mid_price": mid_price,
+        "bid_ask_spread": spread,
+        "bid_ask_spread_bps": spread_bps,
+        "depth_pct": depth_pct,
+        "bid_depth_notional": bid_depth_notional,
+        "ask_depth_notional": ask_depth_notional,
+        "depth_imbalance": depth_imbalance,
+        "slippage_notional": slippage_notional,
+        "target_base_quantity": target_base_quantity,
+        "buy_average_price": buy_average_price,
+        "sell_average_price": sell_average_price,
+        "buy_slippage": buy_slippage,
+        "sell_slippage": sell_slippage,
+        "buy_slippage_bps": buy_slippage_bps,
+        "sell_slippage_bps": sell_slippage_bps,
     }
 
 
@@ -1975,6 +2108,66 @@ class PolarisClient:
             if derived is not None:
                 rows.append(derived)
         return rows
+
+    def depth_metrics(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        depth_pct: float = 0.01,
+        slippage_notional: float = 10_000.0,
+        allow_gaps: bool = False,
+    ) -> list[JSONDict]:
+        if depth_pct <= 0:
+            raise ValueError("depth_pct must be greater than 0")
+        if slippage_notional <= 0:
+            raise ValueError("slippage_notional must be greater than 0")
+
+        from_, to = self._resolve_historical_range(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+        )
+        return list(
+            self._iter_depth_metrics_data(
+                source=source,
+                market=market,
+                from_=from_,
+                to=to,
+                depth_pct=depth_pct,
+                slippage_notional=slippage_notional,
+                allow_gaps=allow_gaps,
+            )
+        )
+
+    def _iter_depth_metrics_data(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput,
+        to: TimeInput,
+        depth_pct: float,
+        slippage_notional: float,
+        allow_gaps: bool = False,
+    ) -> Iterator[JSONDict]:
+        for row in self._iter_l2_snapshots_data(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+            allow_gaps=allow_gaps,
+        ):
+            derived = _derive_depth_metrics(
+                row,
+                depth_pct=depth_pct,
+                slippage_notional=slippage_notional,
+            )
+            if derived is not None:
+                yield derived
 
     def raw(
         self,
