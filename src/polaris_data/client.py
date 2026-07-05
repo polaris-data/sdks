@@ -1963,6 +1963,82 @@ class PolarisClient:
             if row.get("type") == "trade":
                 yield row
 
+    def funding_rates(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        allow_gaps: bool = False,
+    ) -> list[JSONDict]:
+        from_, to = self._resolve_historical_range(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+        )
+        return list(
+            self._iter_point_series_data(
+                source=source,
+                market=market,
+                from_=from_,
+                to=to,
+                allow_gaps=allow_gaps,
+                series="funding_rate",
+            )
+        )
+
+    def mark_prices(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        allow_gaps: bool = False,
+    ) -> list[JSONDict]:
+        from_, to = self._resolve_historical_range(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+        )
+        return list(
+            self._iter_point_series_data(
+                source=source,
+                market=market,
+                from_=from_,
+                to=to,
+                allow_gaps=allow_gaps,
+                series="mark_price",
+            )
+        )
+
+    def _iter_point_series_data(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput,
+        to: TimeInput,
+        allow_gaps: bool = False,
+        series: str,
+    ) -> Iterator[JSONDict]:
+        for row in self._iter_standardized_snapshot_rows(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+            allow_gaps=allow_gaps,
+            dataset_label=series,
+        ):
+            if row.get("type") != "point":
+                continue
+            data = row.get("data")
+            if isinstance(data, dict) and data.get("series") == series:
+                yield row
+
     def events(
         self,
         *,

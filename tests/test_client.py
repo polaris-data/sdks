@@ -1256,6 +1256,120 @@ def test_l2_snapshots_use_snapshot_download_flow_by_default(tmp_path) -> None:
         client.close()
 
 
+def test_funding_rates_filter_point_series_from_standardized_snapshots(tmp_path) -> None:
+    snapshot_rows = [
+        {
+            "timestamp": _ts("2024-01-01T00:00:00Z"),
+            "type": "point",
+            "source": "binance",
+            "market": "BTC-USDT",
+            "data": {"series": "funding_rate", "value": 0.0001},
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:01:00Z"),
+            "type": "point",
+            "source": "binance",
+            "market": "BTC-USDT",
+            "data": {"series": "mark_price", "value": 43123.5},
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:02:00Z"),
+            "type": "trade",
+            "data": {"price": 43124.0, "quantity": 0.25},
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:03:00Z"),
+            "type": "point",
+            "source": "binance",
+            "market": "BTC-USDT",
+            "data": {"series": "funding_rate", "value": 0.0002},
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
+            )
+        if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(snapshot_rows),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        assert client.funding_rates(
+            source="binance",
+            market="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T01:00:00Z",
+        ) == [snapshot_rows[0], snapshot_rows[3]]
+    finally:
+        client.close()
+
+
+def test_mark_prices_filter_point_series_from_standardized_snapshots(tmp_path) -> None:
+    snapshot_rows = [
+        {
+            "timestamp": _ts("2024-01-01T00:00:00Z"),
+            "type": "point",
+            "source": "binance",
+            "market": "BTC-USDT",
+            "data": {"series": "funding_rate", "value": 0.0001},
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:01:00Z"),
+            "type": "point",
+            "source": "binance",
+            "market": "BTC-USDT",
+            "data": {"series": "mark_price", "value": 43123.5},
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:02:00Z"),
+            "type": "point",
+            "source": "binance",
+            "market": "BTC-USDT",
+            "data": {"series": "index_price", "value": 43120.0},
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:03:00Z"),
+            "type": "point",
+            "source": "binance",
+            "market": "BTC-USDT",
+            "data": {"series": "mark_price", "value": 43124.0},
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
+            )
+        if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(snapshot_rows),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        assert client.mark_prices(
+            source="binance",
+            market="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T01:00:00Z",
+        ) == [snapshot_rows[1], snapshot_rows[3]]
+    finally:
+        client.close()
+
+
 def test_bbo_derives_best_prices_and_quantities_from_l2_snapshots(tmp_path) -> None:
     snapshot_rows = [
         {
