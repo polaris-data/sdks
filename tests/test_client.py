@@ -586,6 +586,223 @@ def test_trades_allow_gaps_returns_covered_rows_and_warns(tmp_path) -> None:
         client.close()
 
 
+def test_vwap_aggregates_from_snapshot_download_flow(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
+            )
+        if request.url.path == "/download":
+            return httpx.Response(
+                302,
+                headers={"location": "https://download.example.com/day-1-vwap.jsonl.zst"},
+            )
+        if request.url.host == "download.example.com":
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(
+                    [
+                        {
+                            "timestamp": _ts("2024-01-01T00:00:00Z"),
+                            "type": "trade",
+                            "data": {"price": 100.0, "quantity": 10.0},
+                        },
+                        {
+                            "timestamp": _ts("2024-01-01T00:00:01Z"),
+                            "type": "trade",
+                            "data": {"price": 101.0, "quantity": 2.0},
+                        },
+                        {
+                            "timestamp": _ts("2024-01-01T00:00:02Z"),
+                            "type": "trade",
+                            "data": {"price": 99.0, "quantity": 50.0},
+                        },
+                        {
+                            "timestamp": _ts("2024-01-01T00:00:03Z"),
+                            "type": "datapoint",
+                            "data": {"funding": 0.01},
+                        },
+                    ]
+                ),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        assert client.vwap(
+            source="binance",
+            market="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T01:00:00Z",
+            interval="1m",
+        ) == pytest.approx(
+            [
+                {
+                    "timestamp": _ts("2024-01-01T00:00:00Z"),
+                    "vwap": 6152.0 / 62.0,
+                    "volume": 62.0,
+                    "quote_volume": 6152.0,
+                    "trades": 3,
+                }
+            ]
+        )
+    finally:
+        client.close()
+
+
+def test_vwap_require_snapshot_coverage_and_do_not_fall_back_to_events(tmp_path) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.path, request.url.params.get("format")))
+        if request.url.path == "/snapshots":
+            return httpx.Response(200, json={"snapshots": []})
+        if request.url.path == "/events":
+            raise AssertionError("vwap() should not fall back to /events")
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        with pytest.raises(
+            PolarisError,
+            match="could not be satisfied from standardized snapshots",
+        ):
+            client.vwap(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+                interval="1m",
+            )
+        assert calls == [("/snapshots", None)]
+    finally:
+        client.close()
+
+
+def test_vwap_validates_interval() -> None:
+    client = make_client(lambda request: httpx.Response(500))
+    try:
+        with pytest.raises(
+            ValueError,
+            match="interval must be one of:",
+        ):
+            client.vwap(
+                source="binance",
+                market="BTC-USDT",
+                interval="2m",
+            )
+    finally:
+        client.close()
+
+
+def test_vwap_allow_gaps_returns_covered_rows_and_warns(tmp_path) -> None:
+    calls: list[tuple[str, str | None]] = []
+    client = make_client(_partial_snapshot_handler(calls), dataset_root=tmp_path)
+    try:
+        with pytest.warns(
+            UserWarning,
+            match="skipped missing intervals: 2024-01-01T01:00:00Z..2024-01-01T02:00:00Z",
+        ):
+            row = client.vwap(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T03:00:00Z",
+                interval="1h",
+                allow_gaps=True,
+            )
+        assert row == pytest.approx(
+            [
+                {
+                    "timestamp": _ts("2024-01-01T00:00:00Z"),
+                    "vwap": 310.0 / 3.0,
+                    "volume": 3.0,
+                    "quote_volume": 310.0,
+                    "trades": 2,
+                },
+                {
+                    "timestamp": _ts("2024-01-01T02:00:00Z"),
+                    "vwap": 110.0,
+                    "volume": 3.0,
+                    "quote_volume": 330.0,
+                    "trades": 1,
+                },
+            ]
+        )
+        assert calls == [
+            ("/snapshots", None),
+            ("/download", None),
+            ("/download", None),
+        ]
+    finally:
+        client.close()
+
+
+def test_vwap_buckets_trades_by_interval(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
+            )
+        if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(
+                    [
+                        {
+                            "timestamp": _ts("2024-01-01T00:00:10Z"),
+                            "type": "trade",
+                            "data": {"price": 100.0, "quantity": 1.0},
+                        },
+                        {
+                            "timestamp": _ts("2024-01-01T00:00:20Z"),
+                            "type": "trade",
+                            "data": {"price": 102.0, "quantity": 2.0},
+                        },
+                        {
+                            "timestamp": _ts("2024-01-01T00:01:05Z"),
+                            "type": "trade",
+                            "data": {"price": 99.0, "quantity": 4.0},
+                        },
+                    ]
+                ),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        assert client.vwap(
+            source="binance",
+            market="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T00:02:00Z",
+            interval="1m",
+        ) == pytest.approx(
+            [
+                {
+                    "timestamp": _ts("2024-01-01T00:00:00Z"),
+                    "vwap": 304.0 / 3.0,
+                    "volume": 3.0,
+                    "quote_volume": 304.0,
+                    "trades": 2,
+                },
+                {
+                    "timestamp": _ts("2024-01-01T00:01:00Z"),
+                    "vwap": 99.0,
+                    "volume": 4.0,
+                    "quote_volume": 396.0,
+                    "trades": 1,
+                },
+            ]
+        )
+    finally:
+        client.close()
+
+
 def test_ohlcv_aggregates_from_snapshot_download_flow(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/snapshots":
@@ -643,7 +860,6 @@ def test_ohlcv_aggregates_from_snapshot_download_flow(tmp_path) -> None:
                 "close": 105.0,
                 "volume": 6.0,
                 "trades": 3,
-                "interval": "1m",
             },
             {
                 "timestamp": 1704067260000000,
@@ -653,7 +869,6 @@ def test_ohlcv_aggregates_from_snapshot_download_flow(tmp_path) -> None:
                 "close": 103.0,
                 "volume": 4.0,
                 "trades": 1,
-                "interval": "1m",
             },
         ]
     finally:
@@ -758,7 +973,6 @@ def test_ohlcv_allow_gaps_skips_missing_hours_and_preserves_gap_open(tmp_path) -
                 "close": 105.0,
                 "volume": 3.0,
                 "trades": 2,
-                "interval": "1h",
             },
             {
                 "timestamp": _ts("2024-01-01T02:00:00Z"),
@@ -768,7 +982,6 @@ def test_ohlcv_allow_gaps_skips_missing_hours_and_preserves_gap_open(tmp_path) -
                 "close": 110.0,
                 "volume": 3.0,
                 "trades": 1,
-                "interval": "1h",
             },
         ]
         assert calls == [

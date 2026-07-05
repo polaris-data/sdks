@@ -375,7 +375,6 @@ class _LocalOhlcvAggregator:
                 "close": price,
                 "volume_scaled": round(quantity * _VOL_SCALE),
                 "trades": 1,
-                "interval": self._interval,
                 "open_ts": int(timestamp),
                 "close_ts": int(timestamp),
             }
@@ -406,7 +405,6 @@ class _LocalOhlcvAggregator:
                     "close": float(bar["close"]),
                     "volume": int(bar["volume_scaled"]) / _VOL_SCALE,
                     "trades": int(bar["trades"]),
-                    "interval": str(bar["interval"]),
                 }
             )
 
@@ -416,6 +414,64 @@ class _LocalOhlcvAggregator:
             current_timestamp = int(result[index]["timestamp"])
             if current_timestamp == previous_timestamp + self._interval_us:
                 result[index]["open"] = result[index - 1]["close"]
+        return result
+
+
+class _LocalVwapAggregator:
+    def __init__(self, interval: str) -> None:
+        us = _interval_to_us(interval)
+        if us is None:
+            supported = ", ".join(_INTERVAL_US)
+            raise ValueError(f"Unsupported interval: {interval}. Supported: {supported}")
+        self._interval = interval
+        self._interval_us = us
+        self._buckets: dict[int, dict[str, int | float | str]] = {}
+
+    def push(self, event: JSONDict) -> None:
+        if event.get("type") != "trade":
+            return
+
+        timestamp = event.get("timestamp")
+        data = event.get("data")
+        if not isinstance(timestamp, (int, float)) or not isinstance(data, dict):
+            return
+
+        price = _coerce_numeric(data.get("price"))
+        quantity = _coerce_numeric(data.get("quantity"))
+        if price is None or quantity is None or quantity <= 0:
+            return
+
+        bucket = int(timestamp // self._interval_us) * self._interval_us
+        row = self._buckets.get(bucket)
+        if row is None:
+            self._buckets[bucket] = {
+                "timestamp": bucket,
+                "volume": quantity,
+                "quote_volume": price * quantity,
+                "trades": 1,
+            }
+            return
+
+        row["volume"] += quantity
+        row["quote_volume"] += price * quantity
+        row["trades"] += 1
+
+    def finish(self) -> list[JSONDict]:
+        result: list[JSONDict] = []
+        for row in self._buckets.values():
+            volume = float(row["volume"])
+            quote_volume = float(row["quote_volume"])
+            result.append(
+                {
+                    "timestamp": int(row["timestamp"]),
+                    "vwap": quote_volume / volume if volume > 0 else None,
+                    "volume": volume,
+                    "quote_volume": quote_volume,
+                    "trades": int(row["trades"]),
+                }
+            )
+
+        result.sort(key=lambda item: int(item["timestamp"]))
         return result
 
 
@@ -1349,6 +1405,39 @@ class PolarisClient:
             aggregator.push(row)
         return aggregator.finish()
 
+    def _aggregate_vwap_from_standard_trades(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput,
+        to: TimeInput,
+        interval: str,
+        allow_gaps: bool = False,
+    ) -> list[JSONDict]:
+        coverage = self._resolve_snapshot_coverage(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+        )
+        if not coverage.paths or (coverage.gaps and not allow_gaps):
+            raise PolarisError(
+                "Requested VWAP range could not be satisfied from standardized snapshots"
+            )
+        if allow_gaps:
+            self._warn_snapshot_gaps(
+                source=source,
+                market=market,
+                from_=from_,
+                to=to,
+                gaps=coverage.gaps,
+            )
+        aggregator = _LocalVwapAggregator(interval)
+        for row in self._iter_local_snapshot_rows(coverage.paths, from_=from_, to=to):
+            aggregator.push(row)
+        return aggregator.finish()
+
     def health(self) -> JSONDict:
         return self._get_json("health")
 
@@ -1941,6 +2030,35 @@ class PolarisClient:
                 to=to,
                 allow_gaps=allow_gaps,
             )
+        )
+
+    def vwap(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        interval: str,
+        allow_gaps: bool = False,
+    ) -> list[JSONDict]:
+        if _interval_to_us(interval) is None:
+            raise ValueError(
+                "interval must be one of: " + ", ".join(_INTERVAL_US)
+            )
+        from_, to = self._resolve_historical_range(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+        )
+        return self._aggregate_vwap_from_standard_trades(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+            interval=interval,
+            allow_gaps=allow_gaps,
         )
 
     def _iter_trades_data(
