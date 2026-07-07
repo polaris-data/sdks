@@ -62,21 +62,31 @@ Use it to inspect available data and query historical market data.
 
 - `health()`: Check API availability.
 - `catalog(source=None, market=None)`: Browse supported sources and markets.
-- `list_snapshots(source=..., market=..., from_=..., to=..., limit=1000)`: List available snapshot files for a time range.
 
-### Historical data
+### Access patterns
 
 - `replay(source=..., market=..., from_=None, to=None, standard=True, allow_gaps=False, parallel=False)`: Stream historical events for backfills, notebooks, or replay-style processing.
+- `raw(source=..., market=..., from_=None, to=None, limit=1000)`: Return raw source payloads as a list.
+
+### Standardized base datasets
+
 - `events(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Return standardized historical events as a list.
 - `trades(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Return standardized trade events as a list.
-- `vwap(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False)`: Aggregate bucketed volume-weighted average price from standardized trade data.
-- `volatility(source=..., market=..., from_=None, to=None, interval=..., method="log_returns", allow_gaps=False)`: Aggregate bucketed trade-price volatility as the sample standard deviation of within-bucket log returns.
 - `l2_snapshots(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Return standardized orderbook snapshot rows as a list.
-- `bbo(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Derive best bid/offer quotes from standardized orderbook snapshots.
-- `depth_metrics(source=..., market=..., from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0, allow_gaps=False)`: Derive orderbook depth, spread, imbalance, and slippage metrics from standardized orderbook snapshots.
-- `raw(source=..., market=..., from_=None, to=None, limit=1000)`: Return raw source payloads as a list.
+- `funding_rates(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Return standardized funding-rate point series rows as a list.
+- `mark_prices(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Return standardized mark-price point series rows as a list.
+
+### Derived from trades
+
 - `ohlcv(source=..., market=..., from_=None, to=None, interval=..., format=None, allow_gaps=False)`: Aggregate OHLCV bars from standardized trade data.
 - `volume(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False)`: Aggregate bucketed trade volume from standardized trade data.
+- `vwap(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False)`: Aggregate bucketed volume-weighted average price from standardized trade data.
+- `volatility(source=..., market=..., from_=None, to=None, interval=..., method="log_returns", allow_gaps=False)`: Aggregate bucketed trade-price volatility as the sample standard deviation of within-bucket log returns.
+
+### Derived from order book
+
+- `bbo(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Derive best bid/offer quotes from standardized orderbook snapshots.
+- `depth_metrics(source=..., market=..., from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0, allow_gaps=False)`: Derive orderbook depth, spread, imbalance, and slippage metrics from standardized orderbook snapshots.
 
 For historical event queries, `standard=True` is the default. Pass `standard=False` when you explicitly want raw schema payloads through `replay(...)`. Methods that take `from_` and `to` accept ISO 8601 strings, `datetime`, `date`, or Unix epoch microseconds. If you omit one or both bounds, the SDK uses catalog metadata to infer a bounded range. For open datasets that defaults to the most recent 7 days capped by the dataset `start`/`end`. For unauthenticated preview datasets, `to` is capped at the public cutoff date. Standardized methods also accept `allow_gaps=True` to return rows from covered snapshots only; when gaps are detected the SDK emits a warning naming the skipped intervals instead of fabricating data for the outage.
 
