@@ -60,76 +60,36 @@ Use it to inspect available data and query historical market data.
 
 ### Discovery
 
-- `health()`: Check API availability.
-- `catalog(source=None, market=None)`: Browse supported sources and markets.
+| Method | Returns | Use case |
+| --- | --- | --- |
+| `health()` | API health/status payload | Connectivity checks and startup validation |
+| `catalog(source=None, market=None)` | Source/market metadata | Discover supported datasets, markets, and time coverage |
 
 ### Access patterns
 
-- `replay(source=..., market=..., from_=None, to=None, standard=True, allow_gaps=False, parallel=False)`: Stream historical events for backfills, notebooks, or replay-style processing.
-- `raw(source=..., market=..., from_=None, to=None, limit=1000)`: Return raw source payloads as a list.
+| Method | Returns | Use case |
+| --- | --- | --- |
+| `replay(source=..., market=..., from_=None, to=None, standard=True, allow_gaps=False, parallel=False)` | Iterator of historical events | Backfills, notebooks, and replay-style processing without materializing everything up front |
+| `raw(source=..., market=..., from_=None, to=None, limit=1000)` | List of raw source payloads | Inspect exchange-native payloads and compare raw vs standardized schemas |
 
-### Standardized base datasets
+### Standardized Data Schemas
 
-- `events(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Return standardized historical events as a list.
-- `trades(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Return standardized trade events as a list.
-- `l2_snapshots(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Return standardized orderbook snapshot rows as a list.
-- `funding_rates(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Return standardized funding-rate point series rows as a list.
-- `mark_prices(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Return standardized mark-price point series rows as a list.
+| Method | Returns | Use case |
+| --- | --- | --- |
+| `events(source=..., market=..., from_=None, to=None, allow_gaps=False)` | List of standardized historical events | General-purpose historical analysis when you want the normalized event stream in memory |
+| `trades(source=..., market=..., from_=None, to=None, allow_gaps=False)` | List of standardized trade events | Trade-level analytics, execution studies, and derived bar calculations |
+| `l2_snapshots(source=..., market=..., from_=None, to=None, allow_gaps=False)` | List of standardized orderbook snapshot rows | Order book reconstruction and microstructure analysis |
+| `funding_rates(source=..., market=..., from_=None, to=None, allow_gaps=False)` | List of funding-rate point series rows | Perpetual funding studies and carry modeling |
+| `mark_prices(source=..., market=..., from_=None, to=None, allow_gaps=False)` | List of mark-price point series rows | Basis analysis, mark tracking, and liquidation-related research |
+| `ohlcv(source=..., market=..., from_=None, to=None, interval=..., format=None, allow_gaps=False)` | Aggregated OHLCV bars | Charting, bar-based strategies, and downstream TA workflows |
+| `volume(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False)` | Bucketed trade volume series | Volume profiling and participation analysis |
+| `vwap(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False)` | Bucketed VWAP series | Execution benchmarking and price smoothing |
+| `volatility(source=..., market=..., from_=None, to=None, interval=..., method="log_returns", allow_gaps=False)` | Bucketed realized volatility series | Risk modeling and intraperiod volatility analysis |
+| `bbo(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Best bid/offer quote series | Spread tracking, quote analytics, and top-of-book monitoring |
+| `depth_metrics(source=..., market=..., from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0, allow_gaps=False)` | Derived depth, spread, imbalance, and slippage metrics | Liquidity analysis and market impact estimation |
 
-### Derived from trades
-
-- `ohlcv(source=..., market=..., from_=None, to=None, interval=..., format=None, allow_gaps=False)`: Aggregate OHLCV bars from standardized trade data.
-- `volume(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False)`: Aggregate bucketed trade volume from standardized trade data.
-- `vwap(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False)`: Aggregate bucketed volume-weighted average price from standardized trade data.
-- `volatility(source=..., market=..., from_=None, to=None, interval=..., method="log_returns", allow_gaps=False)`: Aggregate bucketed trade-price volatility as the sample standard deviation of within-bucket log returns.
-
-### Derived from order book
-
-- `bbo(source=..., market=..., from_=None, to=None, allow_gaps=False)`: Derive best bid/offer quotes from standardized orderbook snapshots.
-- `depth_metrics(source=..., market=..., from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0, allow_gaps=False)`: Derive orderbook depth, spread, imbalance, and slippage metrics from standardized orderbook snapshots.
-
-For historical event queries, `standard=True` is the default. Pass `standard=False` when you explicitly want raw schema payloads through `replay(...)`. Methods that take `from_` and `to` accept ISO 8601 strings, `datetime`, `date`, or Unix epoch microseconds. If you omit one or both bounds, the SDK uses catalog metadata to infer a bounded range. For open datasets that defaults to the most recent 7 days capped by the dataset `start`/`end`. For unauthenticated preview datasets, `to` is capped at the public cutoff date. Standardized methods also accept `allow_gaps=True` to return rows from covered snapshots only; when gaps are detected the SDK emits a warning naming the skipped intervals instead of fabricating data for the outage.
-
-Example:
-
-```python
-from polaris_data import PolarisClient
-
-with PolarisClient(api_key="polaris_key_your_key") as client:
-    catalog = client.catalog()
-    print(catalog)
-
-    rows = client.events(
-        source="binance",
-        market="BTC-USDT",
-        from_="2024-01-01T00:00:00Z",
-        to="2024-01-01T01:00:00Z",
-    )
-    print(len(rows))
-```
-
-Example response shape:
-
-```python
-{
-    "exchanges": [
-        {
-            "id": "binance",
-            "assets": [
-                {
-                    "id": "BTC-USDT",
-                    "start": "2024-01-01T00:00:00.000Z",
-                    "end": "2024-01-10T00:00:00.000Z",
-                    "source": "manifest",
-                    "categories": ["perp"],
-                    "access": {"status": "open"},
-                }
-            ],
-        }
-    ],
-    "updatedAt": "2026-05-19T10:28:00.000Z",
-}
-```
+For parameter details, response shapes, and end-to-end examples, see the
+[Python SDK docs](https://docs.polaris.supply/sdks/python).
 
 ## Local dataset storage
 
