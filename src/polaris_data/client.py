@@ -2592,3 +2592,40 @@ class PolarisClient:
             allow_gaps=allow_gaps,
         )
         return _to_tradingview_ohlcv(bars)
+
+    def volume(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        interval: str,
+        allow_gaps: bool = False,
+    ) -> list[JSONDict]:
+        from_, to = self._resolve_historical_range(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+        )
+        if _interval_to_us(interval) is None:
+            raise ValueError(
+                "interval must be one of: " + ", ".join(_INTERVAL_US)
+            )
+
+        bars = self._aggregate_ohlcv_from_standard_trades(
+            source=source,
+            market=market,
+            from_=from_,
+            to=to,
+            interval=interval,
+            allow_gaps=allow_gaps,
+        )
+        return [
+            {
+                "timestamp": bar["timestamp"],
+                "volume": bar["volume"],
+            }
+            for bar in bars
+        ]

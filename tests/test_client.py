@@ -1028,6 +1028,68 @@ def test_ohlcv_aggregates_from_snapshot_download_flow(tmp_path) -> None:
         client.close()
 
 
+def test_volume_aggregates_from_snapshot_download_flow(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshots":
+            return httpx.Response(200, json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]})
+        if request.url.path == "/download":
+            return httpx.Response(
+                302,
+                headers={"location": "https://download.example.com/day-1-volume.jsonl.zst"},
+            )
+        if request.url.host == "download.example.com":
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(
+                    [
+                        {
+                            "timestamp": 1704067205000000,
+                            "type": "trade",
+                            "data": {"price": 100.0, "quantity": 1.0},
+                        },
+                        {
+                            "timestamp": 1704067201000000,
+                            "type": "trade",
+                            "data": {"price": 95.0, "quantity": 2.0},
+                        },
+                        {
+                            "timestamp": 1704067240000000,
+                            "type": "trade",
+                            "data": {"price": 105.0, "quantity": 3.0},
+                        },
+                        {
+                            "timestamp": 1704067260000000,
+                            "type": "trade",
+                            "data": {"price": 103.0, "quantity": 4.0},
+                        },
+                    ]
+                ),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        assert client.volume(
+            source="binance",
+            market="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T00:02:00Z",
+            interval="1m",
+        ) == [
+            {
+                "timestamp": 1704067200000000,
+                "volume": 6.0,
+            },
+            {
+                "timestamp": 1704067260000000,
+                "volume": 4.0,
+            },
+        ]
+    finally:
+        client.close()
+
+
 def test_ohlcv_tradingview_format_returns_local_json(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/snapshots":
@@ -1068,6 +1130,35 @@ def test_ohlcv_tradingview_format_returns_local_json(tmp_path) -> None:
             ],
             "volumes": [{"time": 1704067200.0, "value": 1.5}],
         }
+    finally:
+        client.close()
+
+
+def test_volume_require_snapshot_coverage_and_do_not_fall_back_to_events(tmp_path) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.path, request.url.params.get("format")))
+        if request.url.path == "/snapshots":
+            return httpx.Response(200, json={"snapshots": []})
+        if request.url.path == "/events":
+            raise AssertionError("volume() should not fall back to /events")
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        with pytest.raises(
+            PolarisError,
+            match="could not be satisfied from standardized snapshots",
+        ):
+            client.volume(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T00:02:00Z",
+                interval="1m",
+            )
+        assert calls == [("/snapshots", None)]
     finally:
         client.close()
 
