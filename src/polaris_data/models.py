@@ -7,6 +7,36 @@ from datetime import datetime
 from typing import Any, TypedDict
 
 JSONDict = dict[str, Any]
+CatalogInstrumentValue = str | int | float | None
+
+
+class CatalogInstrument(TypedDict):
+    base: str | None
+    quote: str | None
+    tick_size: CatalogInstrumentValue
+    lot_size: CatalogInstrumentValue
+    min_notional: CatalogInstrumentValue
+
+
+class CatalogAccess(TypedDict):
+    status: str
+    public_cutoff_date: str | None
+
+
+class CatalogMarketEntry(TypedDict):
+    source: str
+    market: str
+    start: str
+    end: str
+    source_type: str
+    categories: list[str]
+    access: CatalogAccess
+    instrument: CatalogInstrument
+
+
+class CatalogResponse(TypedDict):
+    markets: list[CatalogMarketEntry]
+    updatedAt: str
 
 
 class PaginatedResponse(TypedDict):
@@ -19,6 +49,23 @@ class DownloadUrlResponse(TypedDict):
     url: str
     totalBytes: int
     fileCount: int
+
+
+class BulkDownloadSnapshotEntry(TypedDict):
+    date: str
+    timestamp: str
+    key: str
+    url: str
+    expires_in_seconds: int
+
+
+class BulkDownloadManifest(TypedDict):
+    source: str
+    market: str
+    date: str
+    total: int
+    total_bytes: int
+    snapshots: list[BulkDownloadSnapshotEntry]
 
 
 @dataclass(frozen=True)

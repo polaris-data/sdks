@@ -72,6 +72,13 @@ def _catalog_payload(
         "source_type": "manifest",
         "categories": ["perp"],
         "access": access,
+        "instrument": {
+            "base": "BTC",
+            "quote": "USDT",
+            "tick_size": "0.1",
+            "lot_size": "0.001",
+            "min_notional": "10",
+        },
     }
 
     if flattened:
@@ -111,6 +118,36 @@ def _hourly_snapshot_key(source: str, market: str, day: str, hour: int) -> str:
     return f"standard-{source}-{market}-{day}-{hour:02d}"
 
 
+def _snapshot_download_url(key: str) -> str:
+    return f"https://download.example.com/{key}.jsonl.zst"
+
+
+def _bulk_download_manifest(
+    *,
+    source: str,
+    market: str,
+    day: str,
+    keys: list[str],
+) -> dict:
+    return {
+        "source": source,
+        "market": market,
+        "date": day,
+        "total": len(keys),
+        "total_bytes": 0,
+        "snapshots": [
+            {
+                "date": day,
+                "timestamp": "000000",
+                "key": key,
+                "url": _snapshot_download_url(key),
+                "expires_in_seconds": 86400,
+            }
+            for key in keys
+        ],
+    }
+
+
 def _partial_snapshot_handler(calls: list[tuple[str, str | None]]):
     snapshot_rows = {
         _hourly_snapshot_key("binance", "BTC-USDT", "2024-01-01", 0): [
@@ -135,7 +172,15 @@ def _partial_snapshot_handler(calls: list[tuple[str, str | None]]):
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append((request.url.path, request.url.params.get("format")))
+        if request.url.path in {"/snapshots", "/download"}:
+            calls.append(
+                (
+                    request.url.path,
+                    request.url.params.get("mode")
+                    if request.url.path == "/download"
+                    else request.url.params.get("format"),
+                )
+            )
         if request.url.path == "/snapshots":
             return httpx.Response(
                 200,
@@ -150,7 +195,17 @@ def _partial_snapshot_handler(calls: list[tuple[str, str | None]]):
                 },
             )
         if request.url.path == "/download":
-            key = request.url.params.get("key")
+            return httpx.Response(
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=sorted(snapshot_rows),
+                ),
+            )
+        if request.url.host == "download.example.com":
+            key = request.url.path.removeprefix("/").removesuffix(".jsonl.zst")
             assert key in snapshot_rows
             return httpx.Response(
                 200,
@@ -167,10 +222,21 @@ def _partial_snapshot_handler(calls: list[tuple[str, str | None]]):
 def test_catalog_returns_payload() -> None:
     payload = {
         "markets": [
-            {"source": "binance", "market": "BTC-USDT"},
+            {
+                "source": "binance",
+                "market": "BTC-USDT",
+                "instrument": {
+                    "base": "BTC",
+                    "quote": "USDT",
+                    "tick_size": "0.1",
+                    "lot_size": "0.001",
+                    "min_notional": "10",
+                },
+            },
             {"source": "hyperliquid", "market": "BTC"},
             {"source": "hyperliquid", "market": "ETH"},
-        ]
+        ],
+        "updatedAt": "2026-05-19T10:28:00.000Z",
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -180,7 +246,16 @@ def test_catalog_returns_payload() -> None:
 
     client = make_client(handler)
     try:
-        assert client.catalog() == payload
+        result = client.catalog()
+        assert result["markets"][0]["instrument"]["base"] == "BTC"
+        assert result["markets"][0]["instrument"]["tick_size"] == "0.1"
+        assert result["markets"][1]["instrument"] == {
+            "base": None,
+            "quote": None,
+            "tick_size": None,
+            "lot_size": None,
+            "min_notional": None,
+        }
     finally:
         client.close()
 
@@ -281,7 +356,21 @@ def test_events_infer_preview_cutoff_window_without_api_key(tmp_path) -> None:
                 },
             )
         if request.url.path == "/download":
-            key = request.url.params.get("key")
+            return httpx.Response(
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day=request.url.params["date"],
+                    keys=[
+                        key
+                        for key, date_text in snapshot_keys.items()
+                        if date_text == request.url.params["date"]
+                    ],
+                ),
+            )
+        if request.url.host == "download.example.com":
+            key = request.url.path.removeprefix("/").removesuffix(".jsonl.zst")
             assert key in snapshot_keys
             date_text = snapshot_keys[key]
             row = {
@@ -354,14 +443,14 @@ def test_unauthorized_raw_requires_api_key_before_request() -> None:
         client.close()
 
 
-def test_rate_limited_error_maps_reset_at() -> None:
+def test_rate_limited_error_maps_reset_at(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             429,
             json={"error": "quota exceeded", "reset_at": "2026-05-01T00:00:00.000Z"},
         )
 
-    client = make_client(handler)
+    client = make_client(handler, dataset_root=tmp_path)
     try:
         with pytest.raises(RateLimitedError) as exc_info:
             client.trades(
@@ -384,8 +473,13 @@ def test_trades_use_snapshot_download_flow_by_default(tmp_path) -> None:
             )
         if request.url.path == "/download":
             return httpx.Response(
-                302,
-                headers={"location": "https://download.example.com/day-1-trades.jsonl.zst"},
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=[SNAPSHOT_KEY_DAY_1],
+                ),
             )
         if request.url.host == "download.example.com":
             return httpx.Response(
@@ -440,13 +534,24 @@ def test_trades_download_404_raises_not_found_for_streaming_response(tmp_path) -
     calls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(request.url.path)
+        if request.url.path in {"/snapshots", "/download"}:
+            calls.append(request.url.path)
         if request.url.path == "/snapshots":
             return httpx.Response(
                 200,
                 json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
             )
         if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=[SNAPSHOT_KEY_DAY_1],
+                ),
+            )
+        if request.url.host == "download.example.com":
             return httpx.Response(404, text="snapshot missing")
         raise AssertionError(f"unexpected request: {request.url}")
 
@@ -498,7 +603,17 @@ def test_trades_download_hourly_snapshots_for_partial_day_ranges(tmp_path) -> No
                 },
             )
         if request.url.path == "/download":
-            key = request.url.params.get("key")
+            return httpx.Response(
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=sorted(snapshot_rows),
+                ),
+            )
+        if request.url.host == "download.example.com":
+            key = request.url.path.removeprefix("/").removesuffix(".jsonl.zst")
             assert key in snapshot_rows
             return httpx.Response(
                 200,
@@ -530,7 +645,7 @@ def test_trades_download_hourly_snapshots_for_partial_day_ranges(tmp_path) -> No
         client.close()
 
 
-def test_trades_require_snapshot_coverage_and_do_not_fall_back_to_events() -> None:
+def test_trades_require_snapshot_coverage_and_do_not_fall_back_to_events(tmp_path) -> None:
     calls: list[tuple[str, str | None]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -541,7 +656,7 @@ def test_trades_require_snapshot_coverage_and_do_not_fall_back_to_events() -> No
             raise AssertionError("trades() should not fall back to /events")
         raise AssertionError(f"unexpected request: {request.url}")
 
-    client = make_client(handler)
+    client = make_client(handler, dataset_root=tmp_path)
     try:
         with pytest.raises(
             PolarisError,
@@ -580,8 +695,7 @@ def test_trades_allow_gaps_returns_covered_rows_and_warns(tmp_path) -> None:
         ]
         assert calls == [
             ("/snapshots", None),
-            ("/download", None),
-            ("/download", None),
+            ("/download", "json"),
         ]
     finally:
         client.close()
@@ -596,8 +710,13 @@ def test_vwap_aggregates_from_snapshot_download_flow(tmp_path) -> None:
             )
         if request.url.path == "/download":
             return httpx.Response(
-                302,
-                headers={"location": "https://download.example.com/day-1-vwap.jsonl.zst"},
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=[SNAPSHOT_KEY_DAY_1],
+                ),
             )
         if request.url.host == "download.example.com":
             return httpx.Response(
@@ -734,8 +853,7 @@ def test_vwap_allow_gaps_returns_covered_rows_and_warns(tmp_path) -> None:
         )
         assert calls == [
             ("/snapshots", None),
-            ("/download", None),
-            ("/download", None),
+            ("/download", "json"),
         ]
     finally:
         client.close()
@@ -749,6 +867,16 @@ def test_vwap_buckets_trades_by_interval(tmp_path) -> None:
                 json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
             )
         if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=[SNAPSHOT_KEY_DAY_1],
+                ),
+            )
+        if request.url.host == "download.example.com":
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(
@@ -812,6 +940,16 @@ def test_volatility_aggregates_log_return_stddev_by_bucket(tmp_path) -> None:
                 json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
             )
         if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=[SNAPSHOT_KEY_DAY_1],
+                ),
+            )
+        if request.url.host == "download.example.com":
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(
@@ -949,8 +1087,7 @@ def test_volatility_allow_gaps_returns_covered_rows_and_warns(tmp_path) -> None:
         assert rows == []
         assert calls == [
             ("/snapshots", None),
-            ("/download", None),
-            ("/download", None),
+            ("/download", "json"),
         ]
     finally:
         client.close()
@@ -962,8 +1099,13 @@ def test_ohlcv_aggregates_from_snapshot_download_flow(tmp_path) -> None:
             return httpx.Response(200, json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]})
         if request.url.path == "/download":
             return httpx.Response(
-                302,
-                headers={"location": "https://download.example.com/day-1-ohlcv.jsonl.zst"},
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=[SNAPSHOT_KEY_DAY_1],
+                ),
             )
         if request.url.host == "download.example.com":
             return httpx.Response(
@@ -1034,8 +1176,13 @@ def test_volume_aggregates_from_snapshot_download_flow(tmp_path) -> None:
             return httpx.Response(200, json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]})
         if request.url.path == "/download":
             return httpx.Response(
-                302,
-                headers={"location": "https://download.example.com/day-1-volume.jsonl.zst"},
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=[SNAPSHOT_KEY_DAY_1],
+                ),
             )
         if request.url.host == "download.example.com":
             return httpx.Response(
@@ -1096,8 +1243,13 @@ def test_ohlcv_tradingview_format_returns_local_json(tmp_path) -> None:
             return httpx.Response(200, json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]})
         if request.url.path == "/download":
             return httpx.Response(
-                302,
-                headers={"location": "https://download.example.com/day-1-tv.jsonl.zst"},
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=[SNAPSHOT_KEY_DAY_1],
+                ),
             )
         if request.url.host == "download.example.com":
             return httpx.Response(
@@ -1230,8 +1382,7 @@ def test_ohlcv_allow_gaps_skips_missing_hours_and_preserves_gap_open(tmp_path) -
         ]
         assert calls == [
             ("/snapshots", None),
-            ("/download", None),
-            ("/download", None),
+            ("/download", "json"),
         ]
     finally:
         client.close()
@@ -1296,7 +1447,8 @@ def test__download_snapshots_saves_files_and_materializes_daily_artifacts(tmp_pa
     calls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(str(request.url))
+        if request.url.path in {"/snapshots", "/download"}:
+            calls.append(str(request.url))
         if request.url.path == "/snapshots":
             assert request.headers.get("authorization") == "Bearer polaris_key_test"
             return httpx.Response(
@@ -1304,10 +1456,14 @@ def test__download_snapshots_saves_files_and_materializes_daily_artifacts(tmp_pa
                 json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
             )
         if request.url.path == "/download":
-            assert request.url.params.get("key") == SNAPSHOT_KEY_DAY_1
             return httpx.Response(
-                302,
-                headers={"location": "https://download.example.com/day-1.jsonl.zst"},
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=[SNAPSHOT_KEY_DAY_1],
+                ),
             )
         if request.url.host == "download.example.com":
             return httpx.Response(
@@ -1336,7 +1492,7 @@ def test__download_snapshots_saves_files_and_materializes_daily_artifacts(tmp_pa
             / f"{SNAPSHOT_KEY_DAY_1}.jsonl.zst"
         ).exists()
         assert (tmp_path / "daily" / "binance" / "BTC-USDT" / "2024-01-01.jsonl.zst").exists()
-        assert len(calls) == 3
+        assert len(calls) == 2
     finally:
         client.close()
 
@@ -1576,8 +1732,13 @@ def test_events_use_snapshot_download_flow_by_default(tmp_path) -> None:
             return httpx.Response(200, json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]})
         if request.url.path == "/download":
             return httpx.Response(
-                302,
-                headers={"location": "https://download.example.com/day-1.jsonl.zst"},
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=[SNAPSHOT_KEY_DAY_1],
+                ),
             )
         if request.url.host == "download.example.com":
             return httpx.Response(
@@ -1657,8 +1818,7 @@ def test_events_allow_gaps_returns_covered_rows_and_warns(tmp_path) -> None:
         ]
         assert calls == [
             ("/snapshots", None),
-            ("/download", None),
-            ("/download", None),
+            ("/download", "json"),
         ]
     finally:
         client.close()
@@ -1694,6 +1854,16 @@ def test_l2_snapshots_use_snapshot_download_flow_by_default(tmp_path) -> None:
                 json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
             )
         if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=[SNAPSHOT_KEY_DAY_1],
+                ),
+            )
+        if request.url.host == "download.example.com":
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(snapshot_rows),
@@ -1750,6 +1920,16 @@ def test_funding_rates_filter_point_series_from_standardized_snapshots(tmp_path)
                 json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
             )
         if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=[SNAPSHOT_KEY_DAY_1],
+                ),
+            )
+        if request.url.host == "download.example.com":
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(snapshot_rows),
@@ -1810,6 +1990,16 @@ def test_mark_prices_filter_point_series_from_standardized_snapshots(tmp_path) -
         if request.url.path == "/download":
             return httpx.Response(
                 200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=[SNAPSHOT_KEY_DAY_1],
+                ),
+            )
+        if request.url.host == "download.example.com":
+            return httpx.Response(
+                200,
                 content=_zstd_ndjson(snapshot_rows),
                 headers={"content-type": "application/zstd"},
             )
@@ -1854,6 +2044,16 @@ def test_bbo_derives_best_prices_and_quantities_from_l2_snapshots(tmp_path) -> N
                 json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
             )
         if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=[SNAPSHOT_KEY_DAY_1],
+                ),
+            )
+        if request.url.host == "download.example.com":
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(snapshot_rows),
@@ -1917,6 +2117,16 @@ def test_depth_metrics_derive_depth_spread_and_slippage_from_l2_snapshots(
                 json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
             )
         if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=[SNAPSHOT_KEY_DAY_1],
+                ),
+            )
+        if request.url.host == "download.example.com":
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(snapshot_rows),
@@ -2064,8 +2274,7 @@ def test_replay_allow_gaps_returns_covered_rows_and_warns(tmp_path) -> None:
         ]
         assert calls == [
             ("/snapshots", None),
-            ("/download", None),
-            ("/download", None),
+            ("/download", "json"),
         ]
     finally:
         client.close()

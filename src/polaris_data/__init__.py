@@ -10,10 +10,25 @@ from .errors import (
     StreamDecodeError,
     UnauthorizedError,
 )
-from .models import LocalSnapshotEntry, SnapshotEntry
+from .models import (
+    BulkDownloadManifest,
+    BulkDownloadSnapshotEntry,
+    CatalogAccess,
+    CatalogInstrument,
+    CatalogMarketEntry,
+    CatalogResponse,
+    LocalSnapshotEntry,
+    SnapshotEntry,
+)
 
 __all__ = [
     "AccessDeniedError",
+    "BulkDownloadManifest",
+    "BulkDownloadSnapshotEntry",
+    "CatalogAccess",
+    "CatalogInstrument",
+    "CatalogMarketEntry",
+    "CatalogResponse",
     "NotFoundError",
     "DownloadNotAllowedError",
     "LocalSnapshotEntry",

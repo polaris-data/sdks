@@ -63,7 +63,7 @@ Use it to inspect available data and query historical market data.
 | Method | Returns | Use case |
 | --- | --- | --- |
 | `health()` | API health/status payload | Connectivity checks and startup validation |
-| `catalog(source=None, market=None)` | Source/market metadata | Discover supported datasets, markets, and time coverage |
+| `catalog(source=None, market=None, q=None)` | Source/market metadata, including normalized instrument fields | Discover supported datasets, markets, instrument metadata, and time coverage |
 
 ### Access patterns
 
@@ -142,7 +142,7 @@ Pass `dataset_root=...` to `PolarisClient(...)` to override the root explicitly.
 
 ## Snapshot-first replay
 
-For standardized historical data, `replay(...)`, `events(...)`, `trades(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, `volume(...)`, and default/tradingview `ohlcv(...)` now prefer `/snapshots` + `/download` and reuse local snapshot files when they already exist:
+For standardized historical data, `replay(...)`, `events(...)`, `trades(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, `volume(...)`, and default/tradingview `ohlcv(...)` now prefer `/snapshots` plus daily bulk `/download?source=...&market=...&date=...&mode=json` manifests, and reuse local snapshot files when they already exist:
 
 ```python
 from polaris_data import PolarisClient

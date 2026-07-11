@@ -30,6 +30,9 @@ from .layout import (
     resolve_dataset_root,
 )
 from .models import (
+    BulkDownloadManifest,
+    CatalogInstrument,
+    CatalogResponse,
     JSONDict,
     LocalSnapshotEntry,
     SnapshotEntry,
@@ -113,6 +116,14 @@ def _coerce_numeric(value: object) -> float | None:
             return float(value)
         except ValueError:
             return None
+    return None
+
+
+def _catalog_instrument_value(value: object) -> str | int | float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (str, int, float)):
+        return value
     return None
 
 
@@ -991,7 +1002,53 @@ class PolarisClient:
         if not isinstance(entry_hour, int) or not 0 <= entry_hour <= 23:
             entry_hour = None
 
-        return SnapshotEntry(key=key, date=entry_date, hour=entry_hour)
+        entry_source = raw.get("source")
+        if not isinstance(entry_source, str) or not entry_source:
+            entry_source = None
+
+        entry_market = raw.get("market")
+        if not isinstance(entry_market, str) or not entry_market:
+            entry_market = None
+
+        return SnapshotEntry(
+            key=key,
+            source=entry_source,
+            market=entry_market,
+            date=entry_date,
+            hour=entry_hour,
+        )
+
+    def _normalize_catalog_instrument(self, raw: object) -> CatalogInstrument:
+        instrument = raw if isinstance(raw, dict) else {}
+        base = instrument.get("base")
+        quote = instrument.get("quote")
+        return {
+            "base": base if isinstance(base, str) and base else None,
+            "quote": quote if isinstance(quote, str) and quote else None,
+            "tick_size": _catalog_instrument_value(instrument.get("tick_size")),
+            "lot_size": _catalog_instrument_value(instrument.get("lot_size")),
+            "min_notional": _catalog_instrument_value(instrument.get("min_notional")),
+        }
+
+    def _normalize_catalog_payload(self, payload: JSONDict) -> CatalogResponse | JSONDict:
+        raw_markets = payload.get("markets")
+        if not isinstance(raw_markets, list):
+            return payload
+
+        normalized_markets: list[JSONDict] = []
+        for raw_market in raw_markets:
+            if not isinstance(raw_market, dict):
+                continue
+
+            market_entry = dict(raw_market)
+            market_entry["instrument"] = self._normalize_catalog_instrument(
+                raw_market.get("instrument")
+            )
+            normalized_markets.append(market_entry)
+
+        normalized_payload = dict(payload)
+        normalized_payload["markets"] = normalized_markets
+        return normalized_payload
 
     def _required_snapshot_hours_by_day(
         self,
@@ -1207,9 +1264,10 @@ class PolarisClient:
 
         return daily_paths
 
-    def _download_snapshot_file(
+    def _download_snapshot_url(
         self,
         snapshot: SnapshotEntry,
+        download_url: str,
         *,
         force_materialize: bool = False,
     ) -> LocalSnapshotEntry:
@@ -1224,12 +1282,7 @@ class PolarisClient:
         try:
             with self._client.stream(
                 "GET",
-                "download",
-                params={"key": snapshot.key},
-                headers=self._auth_headers(
-                    auth_required=False,
-                    include_auth_if_available=True,
-                ),
+                download_url,
                 follow_redirects=True,
             ) as response:
                 self._raise_for_status(response)
@@ -1269,6 +1322,93 @@ class PolarisClient:
             self.layout.materialize_daily_artifact(entry, force=force_materialize)
         return entry
 
+    def _download_snapshot_file(
+        self,
+        snapshot: SnapshotEntry,
+        *,
+        force_materialize: bool = False,
+    ) -> LocalSnapshotEntry:
+        response = self._get_json(
+            "download",
+            params={"key": snapshot.key, "mode": "json"},
+            include_auth_if_available=True,
+        )
+        download_url = response.get("url")
+        if not isinstance(download_url, str) or not download_url:
+            raise PolarisError("Snapshot download response did not include a URL")
+        return self._download_snapshot_url(
+            snapshot,
+            download_url,
+            force_materialize=force_materialize,
+        )
+
+    def _download_snapshot_manifest(
+        self,
+        *,
+        source: str,
+        market: str,
+        snapshot_date: str,
+    ) -> BulkDownloadManifest:
+        payload = self._get_json(
+            "download",
+            params={
+                "source": source,
+                "market": market,
+                "date": snapshot_date,
+                "mode": "json",
+            },
+            include_auth_if_available=True,
+        )
+        snapshots = payload.get("snapshots")
+        if not isinstance(snapshots, list):
+            raise PolarisError("Bulk download response did not include snapshots")
+        return payload  # type: ignore[return-value]
+
+    def _download_snapshot_group(
+        self,
+        snapshots: list[SnapshotEntry],
+        *,
+        force_materialize: bool = False,
+    ) -> dict[str, LocalSnapshotEntry]:
+        if not snapshots:
+            return {}
+
+        first = snapshots[0]
+        if first.source is None or first.market is None or first.date is None:
+            raise PolarisError("Snapshot metadata missing source, market, or date")
+
+        manifest = self._download_snapshot_manifest(
+            source=first.source,
+            market=first.market,
+            snapshot_date=first.date,
+        )
+        raw_entries = manifest.get("snapshots", [])
+        manifest_urls: dict[str, str] = {}
+        for raw_entry in raw_entries:
+            if not isinstance(raw_entry, dict):
+                continue
+            key = raw_entry.get("key")
+            url = raw_entry.get("url")
+            if isinstance(key, str) and key and isinstance(url, str) and url:
+                manifest_urls[key] = url
+
+        downloaded: dict[str, LocalSnapshotEntry] = {}
+        for snapshot in snapshots:
+            download_url = manifest_urls.get(snapshot.key)
+            if download_url is None:
+                raise NotFoundError(
+                    message=(
+                        "Bulk download manifest did not include selected snapshot "
+                        f"'{snapshot.key}'"
+                    )
+                )
+            downloaded[snapshot.key] = self._download_snapshot_url(
+                snapshot,
+                download_url,
+                force_materialize=force_materialize,
+            )
+        return downloaded
+
     def _ensure_local_snapshot_entries(
         self,
         snapshots: list[SnapshotEntry],
@@ -1276,25 +1416,57 @@ class PolarisClient:
         force: bool = False,
     ) -> list[LocalSnapshotEntry]:
         indexed = {entry.key: entry for entry in self.layout.list_local_snapshots()}
-        results: list[LocalSnapshotEntry] = []
+        grouped_missing: dict[tuple[str, str, str], list[SnapshotEntry]] = {}
+        fallback_missing: list[SnapshotEntry] = []
+        results_by_key: dict[str, LocalSnapshotEntry] = {}
 
         with self.layout.sync_lock():
             for snapshot in snapshots:
                 local_entry = indexed.get(snapshot.key)
-                local_path = self.layout.data_path_for_key(snapshot.key)
 
                 if local_entry is not None and Path(local_entry.path).exists() and not force:
                     if local_entry.hour is None:
                         self.layout.materialize_daily_artifact(local_entry)
-                    results.append(local_entry)
+                    results_by_key[snapshot.key] = local_entry
                     continue
 
+                if (
+                    snapshot.source is not None
+                    and snapshot.market is not None
+                    and snapshot.date is not None
+                ):
+                    grouped_missing.setdefault(
+                        (snapshot.source, snapshot.market, snapshot.date),
+                        [],
+                    ).append(snapshot)
+                    continue
+
+                fallback_missing.append(snapshot)
+
+            for group in grouped_missing.values():
+                for entry in self._download_snapshot_group(
+                    group,
+                    force_materialize=force,
+                ).values():
+                    indexed[entry.key] = entry
+                    results_by_key[entry.key] = entry
+
+            for snapshot in fallback_missing:
                 entry = self._download_snapshot_file(
                     snapshot,
                     force_materialize=force,
                 )
                 indexed[entry.key] = entry
-                results.append(entry)
+                results_by_key[entry.key] = entry
+
+        results: list[LocalSnapshotEntry] = []
+        for snapshot in snapshots:
+            entry = results_by_key.get(snapshot.key) or indexed.get(snapshot.key)
+            if entry is None:
+                raise PolarisError(
+                    f"Snapshot '{snapshot.key}' could not be materialized locally"
+                )
+            results.append(entry)
 
         return results
 
@@ -1554,17 +1726,21 @@ class PolarisClient:
         *,
         source: str | None = None,
         market: str | None = None,
-    ) -> JSONDict:
+        q: str | None = None,
+    ) -> CatalogResponse | JSONDict:
         params: dict[str, str] = {}
         if source is not None:
             params["source"] = source
         if market is not None:
             params["market"] = market
-        return self._get_json(
+        if q is not None:
+            params["q"] = q
+        payload = self._get_json(
             "catalog",
             params=params or None,
             include_auth_if_available=True,
         )
+        return self._normalize_catalog_payload(payload)
 
     def _catalog_asset_bounds(
         self,
