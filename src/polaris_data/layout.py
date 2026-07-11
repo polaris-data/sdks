@@ -8,7 +8,7 @@ import shutil
 import sys
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from .models import LocalSnapshotEntry
@@ -204,7 +204,7 @@ class LocalDatasetLayout:
                     source=source,
                     market=market,
                     date=snapshot_date,
-                    start=None,
+                    start=infer_snapshot_start(snapshot_key, snapshot_date),
                     end=None,
                     hour=_infer_snapshot_hour(snapshot_key),
                 )
@@ -310,7 +310,7 @@ def parse_snapshot_key(key: str) -> tuple[str, str, str, str]:
     return tier, source, market, date_text
 
 
-def parse_snapshot_key_metadata(key: str) -> tuple[str, str, str, str, int | None]:
+def parse_snapshot_key_metadata(key: str) -> tuple[str, str, str, str, str | None]:
     parts = tuple(part for part in key.split("-") if part)
     if len(parts) < 6:
         raise ValueError(f"invalid snapshot key: {key}")
@@ -327,12 +327,10 @@ def parse_snapshot_key_metadata(key: str) -> tuple[str, str, str, str, int | Non
         market = "-".join(parts[2:date_index])
         if market:
             suffix = parts[date_index + 3 :]
-            parsed_hour: int | None = None
+            parsed_suffix: str | None = None
             if len(suffix) == 1 and suffix[0].isdigit():
-                hour_value = int(suffix[0])
-                if 0 <= hour_value <= 23:
-                    parsed_hour = hour_value
-            return tier, source, market, parsed_date, parsed_hour
+                parsed_suffix = suffix[0]
+            return tier, source, market, parsed_date, parsed_suffix
 
     raise ValueError(f"invalid snapshot key: {key}")
 
@@ -370,7 +368,89 @@ def _infer_snapshot_hour(key: str | None) -> int | None:
     if not key:
         return None
     try:
-        *_, parsed_hour = parse_snapshot_key_metadata(key)
+        *_, suffix = parse_snapshot_key_metadata(key)
     except ValueError:
         return None
-    return parsed_hour
+    if suffix is None:
+        return None
+    parsed = _parse_snapshot_time_suffix(suffix)
+    if parsed is None:
+        return None
+    return parsed[0]
+
+
+def infer_snapshot_start(key: str | None, date_text: str | None = None) -> datetime | None:
+    if not key:
+        return None
+
+    try:
+        *_, parsed_date, suffix = parse_snapshot_key_metadata(key)
+    except ValueError:
+        return None
+
+    resolved_date = date_text or parsed_date
+    if resolved_date is None or suffix is None:
+        return None
+
+    parsed = _parse_snapshot_time_suffix(suffix)
+    if parsed is None:
+        return None
+
+    hour, minute, second = parsed
+    try:
+        day = date.fromisoformat(resolved_date)
+    except ValueError:
+        return None
+    return datetime(
+        day.year,
+        day.month,
+        day.day,
+        hour,
+        minute,
+        second,
+        tzinfo=timezone.utc,
+    )
+
+
+def infer_snapshot_end(
+    key: str | None,
+    date_text: str | None = None,
+) -> datetime | None:
+    start = infer_snapshot_start(key, date_text)
+    if start is None:
+        return None
+
+    try:
+        *_, suffix = parse_snapshot_key_metadata(key or "")
+    except ValueError:
+        return None
+    if suffix is None:
+        return None
+
+    if len(suffix) in {1, 2}:
+        return start + timedelta(hours=1)
+    return None
+
+
+def _parse_snapshot_time_suffix(suffix: str) -> tuple[int, int, int] | None:
+    if not suffix.isdigit():
+        return None
+
+    if len(suffix) in {1, 2}:
+        hour = int(suffix)
+        minute = 0
+        second = 0
+    elif len(suffix) == 4:
+        hour = int(suffix[:2])
+        minute = int(suffix[2:])
+        second = 0
+    elif len(suffix) == 6:
+        hour = int(suffix[:2])
+        minute = int(suffix[2:4])
+        second = int(suffix[4:])
+    else:
+        return None
+
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59 or not 0 <= second <= 59:
+        return None
+    return hour, minute, second

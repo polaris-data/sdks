@@ -27,6 +27,9 @@ from .errors import (
 )
 from .layout import (
     LocalDatasetLayout,
+    infer_snapshot_end,
+    infer_snapshot_start,
+    parse_snapshot_key_metadata,
     resolve_dataset_root,
 )
 from .models import (
@@ -46,14 +49,14 @@ DEFAULT_FILE_CHUNK_SIZE = 1 * 1024 * 1024  # 1MB for file operations
 DEFAULT_INFERRED_LOOKBACK = timedelta(days=7)
 USER_AGENT = "polaris-py/0.8.4"
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
-_INTERVAL_US = {
-    "100ms": 100_000,
-    "1s": 1_000_000,
-    "10s": 10_000_000,
-    "1m": 60_000_000,
-    "5m": 300_000_000,
-    "15m": 900_000_000,
-    "1h": 3_600_000_000,
+_INTERVAL_MS = {
+    "100ms": 100,
+    "1s": 1_000,
+    "10s": 10_000,
+    "1m": 60_000,
+    "5m": 300_000,
+    "15m": 900_000,
+    "1h": 3_600_000,
 }
 _VOL_SCALE = 1_000_000_000_000
 
@@ -74,16 +77,26 @@ def _file_is_zstd(path: Path) -> bool:
         return False
 
 
-def _datetime_to_epoch_micros(value: datetime) -> int:
+def _datetime_to_epoch_ms(value: datetime) -> int:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     else:
         value = value.astimezone(timezone.utc)
-    return int(value.timestamp() * 1_000_000)
+    return int(value.timestamp() * 1_000)
 
 
-def _interval_to_us(interval: str) -> int | None:
-    return _INTERVAL_US.get(interval)
+def _normalize_epoch_ms(value: int | float) -> int:
+    timestamp = int(value)
+    # Standardized snapshot rows historically used microseconds, but we now
+    # assume millisecond epochs. Normalize everything to milliseconds
+    # so filtering and downstream aggregations use one unit consistently.
+    if abs(timestamp) >= 100_000_000_000_000:
+        return timestamp // 1_000
+    return timestamp
+
+
+def _interval_to_ms(interval: str) -> int | None:
+    return _INTERVAL_MS.get(interval)
 
 
 def _to_tradingview_ohlcv(
@@ -92,7 +105,7 @@ def _to_tradingview_ohlcv(
     candles: list[JSONDict] = []
     volumes: list[JSONDict] = []
     for bar in bars:
-        timestamp = bar["timestamp"] / 1_000_000
+        timestamp = bar["timestamp"] / 1_000
         candles.append(
             {
                 "time": timestamp,
@@ -354,9 +367,9 @@ def _derive_depth_metrics(
 
 class _LocalOhlcvAggregator:
     def __init__(self, interval: str) -> None:
-        us = _interval_to_us(interval)
+        us = _interval_to_ms(interval)
         if us is None:
-            supported = ", ".join(_INTERVAL_US)
+            supported = ", ".join(_INTERVAL_MS)
             raise ValueError(f"Unsupported interval: {interval}. Supported: {supported}")
         self._interval = interval
         self._interval_us = us
@@ -431,9 +444,9 @@ class _LocalOhlcvAggregator:
 
 class _LocalVwapAggregator:
     def __init__(self, interval: str) -> None:
-        us = _interval_to_us(interval)
+        us = _interval_to_ms(interval)
         if us is None:
-            supported = ", ".join(_INTERVAL_US)
+            supported = ", ".join(_INTERVAL_MS)
             raise ValueError(f"Unsupported interval: {interval}. Supported: {supported}")
         self._interval = interval
         self._interval_us = us
@@ -489,9 +502,9 @@ class _LocalVwapAggregator:
 
 class _LocalVolatilityAggregator:
     def __init__(self, interval: str, method: str) -> None:
-        us = _interval_to_us(interval)
+        us = _interval_to_ms(interval)
         if us is None:
-            supported = ", ".join(_INTERVAL_US)
+            supported = ", ".join(_INTERVAL_MS)
             raise ValueError(f"Unsupported interval: {interval}. Supported: {supported}")
         if method != "log_returns":
             raise ValueError("method must be 'log_returns'")
@@ -565,12 +578,17 @@ def _iter_utc_dates(start: datetime, end: datetime) -> list[date]:
         raise ValueError("from_ must be before to")
 
     current = start.date()
-    last = (end - timedelta(microseconds=1)).date()
+    last = (end - timedelta(milliseconds=1)).date()
     days: list[date] = []
     while current <= last:
         days.append(current)
         current += timedelta(days=1)
     return days
+
+
+def _utc_day_bounds(day: date) -> tuple[datetime, datetime]:
+    start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+    return start, start + timedelta(days=1)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -994,9 +1012,19 @@ class PolarisClient:
         if not isinstance(key, str) or not key:
             raise PolarisError("Snapshot entry did not include a key")
 
+        inferred_source: str | None = None
+        inferred_market: str | None = None
+        inferred_date: str | None = None
+        try:
+            _, inferred_source, inferred_market, inferred_date, _ = (
+                parse_snapshot_key_metadata(key)
+            )
+        except ValueError:
+            pass
+
         entry_date = raw.get("date")
         if not isinstance(entry_date, str) or not entry_date:
-            entry_date = None
+            entry_date = inferred_date
 
         entry_hour = raw.get("hour")
         if not isinstance(entry_hour, int) or not 0 <= entry_hour <= 23:
@@ -1004,19 +1032,40 @@ class PolarisClient:
 
         entry_source = raw.get("source")
         if not isinstance(entry_source, str) or not entry_source:
-            entry_source = None
+            entry_source = inferred_source
 
         entry_market = raw.get("market")
         if not isinstance(entry_market, str) or not entry_market:
-            entry_market = None
+            entry_market = inferred_market
+
+        entry_start = self._parse_snapshot_datetime(raw.get("start"))
+        if entry_start is None:
+            entry_start = infer_snapshot_start(key, entry_date)
+
+        entry_end = self._parse_snapshot_datetime(raw.get("end"))
+        if entry_end is None:
+            entry_end = infer_snapshot_end(key, entry_date)
 
         return SnapshotEntry(
             key=key,
             source=entry_source,
             market=entry_market,
             date=entry_date,
+            start=entry_start,
+            end=entry_end,
             hour=entry_hour,
         )
+
+    def _parse_snapshot_datetime(self, raw: object) -> datetime | None:
+        if isinstance(raw, str) and raw:
+            try:
+                return to_datetime(raw)
+            except (TypeError, ValueError):
+                return None
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            ms = _normalize_epoch_ms(raw)
+            return datetime.fromtimestamp(ms / 1_000, tz=timezone.utc)
+        return None
 
     def _normalize_catalog_instrument(self, raw: object) -> CatalogInstrument:
         instrument = raw if isinstance(raw, dict) else {}
@@ -1050,84 +1099,119 @@ class PolarisClient:
         normalized_payload["markets"] = normalized_markets
         return normalized_payload
 
-    def _required_snapshot_hours_by_day(
+    def _required_snapshot_ranges_by_day(
         self,
         *,
         from_: TimeInput,
         to: TimeInput,
-    ) -> dict[date, set[int]]:
+    ) -> dict[date, tuple[datetime, datetime]]:
         start = to_datetime(from_)
         end = to_datetime(to)
-        required_hours: dict[date, set[int]] = {}
-        cursor = start.replace(minute=0, second=0, microsecond=0)
-        while cursor < end:
-            required_hours.setdefault(cursor.date(), set()).add(cursor.hour)
-            cursor += timedelta(hours=1)
-        return required_hours
+        ranges: dict[date, tuple[datetime, datetime]] = {}
+        for day in _iter_utc_dates(start, end):
+            day_start, day_end = _utc_day_bounds(day)
+            ranges[day] = (max(start, day_start), min(end, day_end))
+        return ranges
 
-    def _snapshot_entries_cover_hours(
+    def _snapshot_entry_bounds(
+        self,
+        entry: SnapshotEntry | LocalSnapshotEntry,
+    ) -> tuple[datetime | None, datetime | None]:
+        start = entry.start
+        end = entry.end
+        if start is None and entry.date is not None:
+            start = infer_snapshot_start(entry.key, entry.date)
+        if end is None and entry.date is not None:
+            end = infer_snapshot_end(entry.key, entry.date)
+        if start is None and entry.hour is not None and entry.date is not None:
+            try:
+                day = date.fromisoformat(entry.date)
+            except ValueError:
+                return None, None
+            day_start, _ = _utc_day_bounds(day)
+            start = day_start + timedelta(hours=entry.hour)
+            if end is None:
+                end = start + timedelta(hours=1)
+        return start, end
+
+    def _resolve_snapshot_day_selection(
         self,
         entries: list[SnapshotEntry] | list[LocalSnapshotEntry],
-        required_hours: set[int],
-    ) -> bool:
-        if any(entry.hour is None for entry in entries):
-            return True
-        return required_hours.issubset(
-            {entry.hour for entry in entries if entry.hour is not None}
+        *,
+        range_start: datetime,
+        range_end: datetime,
+        day: date,
+    ) -> tuple[list[SnapshotEntry] | list[LocalSnapshotEntry], list[_GapInterval]]:
+        if not entries:
+            return [], [_GapInterval(start=range_start, end=range_end)]
+
+        daily_entries = [
+            entry
+            for entry in sorted(entries, key=lambda entry: entry.key)
+            if entry.start is None and entry.end is None and entry.hour is None
+        ]
+        if daily_entries:
+            return [daily_entries[0]], []
+
+        day_start, day_end = _utc_day_bounds(day)
+        sortable: list[tuple[datetime, datetime | None, SnapshotEntry | LocalSnapshotEntry]] = []
+        for entry in sorted(entries, key=lambda entry: entry.key):
+            entry_start, entry_end = self._snapshot_entry_bounds(entry)
+            if entry_start is None:
+                continue
+            sortable.append((entry_start, entry_end, entry))
+
+        ordered = sorted(sortable, key=lambda item: (item[0], item[2].key))
+        intervals: list[tuple[datetime, datetime, SnapshotEntry | LocalSnapshotEntry]] = []
+        for index, (entry_start, entry_end, entry) in enumerate(ordered):
+            resolved_end = entry_end
+            if resolved_end is None:
+                for next_start, _, _ in ordered[index + 1 :]:
+                    if next_start > entry_start:
+                        resolved_end = next_start
+                        break
+            if resolved_end is None:
+                resolved_end = day_end
+            if resolved_end <= entry_start:
+                continue
+            intervals.append((entry_start, resolved_end, entry))
+
+        selected: list[SnapshotEntry | LocalSnapshotEntry] = []
+        covered_ranges: list[tuple[datetime, datetime]] = []
+        seen_keys: set[str] = set()
+        for entry_start, entry_end, entry in intervals:
+            overlap_start = max(range_start, entry_start)
+            overlap_end = min(range_end, entry_end)
+            if overlap_start >= overlap_end:
+                continue
+            if entry.key not in seen_keys:
+                selected.append(entry)
+                seen_keys.add(entry.key)
+            covered_ranges.append((overlap_start, overlap_end))
+
+        return list(selected), self._gap_intervals_from_ranges(
+            start=range_start,
+            end=range_end,
+            covered_ranges=covered_ranges,
         )
 
-    def _select_covering_snapshot_entries(
-        self,
-        entries: list[SnapshotEntry] | list[LocalSnapshotEntry],
-        required_hours: set[int],
-    ) -> list[SnapshotEntry] | list[LocalSnapshotEntry]:
-        daily_entries = [entry for entry in entries if entry.hour is None]
-        if daily_entries:
-            return [sorted(daily_entries, key=lambda entry: entry.key)[0]]
-
-        hourly_entries = {
-            entry.hour: entry
-            for entry in sorted(entries, key=lambda entry: entry.key)
-            if entry.hour is not None and entry.hour in required_hours
-        }
-        return [hourly_entries[hour] for hour in sorted(required_hours)]
-
-    def _select_present_snapshot_entries(
-        self,
-        entries: list[SnapshotEntry] | list[LocalSnapshotEntry],
-        required_hours: set[int],
-    ) -> list[SnapshotEntry] | list[LocalSnapshotEntry]:
-        daily_entries = [entry for entry in entries if entry.hour is None]
-        if daily_entries:
-            return [sorted(daily_entries, key=lambda entry: entry.key)[0]]
-
-        hourly_entries = {
-            entry.hour: entry
-            for entry in sorted(entries, key=lambda entry: entry.key)
-            if entry.hour is not None and entry.hour in required_hours
-        }
-        return [hourly_entries[hour] for hour in sorted(hourly_entries)]
-
-    def _gap_intervals_from_missing_hours(
+    def _gap_intervals_from_ranges(
         self,
         *,
         start: datetime,
         end: datetime,
-        missing_hours_by_day: dict[date, set[int]],
+        covered_ranges: list[tuple[datetime, datetime]],
     ) -> list[_GapInterval]:
         gaps: list[_GapInterval] = []
         cursor = start
-        while cursor < end:
-            hour_start = cursor.replace(minute=0, second=0, microsecond=0)
-            hour_end = hour_start + timedelta(hours=1)
-            segment_start = max(start, hour_start)
-            segment_end = min(end, hour_end)
-            if hour_start.hour in missing_hours_by_day.get(hour_start.date(), set()):
-                if gaps and gaps[-1].end == segment_start:
-                    gaps[-1] = _GapInterval(start=gaps[-1].start, end=segment_end)
-                else:
-                    gaps.append(_GapInterval(start=segment_start, end=segment_end))
-            cursor = hour_end
+        for range_start, range_end in sorted(covered_ranges):
+            if range_end <= cursor:
+                continue
+            if range_start > cursor:
+                gaps.append(_GapInterval(start=cursor, end=range_start))
+            cursor = max(cursor, range_end)
+        if cursor < end:
+            gaps.append(_GapInterval(start=cursor, end=end))
         return gaps
 
     def _warn_snapshot_gaps(
@@ -1162,10 +1246,10 @@ class PolarisClient:
         from_: TimeInput | None = None,
         to: TimeInput | None = None,
     ) -> Iterator[JSONDict]:
-        start_micros = (
-            _datetime_to_epoch_micros(to_datetime(from_)) if from_ is not None else None
+        start_ms = (
+            _datetime_to_epoch_ms(to_datetime(from_)) if from_ is not None else None
         )
-        end_micros = _datetime_to_epoch_micros(to_datetime(to)) if to is not None else None
+        end_ms = _datetime_to_epoch_ms(to_datetime(to)) if to is not None else None
 
         for path in paths:
             if _file_is_zstd(path):
@@ -1174,17 +1258,29 @@ class PolarisClient:
                 rows = self._iter_ndjson_file(path, DEFAULT_FILE_CHUNK_SIZE)
 
             for row in rows:
-                if start_micros is None and end_micros is None:
+                if start_ms is None and end_ms is None:
+                    timestamp = row.get("timestamp")
+                    if isinstance(timestamp, (int, float)) and not isinstance(
+                        timestamp, bool
+                    ):
+                        normalized = _normalize_epoch_ms(timestamp)
+                        if normalized != int(timestamp):
+                            row = dict(row)
+                            row["timestamp"] = normalized
                     yield row
                     continue
 
                 timestamp = row.get("timestamp")
-                if not isinstance(timestamp, (int, float)):
+                if not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool):
                     continue
-                if start_micros is not None and timestamp < start_micros:
+                normalized = _normalize_epoch_ms(timestamp)
+                if start_ms is not None and normalized < start_ms:
                     continue
-                if end_micros is not None and timestamp >= end_micros:
+                if end_ms is not None and normalized >= end_ms:
                     return
+                if normalized != int(timestamp):
+                    row = dict(row)
+                    row["timestamp"] = normalized
                 yield row
 
     def _filter_local_snapshots(
@@ -1314,8 +1410,8 @@ class PolarisClient:
             source=snapshot.source,
             market=snapshot.market,
             date=snapshot.date,
-            start=None,
-            end=None,
+            start=snapshot.start,
+            end=snapshot.end,
             hour=snapshot.hour,
         )
         if snapshot.hour is None:
@@ -1481,7 +1577,7 @@ class PolarisClient:
         start = to_datetime(from_)
         end = to_datetime(to)
         required_days = _iter_utc_dates(start, end)
-        required_hours_by_day = self._required_snapshot_hours_by_day(
+        required_ranges_by_day = self._required_snapshot_ranges_by_day(
             from_=from_,
             to=to,
         )
@@ -1494,29 +1590,26 @@ class PolarisClient:
                 day = date.fromisoformat(entry.date)
             except ValueError:
                 continue
-            if day not in required_hours_by_day:
-                continue
-            if entry.hour is not None and entry.hour not in required_hours_by_day[day]:
+            if day not in required_ranges_by_day:
                 continue
             if not Path(entry.path).exists():
                 continue
             local_snapshot_entries_by_day.setdefault(day, []).append(entry)
 
-        if all(
-            self._snapshot_entries_cover_hours(
+        local_paths: list[Path] = []
+        local_gaps: list[_GapInterval] = []
+        for day in required_days:
+            range_start, range_end = required_ranges_by_day[day]
+            day_entries, day_gaps = self._resolve_snapshot_day_selection(
                 local_snapshot_entries_by_day.get(day, []),
-                required_hours_by_day[day],
+                range_start=range_start,
+                range_end=range_end,
+                day=day,
             )
-            for day in required_days
-        ):
-            selected_paths: list[Path] = []
-            for day in required_days:
-                day_entries = self._select_covering_snapshot_entries(
-                    local_snapshot_entries_by_day[day],
-                    required_hours_by_day[day],
-                )
-                selected_paths.extend(Path(entry.path) for entry in day_entries)
-            return _ResolvedSnapshotCoverage(paths=selected_paths, gaps=[])
+            local_paths.extend(Path(entry.path) for entry in day_entries)
+            local_gaps.extend(day_gaps)
+        if local_paths and not local_gaps:
+            return _ResolvedSnapshotCoverage(paths=local_paths, gaps=[])
 
         daily_paths = self._daily_artifact_paths(
             source=source,
@@ -1529,48 +1622,42 @@ class PolarisClient:
                 gaps=[],
             )
 
+        snapshot_query_start, _ = _utc_day_bounds(required_days[0])
+        _, snapshot_query_end = _utc_day_bounds(required_days[-1])
         remote_snapshots = self.list_snapshots(
             source=source,
             market=market,
-            from_=from_,
-            to=to,
+            from_=snapshot_query_start,
+            to=snapshot_query_end,
         )
         remote_snapshots_by_day: dict[date, list[SnapshotEntry]] = {}
         for snapshot in remote_snapshots:
-            if snapshot.date is None:
+            day_text = snapshot.date
+            if day_text is None and snapshot.start is not None:
+                day = snapshot.start.date()
+            elif day_text is not None:
+                try:
+                    day = date.fromisoformat(day_text)
+                except ValueError:
+                    continue
+            else:
                 continue
-            try:
-                day = date.fromisoformat(snapshot.date)
-            except ValueError:
-                continue
-            if day not in required_hours_by_day:
-                continue
-            if snapshot.hour is not None and snapshot.hour not in required_hours_by_day[day]:
+            if day not in required_ranges_by_day:
                 continue
             remote_snapshots_by_day.setdefault(day, []).append(snapshot)
 
         selected_snapshots: list[SnapshotEntry] = []
-        missing_hours_by_day: dict[date, set[int]] = {}
+        gaps: list[_GapInterval] = []
         for day in required_days:
-            day_entries = remote_snapshots_by_day.get(day, [])
-            required_hours = required_hours_by_day[day]
-            if self._snapshot_entries_cover_hours(day_entries, required_hours):
-                selected_snapshots.extend(
-                    self._select_covering_snapshot_entries(day_entries, required_hours)
-                )
-                continue
-
-            selected_snapshots.extend(
-                self._select_present_snapshot_entries(day_entries, required_hours)
+            range_start, range_end = required_ranges_by_day[day]
+            day_entries, day_gaps = self._resolve_snapshot_day_selection(
+                remote_snapshots_by_day.get(day, []),
+                range_start=range_start,
+                range_end=range_end,
+                day=day,
             )
-            present_hours = {
-                entry.hour
-                for entry in day_entries
-                if entry.hour is not None and entry.hour in required_hours
-            }
-            missing_hours = required_hours - present_hours
-            if missing_hours:
-                missing_hours_by_day[day] = missing_hours
+            selected_snapshots.extend(day_entries)
+            gaps.extend(day_gaps)
 
         local_by_key = {entry.key: entry for entry in self.layout.list_local_snapshots()}
         missing_snapshots = [
@@ -1593,11 +1680,7 @@ class PolarisClient:
             resolved_paths.append(Path(local_entry.path))
         return _ResolvedSnapshotCoverage(
             paths=resolved_paths,
-            gaps=self._gap_intervals_from_missing_hours(
-                start=start,
-                end=end,
-                missing_hours_by_day=missing_hours_by_day,
-            ),
+            gaps=gaps,
         )
 
     def _resolve_snapshot_paths(
@@ -2004,7 +2087,7 @@ class PolarisClient:
         )
 
         last_inclusive = (
-            (end - timedelta(microseconds=1)).date() if end is not None else None
+            (end - timedelta(milliseconds=1)).date() if end is not None else None
         )
         selected_paths: list[Path] = []
         for day in sorted(daily_paths):
@@ -2326,9 +2409,9 @@ class PolarisClient:
         interval: str,
         allow_gaps: bool = False,
     ) -> list[JSONDict]:
-        if _interval_to_us(interval) is None:
+        if _interval_to_ms(interval) is None:
             raise ValueError(
-                "interval must be one of: " + ", ".join(_INTERVAL_US)
+                "interval must be one of: " + ", ".join(_INTERVAL_MS)
             )
         from_, to = self._resolve_historical_range(
             source=source,
@@ -2356,9 +2439,9 @@ class PolarisClient:
         method: str = "log_returns",
         allow_gaps: bool = False,
     ) -> list[JSONDict]:
-        if _interval_to_us(interval) is None:
+        if _interval_to_ms(interval) is None:
             raise ValueError(
-                "interval must be one of: " + ", ".join(_INTERVAL_US)
+                "interval must be one of: " + ", ".join(_INTERVAL_MS)
             )
         if method != "log_returns":
             raise ValueError("method must be 'log_returns'")
@@ -2741,9 +2824,9 @@ class PolarisClient:
             from_=from_,
             to=to,
         )
-        if _interval_to_us(interval) is None:
+        if _interval_to_ms(interval) is None:
             raise ValueError(
-                "interval must be one of: " + ", ".join(_INTERVAL_US)
+                "interval must be one of: " + ", ".join(_INTERVAL_MS)
             )
 
         if format is None:
@@ -2785,9 +2868,9 @@ class PolarisClient:
             from_=from_,
             to=to,
         )
-        if _interval_to_us(interval) is None:
+        if _interval_to_ms(interval) is None:
             raise ValueError(
-                "interval must be one of: " + ", ".join(_INTERVAL_US)
+                "interval must be one of: " + ", ".join(_INTERVAL_MS)
             )
 
         bars = self._aggregate_ohlcv_from_standard_trades(

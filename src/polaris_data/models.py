@@ -76,6 +76,8 @@ class SnapshotEntry:
     source: str | None = None
     market: str | None = None
     date: str | None = None
+    start: datetime | None = None
+    end: datetime | None = None
     hour: int | None = None
 
 

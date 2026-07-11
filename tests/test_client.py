@@ -109,8 +109,13 @@ def _catalog_payload(
 
 def _ts(iso8601: str) -> int:
     return int(
-        datetime.fromisoformat(iso8601.replace("Z", "+00:00")).timestamp()
-        * 1_000_000
+        datetime.fromisoformat(iso8601.replace("Z", "+00:00")).timestamp() * 1_000
+    )
+
+
+def _ts_ms(iso8601: str) -> int:
+    return int(
+        datetime.fromisoformat(iso8601.replace("Z", "+00:00")).timestamp() * 1_000
     )
 
 
@@ -487,17 +492,17 @@ def test_trades_use_snapshot_download_flow_by_default(tmp_path) -> None:
                 content=_zstd_ndjson(
                     [
                         {
-                            "timestamp": 1704067200000000,
+                            "timestamp": 1704067200000,
                             "type": "trade",
                             "data": {"price": 100.0, "quantity": 0.5},
                         },
                         {
-                            "timestamp": 1704067201000000,
+                            "timestamp": 1704067201000,
                             "type": "datapoint",
                             "data": {"funding": 0.01},
                         },
                         {
-                            "timestamp": 1704067202000000,
+                            "timestamp": 1704067202000,
                             "type": "trade",
                             "data": {"price": 101.0, "quantity": 0.25},
                         },
@@ -516,12 +521,12 @@ def test_trades_use_snapshot_download_flow_by_default(tmp_path) -> None:
             to="2024-01-01T01:00:00Z",
         ) == [
             {
-                "timestamp": 1704067200000000,
+                "timestamp": 1704067200000,
                 "type": "trade",
                 "data": {"price": 100.0, "quantity": 0.5},
             },
             {
-                "timestamp": 1704067202000000,
+                "timestamp": 1704067202000,
                 "type": "trade",
                 "data": {"price": 101.0, "quantity": 0.25},
             },
@@ -637,6 +642,77 @@ def test_trades_download_hourly_snapshots_for_partial_day_ranges(tmp_path) -> No
             },
             {
                 "timestamp": _ts("2024-01-01T01:00:01Z"),
+                "type": "trade",
+                "data": {"price": 101.0, "quantity": 2.0},
+            },
+        ]
+    finally:
+        client.close()
+
+
+def test_trades_select_intraday_snapshot_keys_without_hour_metadata(tmp_path) -> None:
+    snapshot_rows = {
+        "standard-hyperliquid-BTC-2026-07-11-010000": [
+            {
+                "timestamp": _ts("2026-07-11T01:05:01Z"),
+                "type": "trade",
+                "data": {"price": 100.0, "quantity": 1.0},
+            }
+        ],
+        "standard-hyperliquid-BTC-2026-07-11-011000": [
+            {
+                "timestamp": _ts("2026-07-11T01:10:05Z"),
+                "type": "trade",
+                "data": {"price": 101.0, "quantity": 2.0},
+            }
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={
+                    "snapshots": [
+                        {"key": key, "date": "2026-07-11"} for key in snapshot_rows
+                    ]
+                },
+            )
+        if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                json=_bulk_download_manifest(
+                    source="hyperliquid",
+                    market="BTC",
+                    day="2026-07-11",
+                    keys=sorted(snapshot_rows),
+                ),
+            )
+        if request.url.host == "download.example.com":
+            key = request.url.path.removeprefix("/").removesuffix(".jsonl.zst")
+            assert key in snapshot_rows
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(snapshot_rows[key]),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        assert client.trades(
+            source="hyperliquid",
+            market="BTC",
+            from_="2026-07-11T01:05:00Z",
+            to="2026-07-11T01:15:00Z",
+        ) == [
+            {
+                "timestamp": _ts("2026-07-11T01:05:01Z"),
+                "type": "trade",
+                "data": {"price": 100.0, "quantity": 1.0},
+            },
+            {
+                "timestamp": _ts("2026-07-11T01:10:05Z"),
                 "type": "trade",
                 "data": {"price": 101.0, "quantity": 2.0},
             },
@@ -1113,22 +1189,22 @@ def test_ohlcv_aggregates_from_snapshot_download_flow(tmp_path) -> None:
                 content=_zstd_ndjson(
                     [
                         {
-                            "timestamp": 1704067205000000,
+                            "timestamp": 1704067205000,
                             "type": "trade",
                             "data": {"price": 100.0, "quantity": 1.0},
                         },
                         {
-                            "timestamp": 1704067201000000,
+                            "timestamp": 1704067201000,
                             "type": "trade",
                             "data": {"price": 95.0, "quantity": 2.0},
                         },
                         {
-                            "timestamp": 1704067240000000,
+                            "timestamp": 1704067240000,
                             "type": "trade",
                             "data": {"price": 105.0, "quantity": 3.0},
                         },
                         {
-                            "timestamp": 1704067260000000,
+                            "timestamp": 1704067260000,
                             "type": "trade",
                             "data": {"price": 103.0, "quantity": 4.0},
                         },
@@ -1148,7 +1224,7 @@ def test_ohlcv_aggregates_from_snapshot_download_flow(tmp_path) -> None:
             interval="1m",
         ) == [
             {
-                "timestamp": 1704067200000000,
+                "timestamp": 1704067200000,
                 "open": 95.0,
                 "high": 105.0,
                 "low": 95.0,
@@ -1157,7 +1233,7 @@ def test_ohlcv_aggregates_from_snapshot_download_flow(tmp_path) -> None:
                 "trades": 3,
             },
             {
-                "timestamp": 1704067260000000,
+                "timestamp": 1704067260000,
                 "open": 105.0,
                 "high": 103.0,
                 "low": 103.0,
@@ -1165,6 +1241,67 @@ def test_ohlcv_aggregates_from_snapshot_download_flow(tmp_path) -> None:
                 "volume": 4.0,
                 "trades": 1,
             },
+        ]
+    finally:
+        client.close()
+
+
+def test_ohlcv_normalizes_millisecond_snapshot_timestamps(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
+            )
+        if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=[SNAPSHOT_KEY_DAY_1],
+                ),
+            )
+        if request.url.host == "download.example.com":
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(
+                    [
+                        {
+                            "timestamp": _ts_ms("2024-01-01T00:00:01Z"),
+                            "type": "trade",
+                            "data": {"price": 100.0, "quantity": 1.0},
+                        },
+                        {
+                            "timestamp": _ts_ms("2024-01-01T00:00:20Z"),
+                            "type": "trade",
+                            "data": {"price": 105.0, "quantity": 2.0},
+                        },
+                    ]
+                ),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        assert client.ohlcv(
+            source="binance",
+            market="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T00:01:00Z",
+            interval="1m",
+        ) == [
+            {
+                "timestamp": _ts("2024-01-01T00:00:00Z"),
+                "open": 100.0,
+                "high": 105.0,
+                "low": 100.0,
+                "close": 105.0,
+                "volume": 3.0,
+                "trades": 2,
+            }
         ]
     finally:
         client.close()
@@ -1190,22 +1327,22 @@ def test_volume_aggregates_from_snapshot_download_flow(tmp_path) -> None:
                 content=_zstd_ndjson(
                     [
                         {
-                            "timestamp": 1704067205000000,
+                            "timestamp": 1704067205000,
                             "type": "trade",
                             "data": {"price": 100.0, "quantity": 1.0},
                         },
                         {
-                            "timestamp": 1704067201000000,
+                            "timestamp": 1704067201000,
                             "type": "trade",
                             "data": {"price": 95.0, "quantity": 2.0},
                         },
                         {
-                            "timestamp": 1704067240000000,
+                            "timestamp": 1704067240000,
                             "type": "trade",
                             "data": {"price": 105.0, "quantity": 3.0},
                         },
                         {
-                            "timestamp": 1704067260000000,
+                            "timestamp": 1704067260000,
                             "type": "trade",
                             "data": {"price": 103.0, "quantity": 4.0},
                         },
@@ -1225,11 +1362,11 @@ def test_volume_aggregates_from_snapshot_download_flow(tmp_path) -> None:
             interval="1m",
         ) == [
             {
-                "timestamp": 1704067200000000,
+                "timestamp": 1704067200000,
                 "volume": 6.0,
             },
             {
-                "timestamp": 1704067260000000,
+                "timestamp": 1704067260000,
                 "volume": 4.0,
             },
         ]
@@ -1257,7 +1394,7 @@ def test_ohlcv_tradingview_format_returns_local_json(tmp_path) -> None:
                 content=_zstd_ndjson(
                     [
                         {
-                            "timestamp": 1704067200000000,
+                            "timestamp": 1704067200000,
                             "type": "trade",
                             "data": {"price": 100.0, "quantity": 1.5},
                         }
@@ -1591,8 +1728,8 @@ def test_replay_materializes_local_snapshot_data_files_before_network(tmp_path) 
         snapshot_path.write_bytes(
             _zstd_ndjson(
                 [
-                    {"timestamp": 1704067200000000},
-                    {"timestamp": 1704067260000000},
+                    {"timestamp": 1704067200000},
+                    {"timestamp": 1704067260000},
                 ]
             )
         )
@@ -1607,8 +1744,8 @@ def test_replay_materializes_local_snapshot_data_files_before_network(tmp_path) 
         )
 
         assert rows == [
-            {"timestamp": 1704067200000000},
-            {"timestamp": 1704067260000000},
+            {"timestamp": 1704067200000},
+            {"timestamp": 1704067260000},
         ]
     finally:
         client.close()
@@ -1627,8 +1764,8 @@ def test_replay_ignores_legacy_flat_snapshot_data_files(tmp_path) -> None:
         snapshot_path.write_bytes(
             _zstd_ndjson(
                 [
-                    {"timestamp": 1704067200000000},
-                    {"timestamp": 1704067260000000},
+                    {"timestamp": 1704067200000},
+                    {"timestamp": 1704067260000},
                 ]
             )
         )
@@ -1667,12 +1804,12 @@ def test__iter_local_events_filters_across_materialized_days(tmp_path) -> None:
         day_one.write_bytes(
             _zstd_ndjson(
                 [
-                    {"timestamp": 1704067200000000},
-                    {"timestamp": 1704110400000000},
+                    {"timestamp": 1704067200000},
+                    {"timestamp": 1704110400000},
                 ]
             )
         )
-        day_two.write_bytes(_zstd_ndjson([{"timestamp": 1704153600000000}]))
+        day_two.write_bytes(_zstd_ndjson([{"timestamp": 1704153600000}]))
 
         rows = list(
             client._iter_local_events(
@@ -1682,7 +1819,7 @@ def test__iter_local_events_filters_across_materialized_days(tmp_path) -> None:
                 to="2024-01-02T00:00:00Z",
             )
         )
-        assert rows == [{"timestamp": 1704110400000000}]
+        assert rows == [{"timestamp": 1704110400000}]
     finally:
         client.close()
 
@@ -1702,8 +1839,8 @@ def test_replay_reads_local_snapshot_day_files_before_network(tmp_path) -> None:
         daily_path.write_bytes(
             _zstd_ndjson(
                 [
-                    {"timestamp": 1704067200000000},
-                    {"timestamp": 1704067260000000},
+                    {"timestamp": 1704067200000},
+                    {"timestamp": 1704067260000},
                 ]
             )
         )
@@ -1717,8 +1854,8 @@ def test_replay_reads_local_snapshot_day_files_before_network(tmp_path) -> None:
             )
         )
         assert rows == [
-            {"timestamp": 1704067200000000},
-            {"timestamp": 1704067260000000},
+            {"timestamp": 1704067200000},
+            {"timestamp": 1704067260000},
         ]
     finally:
         client.close()
@@ -1736,7 +1873,7 @@ def test_replay_uses_direct_daily_paths_without_scanning_tree(tmp_path) -> None:
             date(2024, 1, 1),
         )
         daily_path.parent.mkdir(parents=True, exist_ok=True)
-        daily_path.write_bytes(_zstd_ndjson([{"timestamp": 1704067200000000}]))
+        daily_path.write_bytes(_zstd_ndjson([{"timestamp": 1704067200000}]))
 
         def fail_scan():
             raise AssertionError("daily tree scan should not be used for known replay days")
@@ -1751,7 +1888,7 @@ def test_replay_uses_direct_daily_paths_without_scanning_tree(tmp_path) -> None:
                 to="2024-01-02T00:00:00Z",
             )
         )
-        assert rows == [{"timestamp": 1704067200000000}]
+        assert rows == [{"timestamp": 1704067200000}]
     finally:
         client.close()
 
@@ -1771,10 +1908,10 @@ def test__iter_local_events_stops_after_to_boundary_on_ordered_day_files(tmp_pat
         )
         day_one.parent.mkdir(parents=True, exist_ok=True)
         day_two.parent.mkdir(parents=True, exist_ok=True)
-        day_one.write_bytes(_zstd_ndjson([{"timestamp": 1704110400000000}]))
+        day_one.write_bytes(_zstd_ndjson([{"timestamp": 1704110400000}]))
         day_two.write_bytes(
             zstd.ZstdCompressor().compress(
-                b'{"timestamp":1704175200000000}\nnot-json\n'
+                b'{"timestamp":1704175200000}\nnot-json\n'
             )
         )
 
@@ -1786,7 +1923,7 @@ def test__iter_local_events_stops_after_to_boundary_on_ordered_day_files(tmp_pat
                 to="2024-01-02T06:00:00Z",
             )
         )
-        assert rows == [{"timestamp": 1704110400000000}]
+        assert rows == [{"timestamp": 1704110400000}]
     finally:
         client.close()
 
@@ -1810,8 +1947,8 @@ def test_events_use_snapshot_download_flow_by_default(tmp_path) -> None:
                 200,
                 content=_zstd_ndjson(
                     [
-                        {"timestamp": 1704067200000000},
-                        {"timestamp": 1704067260000000},
+                        {"timestamp": 1704067200000},
+                        {"timestamp": 1704067260000},
                     ]
                 ),
                 headers={"content-type": "application/zstd"},
@@ -1826,8 +1963,8 @@ def test_events_use_snapshot_download_flow_by_default(tmp_path) -> None:
             from_="2024-01-01T00:00:00Z",
             to="2024-01-02T00:00:00Z",
         ) == [
-            {"timestamp": 1704067200000000},
-            {"timestamp": 1704067260000000},
+            {"timestamp": 1704067200000},
+            {"timestamp": 1704067260000},
         ]
     finally:
         client.close()
