@@ -1497,6 +1497,71 @@ def test__download_snapshots_saves_files_and_materializes_daily_artifacts(tmp_pa
         client.close()
 
 
+def test__download_snapshots_preserves_dashed_market_names_in_local_paths(
+    tmp_path,
+) -> None:
+    calls: list[str] = []
+    snapshot_key = "standard-arcus-AAPL-USD-2026-07-11"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path in {"/snapshots", "/download"}:
+            calls.append(str(request.url))
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={
+                    "snapshots": [
+                        {
+                            "key": snapshot_key,
+                            "date": "2026-07-11",
+                            "source": "arcus",
+                            "market": "AAPL-USD",
+                        }
+                    ]
+                },
+            )
+        if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                json=_bulk_download_manifest(
+                    source="arcus",
+                    market="AAPL-USD",
+                    day="2026-07-11",
+                    keys=[snapshot_key],
+                ),
+            )
+        if request.url.host == "download.example.com":
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson([{"timestamp": 1}, {"timestamp": 2}]),
+                headers={"content-type": "application/zstd"},
+            )
+        return httpx.Response(404)
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        entries = client._download_snapshots(
+            source="arcus",
+            market="AAPL-USD",
+            from_="2026-07-11T00:00:00Z",
+            to="2026-07-12T00:00:00Z",
+        )
+        assert [entry.key for entry in entries] == [snapshot_key]
+        assert (
+            tmp_path
+            / "data"
+            / "standard"
+            / "arcus"
+            / "AAPL-USD"
+            / "2026-07-11"
+            / f"{snapshot_key}.jsonl.zst"
+        ).exists()
+        assert (tmp_path / "daily" / "arcus" / "AAPL-USD" / "2026-07-11.jsonl.zst").exists()
+        assert len(calls) == 2
+    finally:
+        client.close()
+
+
 def test__list_local_snapshots_filters_by_date(tmp_path) -> None:
     client = make_client(lambda request: httpx.Response(500), dataset_root=tmp_path)
     try:
