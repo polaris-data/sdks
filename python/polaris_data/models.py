@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, TypedDict
+from typing import Any, Optional, TypedDict, Union
 
 JSONDict = dict[str, Any]
-CatalogInstrumentValue = str | int | float | None
+CatalogInstrumentValue = Optional[Union[str, int, float]]
 
 
 class CatalogInstrument(TypedDict):

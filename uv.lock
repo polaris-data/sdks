@@ -342,30 +342,28 @@ wheels = [
 
 [[package]]
 name = "polaris-data"
-version = "0.8.5"
+version = "0.9.0"
 source = { editable = "." }
-dependencies = [
-    { name = "httpx" },
-    { name = "orjson", version = "3.11.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "orjson", version = "3.11.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "zstandard" },
-]
 
 [package.dev-dependencies]
 dev = [
+    { name = "httpx" },
+    { name = "orjson", version = "3.11.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "orjson", version = "3.11.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "pytest", version = "8.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "pytest", version = "9.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+    { name = "zstandard" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "orjson", specifier = ">=3.10.0" },
-    { name = "zstandard", specifier = ">=0.23.0" },
-]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8.0.0" }]
+dev = [
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "orjson", specifier = ">=3.10.0" },
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "zstandard", specifier = ">=0.23.0" },
+]
 
 [[package]]
 name = "pygments"

@@ -1,4 +1,4 @@
-"""Synchronous client for the Polaris API."""
+"""Legacy 0.8 client retained only as a differential-test oracle."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import httpx
 import orjson
 import zstandard as zstd
 
-from .errors import (
+from polaris_data.errors import (
     AccessDeniedError,
     NotFoundError,
     PolarisError,
@@ -25,14 +25,14 @@ from .errors import (
     StreamDecodeError,
     UnauthorizedError,
 )
-from .layout import (
+from polaris_data.layout import (
     LocalDatasetLayout,
     infer_snapshot_end,
     infer_snapshot_start,
     parse_snapshot_key_metadata,
     resolve_dataset_root,
 )
-from .models import (
+from polaris_data.models import (
     BulkDownloadManifest,
     CatalogInstrument,
     CatalogResponse,
@@ -40,7 +40,7 @@ from .models import (
     LocalSnapshotEntry,
     SnapshotEntry,
 )
-from .utils import TimeInput, chunk_timerange, to_datetime, to_iso8601
+from polaris_data.utils import TimeInput, chunk_timerange, to_datetime, to_iso8601
 
 DEFAULT_BASE_URL = "https://api.polaris.supply"
 DEFAULT_TIMEOUT = 30.0

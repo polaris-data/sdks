@@ -1,4 +1,30 @@
 .venv/
 .pytest_cache/
+target/
+python/polaris_data/_native*.so
+python/polaris_data/_native*.pyd
+python/polaris_data/_native*.dylib
 __pycache__/
 *.pyc
+
+# Python build and packaging artifacts
+build/
+dist/
+*.egg-info/
+*.whl
+
+# Development tool caches and reports
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local configuration and workspace state
+.context/
+.env
+.env.*
+!.env.example
+
+# macOS metadata
+.DS_Store
