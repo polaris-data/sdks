@@ -1,0 +1,41 @@
+[package]
+name = "polaris-data"
+version = "0.7.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Rust SDK for the Polaris market data API."
+readme = "../../README.md"
+documentation = "https://docs.rs/polaris-data"
+homepage = "https://polaris.supply/docs"
+repository = "https://github.com/polaris-data/polaris-sdk"
+license.workspace = true
+keywords = ["polaris", "market-data", "trading", "async"]
+categories = ["api-bindings", "finance"]
+
+[lib]
+name = "polaris_data"
+
+[dependencies]
+async-stream = "0.3"
+chrono.workspace = true
+directories = "6"
+fs2 = "0.4"
+futures-core = "0.3"
+futures-util.workspace = true
+log = "0.4"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+tokio.workspace = true
+url = "2"
+zstd = "0.13"
+
+[dev-dependencies]
+http = "1"
+logtest = "2"
+tempfile = "3"
+tokio.workspace = true
+wiremock = "0.6"

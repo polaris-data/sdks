@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 from datetime import date, datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import httpx
@@ -40,14 +42,60 @@ def make_client(
     replay_cache_enabled: bool = False,
     replay_cache_dir: Path | None = None,
 ) -> PolarisClient:
-    transport = httpx.MockTransport(handler)
-    return PolarisClient(
+    class RequestHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            request = httpx.Request(
+                "GET",
+                f"http://{self.headers['Host']}{self.path}",
+                headers=dict(self.headers),
+            )
+            try:
+                response = handler(request)
+                content = response.content.replace(
+                    b"https://download.example.com",
+                    f"http://{self.headers['Host']}".encode(),
+                )
+                self.send_response(response.status_code)
+                for name, value in response.headers.items():
+                    if name.lower() not in {"content-length", "transfer-encoding"}:
+                        self.send_header(name, value)
+                self.send_header("content-length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+            except Exception as exc:  # pragma: no cover - surfaced through the client
+                content = f"{type(exc).__name__}: {exc}".encode()
+                self.send_response(500)
+                self.send_header("content-type", "text/plain")
+                self.send_header("content-length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+
+        def log_message(self, format: str, *args) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RequestHandler)
+    thread = threading.Thread(
+        target=lambda: server.serve_forever(poll_interval=0.01),
+        daemon=True,
+    )
+    thread.start()
+    client = PolarisClient(
         api_key=api_key,
-        transport=transport,
+        base_url=f"http://127.0.0.1:{server.server_port}",
         dataset_root=dataset_root,
         replay_cache_enabled=replay_cache_enabled,
         replay_cache_dir=replay_cache_dir,
     )
+    native_close = client.close
+
+    def close() -> None:
+        native_close()
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+    client.close = close
+    return client
 
 
 def _catalog_payload(
@@ -125,6 +173,12 @@ def _hourly_snapshot_key(source: str, market: str, day: str, hour: int) -> str:
 
 def _snapshot_download_url(key: str) -> str:
     return f"https://download.example.com/{key}.jsonl.zst"
+
+
+def _is_download_request(request: httpx.Request) -> bool:
+    return request.url.host == "download.example.com" or request.url.path.endswith(
+        ".jsonl.zst"
+    )
 
 
 def _bulk_download_manifest(
@@ -209,7 +263,7 @@ def _partial_snapshot_handler(calls: list[tuple[str, str | None]]):
                     keys=sorted(snapshot_rows),
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             key = request.url.path.removeprefix("/").removesuffix(".jsonl.zst")
             assert key in snapshot_rows
             return httpx.Response(
@@ -374,7 +428,7 @@ def test_events_infer_preview_cutoff_window_without_api_key(tmp_path) -> None:
                     ],
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             key = request.url.path.removeprefix("/").removesuffix(".jsonl.zst")
             assert key in snapshot_keys
             date_text = snapshot_keys[key]
@@ -486,7 +540,7 @@ def test_trades_use_snapshot_download_flow_by_default(tmp_path) -> None:
                     keys=[SNAPSHOT_KEY_DAY_1],
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(
@@ -556,7 +610,7 @@ def test_trades_download_404_raises_not_found_for_streaming_response(tmp_path) -
                     keys=[SNAPSHOT_KEY_DAY_1],
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             return httpx.Response(404, text="snapshot missing")
         raise AssertionError(f"unexpected request: {request.url}")
 
@@ -617,7 +671,7 @@ def test_trades_download_hourly_snapshots_for_partial_day_ranges(tmp_path) -> No
                     keys=sorted(snapshot_rows),
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             key = request.url.path.removeprefix("/").removesuffix(".jsonl.zst")
             assert key in snapshot_rows
             return httpx.Response(
@@ -688,7 +742,7 @@ def test_trades_select_intraday_snapshot_keys_without_hour_metadata(tmp_path) ->
                     keys=sorted(snapshot_rows),
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             key = request.url.path.removeprefix("/").removesuffix(".jsonl.zst")
             assert key in snapshot_rows
             return httpx.Response(
@@ -794,7 +848,7 @@ def test_vwap_aggregates_from_snapshot_download_flow(tmp_path) -> None:
                     keys=[SNAPSHOT_KEY_DAY_1],
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(
@@ -952,7 +1006,7 @@ def test_vwap_buckets_trades_by_interval(tmp_path) -> None:
                     keys=[SNAPSHOT_KEY_DAY_1],
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(
@@ -1025,7 +1079,7 @@ def test_volatility_aggregates_log_return_stddev_by_bucket(tmp_path) -> None:
                     keys=[SNAPSHOT_KEY_DAY_1],
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(
@@ -1183,7 +1237,7 @@ def test_ohlcv_aggregates_from_snapshot_download_flow(tmp_path) -> None:
                     keys=[SNAPSHOT_KEY_DAY_1],
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(
@@ -1263,7 +1317,7 @@ def test_ohlcv_normalizes_millisecond_snapshot_timestamps(tmp_path) -> None:
                     keys=[SNAPSHOT_KEY_DAY_1],
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(
@@ -1321,7 +1375,7 @@ def test_volume_aggregates_from_snapshot_download_flow(tmp_path) -> None:
                     keys=[SNAPSHOT_KEY_DAY_1],
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(
@@ -1388,7 +1442,7 @@ def test_ohlcv_tradingview_format_returns_local_json(tmp_path) -> None:
                     keys=[SNAPSHOT_KEY_DAY_1],
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(
@@ -1602,7 +1656,7 @@ def test__download_snapshots_saves_files_and_materializes_daily_artifacts(tmp_pa
                     keys=[SNAPSHOT_KEY_DAY_1],
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             return httpx.Response(
                 200,
                 content=_zstd_ndjson([{"timestamp": 1}, {"timestamp": 2}]),
@@ -1667,7 +1721,7 @@ def test__download_snapshots_preserves_dashed_market_names_in_local_paths(
                     keys=[snapshot_key],
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             return httpx.Response(
                 200,
                 content=_zstd_ndjson([{"timestamp": 1}, {"timestamp": 2}]),
@@ -1942,7 +1996,7 @@ def test_events_use_snapshot_download_flow_by_default(tmp_path) -> None:
                     keys=[SNAPSHOT_KEY_DAY_1],
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(
@@ -2065,7 +2119,7 @@ def test_l2_snapshots_use_snapshot_download_flow_by_default(tmp_path) -> None:
                     keys=[SNAPSHOT_KEY_DAY_1],
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(snapshot_rows),
@@ -2131,7 +2185,7 @@ def test_funding_rates_filter_point_series_from_standardized_snapshots(tmp_path)
                     keys=[SNAPSHOT_KEY_DAY_1],
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(snapshot_rows),
@@ -2199,7 +2253,7 @@ def test_mark_prices_filter_point_series_from_standardized_snapshots(tmp_path) -
                     keys=[SNAPSHOT_KEY_DAY_1],
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(snapshot_rows),
@@ -2255,7 +2309,7 @@ def test_bbo_derives_best_prices_and_quantities_from_l2_snapshots(tmp_path) -> N
                     keys=[SNAPSHOT_KEY_DAY_1],
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(snapshot_rows),
@@ -2328,7 +2382,7 @@ def test_depth_metrics_derive_depth_spread_and_slippage_from_l2_snapshots(
                     keys=[SNAPSHOT_KEY_DAY_1],
                 ),
             )
-        if request.url.host == "download.example.com":
+        if _is_download_request(request):
             return httpx.Response(
                 200,
                 content=_zstd_ndjson(snapshot_rows),
@@ -2550,9 +2604,9 @@ def test_raw_replay_raises_stream_decode_error_for_invalid_cached_zstd(tmp_path)
         called = True
         return httpx.Response(500)
 
-    client = PolarisClient(
+    client = make_client(
+        handler,
         api_key="pk_live_test",
-        transport=httpx.MockTransport(handler),
         replay_cache_enabled=True,
         replay_cache_dir=tmp_path,
     )
@@ -2589,9 +2643,9 @@ def test_raw_replay_reads_cached_rows_without_api_call(tmp_path) -> None:
         called = True
         return httpx.Response(500)
 
-    client = PolarisClient(
+    client = make_client(
+        handler,
         api_key="pk_live_test",
-        transport=httpx.MockTransport(handler),
         replay_cache_enabled=True,
         replay_cache_dir=tmp_path,
     )
@@ -2630,9 +2684,9 @@ def test_raw_replay_populates_cache_and_reuses_on_new_client(tmp_path) -> None:
             headers={"content-type": "application/zstd"},
         )
 
-    online_client = PolarisClient(
+    online_client = make_client(
+        online_handler,
         api_key="pk_live_test",
-        transport=httpx.MockTransport(online_handler),
         replay_cache_enabled=True,
         replay_cache_dir=tmp_path,
     )
@@ -2652,9 +2706,9 @@ def test_raw_replay_populates_cache_and_reuses_on_new_client(tmp_path) -> None:
     def offline_handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("network should not be called when replay cache already exists")
 
-    offline_client = PolarisClient(
+    offline_client = make_client(
+        offline_handler,
         api_key=None,
-        transport=httpx.MockTransport(offline_handler),
         replay_cache_enabled=True,
         replay_cache_dir=tmp_path,
     )

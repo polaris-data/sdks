@@ -1,11 +1,21 @@
-# polaris-py
+# Polaris SDK
 
-Python SDK for the Polaris API, optimized for notebook workflows and trading scripts.
+The official Rust and Python SDKs for the Polaris API, implemented by one shared
+Rust engine. The crates.io package and Rust crate are both named
+`polaris-data`; the PyPI distribution is also `polaris-data` and imports as
+`polaris_data`.
+
+The workspace contains:
+
+- `crates/polaris-data`: public async and blocking Rust APIs.
+- `crates/polaris-python`: private PyO3 extension module.
+- `python/polaris_data`: typed, handwritten Python compatibility facade.
+
 Documentation can be found at https://polaris.supply/docs
 
 ## Install
 
-Install the published SDK from PyPI:
+Install the Python SDK from PyPI:
 
 ```bash
 pip install polaris-data
@@ -22,6 +32,15 @@ Or install it into the active environment with:
 ```bash
 uv pip install polaris-data
 ```
+
+Install the Rust SDK from crates.io:
+
+```bash
+cargo add polaris-data
+```
+
+Python wheels always include the Rust core. CPython 3.9+ is supported through
+PyO3's stable ABI; there is no pure-Python runtime fallback.
 
 ## Quickstart
 
@@ -42,6 +61,37 @@ with PolarisClient(api_key="polaris_key_your_key") as client:
 ```
 
 If `api_key` is omitted, the client reads `POLARIS_API_KEY` from the environment.
+
+The equivalent async Rust workflow is:
+
+```rust,no_run
+use futures_util::StreamExt;
+use polaris_data::{PolarisClient, ReplayQuery};
+
+#[tokio::main]
+async fn main() -> Result<(), polaris_data::PolarisError> {
+    let client = PolarisClient::builder().build()?;
+    let mut rows = client
+        .replay(ReplayQuery {
+            source: "binance".into(),
+            market: "BTC-USDT".into(),
+            from: Some("2024-01-01T00:00:00Z".into()),
+            to: Some("2024-01-01T01:00:00Z".into()),
+            allow_gaps: false,
+        })
+        .await?;
+
+    while let Some(row) = rows.next().await {
+        println!("{:?}", row?);
+    }
+    Ok(())
+}
+```
+
+For synchronous Rust applications use
+`polaris_data::blocking::PolarisClient`. It owns a Tokio runtime and returns
+`PolarisError::BlockingInAsyncRuntime` when called from an active Tokio runtime,
+instead of panicking.
 
 ## PolarisClient API
 
@@ -183,4 +233,15 @@ except RateLimitedError as err:
 
 ```bash
 uv run pytest
+cargo test --workspace
 ```
+
+Build and inspect the native Python wheel with:
+
+```bash
+uv run --with maturin maturin build --release
+```
+
+Python and Rust are versioned independently. Python releases use
+`python-vX.Y.Z` tags and publish `polaris-data` to PyPI; Rust releases use
+`rust-vX.Y.Z` tags and publish `polaris-data` to crates.io.
