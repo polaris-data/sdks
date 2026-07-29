@@ -1,4 +1,8 @@
 .venv/
 .pytest_cache/
+target/
+python/polaris_data/_native*.so
+python/polaris_data/_native*.pyd
+python/polaris_data/_native*.dylib
 __pycache__/
 *.pyc
