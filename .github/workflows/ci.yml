@@ -50,3 +50,27 @@ jobs:
           python-version: "3.9"
       - run: pip install dist/*.whl
       - run: python -c "from polaris_data import PolarisClient, _native; assert _native.__native__; print(PolarisClient)"
+
+  typescript:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20, 22, 24]
+    defaults:
+      run:
+        working-directory: typescript
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Smoke test CommonJS package entry point
+        run: node -e "require('polaris-data')"
+      - name: Smoke test ESM package entry point
+        run: node --input-type=module -e "import 'polaris-data'"
