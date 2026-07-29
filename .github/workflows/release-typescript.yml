@@ -1,0 +1,126 @@
+name: Release TypeScript
+
+on:
+  push:
+    tags: ["typescript-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing typescript-vX.Y.Z tag to release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  NPM_VERSION: 11.19.0
+  RELEASE_REF: ${{ inputs.tag || github.ref }}
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: typescript
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ env.RELEASE_REF }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: npm install --global "npm@${NPM_VERSION}"
+      - name: Validate tag and package versions
+        working-directory: .
+        run: python scripts/check-release-version.py "$RELEASE_TAG"
+      - name: Require a commit from main
+        working-directory: .
+        run: |
+          git fetch --no-tags origin main
+          tag_commit=$(git rev-parse "${RELEASE_TAG}^{commit}")
+          git merge-base --is-ancestor "$tag_commit" origin/main
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Inspect package contents
+        run: npm pack --dry-run
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/polaris-data
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: typescript
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_REF }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: npm install --global "npm@${NPM_VERSION}"
+      - run: npm ci
+      - run: npm publish --access public
+
+  create-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ env.RELEASE_REF }}
+      - name: Create TypeScript release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${RELEASE_TAG#typescript-v}"
+          previous_tag="$(
+            git tag --merged "$RELEASE_TAG" --list "typescript-v*" \
+              --sort=-version:refname |
+              grep -Fvx "$RELEASE_TAG" |
+              head -n 1 || true
+          )"
+          notes_file="$RUNNER_TEMP/typescript-release-notes.md"
+
+          if [[ -n "$previous_tag" ]]; then
+            {
+              echo "Changes since \`$previous_tag\`:"
+              echo
+              git log "$previous_tag..$RELEASE_TAG" \
+                --pretty=format:"- %s (%h)" \
+                --no-merges -- \
+                typescript \
+                .github/workflows/ci.yml \
+                .github/workflows/release-typescript.yml \
+                scripts/check-release-version.py
+            } > "$notes_file"
+          else
+            {
+              echo "This is the first TypeScript SDK release from \`polaris-data/sdks\`."
+              echo
+              echo "The package source moved from \`polaris-data/polaris-ts\` without runtime API changes."
+              echo "Releases through v0.5.2 remain available in the [archived repository](https://github.com/polaris-data/polaris-ts/releases)."
+            } > "$notes_file"
+          fi
+
+          gh release create "$RELEASE_TAG" \
+            --title "TypeScript v$version" \
+            --notes-file "$notes_file"
