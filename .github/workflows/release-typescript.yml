@@ -39,7 +39,7 @@ jobs:
       - run: npm install --global "npm@${NPM_VERSION}"
       - name: Validate tag and package versions
         working-directory: .
-        run: python scripts/check-release-version.py "$RELEASE_TAG"
+        run: python .github/scripts/check-release-version.py "$RELEASE_TAG"
       - name: Require a commit from main
         working-directory: .
         run: |
@@ -110,7 +110,7 @@ jobs:
                 typescript \
                 .github/workflows/ci.yml \
                 .github/workflows/release-typescript.yml \
-                scripts/check-release-version.py
+                .github/scripts/check-release-version.py
             } > "$notes_file"
           else
             {
