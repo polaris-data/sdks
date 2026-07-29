@@ -1,15 +1,16 @@
-# Polaris SDK
+# Polaris SDKs
 
-The official Rust and Python SDKs for the Polaris API, implemented by one shared
-Rust engine. The crates.io package and Rust crate are both named
-`polaris-data`; the PyPI distribution is also `polaris-data` and imports as
-`polaris_data`.
+The official Rust, Python, and TypeScript SDKs for the Polaris API. Rust and
+Python share one Rust engine; TypeScript is an independent Node.js and browser
+package. All three distributions are named `polaris-data`, with Python
+importing as `polaris_data`.
 
 The workspace contains:
 
 - `crates/polaris-data`: public async and blocking Rust APIs.
 - `crates/polaris-python`: private PyO3 extension module.
 - `python/polaris_data`: typed, handwritten Python compatibility facade.
+- [`typescript`](typescript/README.md): TypeScript SDK for Node.js and browsers.
 
 Documentation can be found at https://polaris.supply/docs
 
@@ -37,6 +38,12 @@ Install the Rust SDK from crates.io:
 
 ```bash
 cargo add polaris-data
+```
+
+Install the TypeScript SDK from npm:
+
+```bash
+npm install polaris-data
 ```
 
 Python wheels always include the Rust core. CPython 3.9+ is supported through
@@ -234,6 +241,7 @@ except RateLimitedError as err:
 ```bash
 uv run pytest
 cargo test --workspace
+cd typescript && npm ci && npm run typecheck && npm test
 ```
 
 Build and inspect the native Python wheel with:
@@ -242,6 +250,7 @@ Build and inspect the native Python wheel with:
 uv run --with maturin maturin build --release
 ```
 
-Python and Rust are versioned independently. Python releases use
+Python, Rust, and TypeScript are versioned independently. Python releases use
 `python-vX.Y.Z` tags and publish `polaris-data` to PyPI; Rust releases use
-`rust-vX.Y.Z` tags and publish `polaris-data` to crates.io.
+`rust-vX.Y.Z` tags and publish `polaris-data` to crates.io; TypeScript releases
+use `typescript-vX.Y.Z` tags and publish `polaris-data` to npm.

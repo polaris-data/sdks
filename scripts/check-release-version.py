@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
 import sys
 from pathlib import Path
@@ -11,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TAG_PATTERN = re.compile(
-    r"^(?P<ecosystem>python|rust)-v(?P<major>0|[1-9]\d*)"
+    r"^(?P<ecosystem>python|rust|typescript)-v(?P<major>0|[1-9]\d*)"
     r"\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$"
 )
 TOML_SECTION_PATTERN = re.compile(r"^\s*\[([^\]]+)\]\s*(?:#.*)?$")
@@ -52,6 +53,20 @@ def python_runtime_version() -> str:
     raise ValueError(f"could not find a literal __version__ assignment in {init_path}")
 
 
+def json_string(path: str, *keys: str) -> str:
+    manifest_path = ROOT / path
+    value: object = json.loads(manifest_path.read_text())
+    for key in keys:
+        if not isinstance(value, dict) or key not in value:
+            dotted_key = ".".join(keys)
+            raise ValueError(f"could not find {dotted_key} in {manifest_path}")
+        value = value[key]
+    if not isinstance(value, str):
+        dotted_key = ".".join(keys)
+        raise ValueError(f"{dotted_key} in {manifest_path} is not a string")
+    return value
+
+
 def version_sources(ecosystem: str) -> dict[str, str]:
     if ecosystem == "python":
         return {
@@ -63,10 +78,22 @@ def version_sources(ecosystem: str) -> dict[str, str]:
             ),
             "python/polaris_data/__init__.py": python_runtime_version(),
         }
+    if ecosystem == "rust":
+        return {
+            "crates/polaris-data/Cargo.toml [package]": toml_string(
+                "crates/polaris-data/Cargo.toml", "package", "version"
+            )
+        }
     return {
-        "crates/polaris-data/Cargo.toml [package]": toml_string(
-            "crates/polaris-data/Cargo.toml", "package", "version"
-        )
+        "typescript/package.json": json_string(
+            "typescript/package.json", "version"
+        ),
+        "typescript/package-lock.json": json_string(
+            "typescript/package-lock.json", "version"
+        ),
+        "typescript/package-lock.json packages[\"\"]": json_string(
+            "typescript/package-lock.json", "packages", "", "version"
+        ),
     }
 
 
@@ -74,7 +101,7 @@ def main() -> int:
     if len(sys.argv) != 2:
         print(
             f"usage: {Path(sys.argv[0]).name} "
-            "(python-vX.Y.Z|rust-vX.Y.Z)",
+            "(python-vX.Y.Z|rust-vX.Y.Z|typescript-vX.Y.Z)",
             file=sys.stderr,
         )
         return 2
@@ -83,7 +110,8 @@ def main() -> int:
     match = TAG_PATTERN.fullmatch(tag)
     if match is None:
         print(
-            f"invalid release tag {tag!r}; expected python-vX.Y.Z or rust-vX.Y.Z",
+            f"invalid release tag {tag!r}; expected "
+            "python-vX.Y.Z, rust-vX.Y.Z, or typescript-vX.Y.Z",
             file=sys.stderr,
         )
         return 2
