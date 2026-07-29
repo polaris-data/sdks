@@ -31,7 +31,7 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://polaris.supply"
-Repository = "https://github.com/polaris-data/polaris-sdk"
+Repository = "https://github.com/polaris-data/sdks"
 
 [dependency-groups]
 dev = [
