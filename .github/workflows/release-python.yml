@@ -3,12 +3,20 @@ name: Release Python
 on:
   push:
     tags: ["python-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing python-vX.Y.Z tag to release
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 env:
   MATURIN_VERSION: v1.14.1
+  RELEASE_REF: ${{ inputs.tag || github.ref }}
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   validate:
@@ -17,13 +25,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ env.RELEASE_REF }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: Validate tag and package versions
-        run: python scripts/check-release-version.py "$GITHUB_REF_NAME"
+        run: python scripts/check-release-version.py "$RELEASE_TAG"
       - name: Validate lockfiles
         run: |
           uv lock --check
@@ -31,7 +40,7 @@ jobs:
       - name: Require a commit from main
         run: |
           git fetch --no-tags origin main
-          tag_commit=$(git rev-parse "${GITHUB_SHA}^{commit}")
+          tag_commit=$(git rev-parse "${RELEASE_TAG}^{commit}")
           git merge-base --is-ancestor "$tag_commit" origin/main
 
   linux:
@@ -44,11 +53,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        env:
+          # GCC 4.8 in the manylinux2014 aarch64 cross image does not define
+          # this ACLE macro, which ring requires when assembling ARMv8 code.
+          CFLAGS_aarch64_unknown_linux_gnu: -D__ARM_ARCH=8
         with:
           maturin-version: ${{ env.MATURIN_VERSION }}
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
+          docker-options: -e CFLAGS_aarch64_unknown_linux_gnu
           command: build
           args: --release --locked --compatibility pypi --out dist
       - uses: actions/upload-artifact@v4
@@ -69,6 +85,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
       - uses: actions/setup-python@v6
         with:
           python-version: "3.9"
@@ -98,6 +116,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
@@ -118,6 +138,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           maturin-version: ${{ env.MATURIN_VERSION }}
