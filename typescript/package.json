@@ -1,0 +1,72 @@
+{
+  "name": "polaris-data",
+  "version": "0.5.3",
+  "description": "TypeScript SDK for the Polaris market data API (Node.js and browser)",
+  "license": "MIT",
+  "author": "Polaris <hello@polaris.supply>",
+  "homepage": "https://polaris.supply",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/polaris-data/sdks",
+    "directory": "typescript"
+  },
+  "type": "module",
+  "main": "./dist/node/index.cjs",
+  "module": "./dist/node/index.js",
+  "types": "./dist/node/index.d.ts",
+  "exports": {
+    ".": {
+      "node": {
+        "types": "./dist/node/index.d.ts",
+        "import": "./dist/node/index.js",
+        "require": "./dist/node/index.cjs"
+      },
+      "browser": {
+        "types": "./dist/browser/index.d.ts",
+        "import": "./dist/browser/index.js"
+      },
+      "types": "./dist/node/index.d.ts",
+      "import": "./dist/node/index.js",
+      "require": "./dist/node/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run clean && npm run build && node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.5.0",
+    "webpack": "^5.99.9"
+  },
+  "keywords": [
+    "polaris",
+    "market-data",
+    "crypto",
+    "defi",
+    "trading",
+    "api",
+    "sdk",
+    "ohlcv",
+    "trades",
+    "events",
+    "browser",
+    "web",
+    "client-side"
+  ],
+  "dependencies": {
+    "fzstd": "^0.1.1"
+  }
+}
