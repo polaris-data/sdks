@@ -244,4 +244,5 @@ uv run --with maturin maturin build --release
 
 Python and Rust are versioned independently. Python releases use
 `python-vX.Y.Z` tags and publish `polaris-data` to PyPI; Rust releases use
-`rust-vX.Y.Z` tags and publish `polaris-data` to crates.io.
+`rust-vX.Y.Z` tags and publish `polaris-data` to crates.io. See
+[`RELEASING.md`](RELEASING.md) for the complete release procedure.

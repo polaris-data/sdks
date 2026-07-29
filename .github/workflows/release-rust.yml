@@ -4,13 +4,41 @@ on:
   push:
     tags: ["rust-v*"]
 
+permissions:
+  contents: read
+
 jobs:
-  publish:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test -p polaris-data
-      - run: cargo publish -p polaris-data
+      - name: Validate tag and package version
+        run: python scripts/check-release-version.py "$GITHUB_REF_NAME"
+      - name: Validate lockfile
+        run: cargo metadata --locked --no-deps --format-version 1 > /dev/null
+      - name: Require a commit from main
+        run: |
+          git fetch --no-tags origin main
+          tag_commit=$(git rev-parse "${GITHUB_SHA}^{commit}")
+          git merge-base --is-ancestor "$tag_commit" origin/main
+      - run: cargo test -p polaris-data --locked
+      - run: cargo publish -p polaris-data --locked --dry-run
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/polaris-data
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo publish -p polaris-data --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

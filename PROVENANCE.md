@@ -15,4 +15,4 @@ oracle while the native 0.9 release line is validated.
 
 When the standalone repositories are retired, their READMEs and repository
 metadata should point contributors to
-`https://github.com/polaris-data/polaris-sdk`.
+`https://github.com/polaris-data/sdks`.

@@ -7,8 +7,35 @@ on:
 permissions:
   contents: read
 
+env:
+  MATURIN_VERSION: v1.14.1
+
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Validate tag and package versions
+        run: python scripts/check-release-version.py "$GITHUB_REF_NAME"
+      - name: Validate lockfiles
+        run: |
+          uv lock --check
+          cargo metadata --locked --no-deps --format-version 1 > /dev/null
+      - name: Require a commit from main
+        run: |
+          git fetch --no-tags origin main
+          tag_commit=$(git rev-parse "${GITHUB_SHA}^{commit}")
+          git merge-base --is-ancestor "$tag_commit" origin/main
+
   linux:
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
@@ -17,59 +44,92 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: PyO3/maturin-action@v1
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
+          maturin-version: ${{ env.MATURIN_VERSION }}
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
           command: build
-          args: --release --out dist
+          args: --release --locked --compatibility pypi --out dist
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-linux-${{ matrix.target }}-${{ matrix.manylinux }}
           path: dist/*.whl
 
   macos:
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
-        target: [x86_64, aarch64]
-    runs-on: macos-latest
+        include:
+          - runner: macos-15-intel
+            target: x86_64
+          - runner: macos-latest
+            target: aarch64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - uses: PyO3/maturin-action@v1
+      - uses: actions/setup-python@v6
         with:
+          python-version: "3.9"
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          maturin-version: ${{ env.MATURIN_VERSION }}
           target: ${{ matrix.target }}
           command: build
-          args: --release --out dist
+          args: --release --locked --compatibility pypi --out dist
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-macos-${{ matrix.target }}
           path: dist/*.whl
 
   windows:
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
         include:
           - runner: windows-latest
             target: x64
+            python_arch: x64
           - runner: windows-11-arm
-            target: ARM64
+            target: aarch64
+            python_arch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - uses: PyO3/maturin-action@v1
+      - uses: actions/setup-python@v6
         with:
+          python-version: "3.13"
+          architecture: ${{ matrix.python_arch }}
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          maturin-version: ${{ env.MATURIN_VERSION }}
           target: ${{ matrix.target }}
           command: build
-          args: --release --out dist
+          args: --release --locked --compatibility pypi --out dist
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-windows-${{ matrix.target }}
           path: dist/*.whl
 
+  sdist:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          maturin-version: ${{ env.MATURIN_VERSION }}
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
   publish:
-    needs: [linux, macos, windows]
+    needs: [linux, macos, windows, sdist]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -82,4 +142,8 @@ jobs:
           pattern: wheel-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
       - uses: pypa/gh-action-pypi-publish@release/v1
