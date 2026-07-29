@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 TAG_PATTERN = re.compile(
     r"^(?P<ecosystem>python|rust|typescript)-v(?P<major>0|[1-9]\d*)"
     r"\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$"
