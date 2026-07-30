@@ -53,19 +53,35 @@ pub(crate) struct SnapshotKeyParts {
 
 pub(crate) fn resolve_root(explicit: Option<PathBuf>) -> Result<PathBuf, PolarisError> {
     if let Some(root) = explicit {
-        return Ok(root);
+        return Ok(expand_home(root));
     }
     if let Ok(root) = env::var("POLARIS_ROOT") {
-        return Ok(PathBuf::from(root));
+        return Ok(expand_home(PathBuf::from(root)));
     }
     if let Ok(root) = env::var("POLARIS_DATASET_DOWNLOAD_DIR") {
-        return Ok(PathBuf::from(root));
+        return Ok(expand_home(PathBuf::from(root)));
     }
 
     let base_dirs = BaseDirs::new().ok_or_else(|| {
         PolarisError::InvalidResponse("failed to resolve platform data directory".to_owned())
     })?;
     Ok(base_dirs.data_dir().join("polaris"))
+}
+
+fn expand_home(path: PathBuf) -> PathBuf {
+    let Some(value) = path.to_str() else {
+        return path;
+    };
+    let Some(home) = BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) else {
+        return path;
+    };
+    if value == "~" {
+        return home;
+    }
+    if let Some(suffix) = value.strip_prefix("~/") {
+        return home.join(suffix);
+    }
+    path
 }
 
 pub(crate) fn ensure_layout(root: PathBuf) -> Result<StorageLayout, PolarisError> {

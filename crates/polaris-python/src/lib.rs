@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use polaris_data::{
     HistoricalQuery, ListSnapshotsQuery, OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery,
-    PolarisError, RawQuery, RawReplayQuery, ReplayQuery, TimeInput, blocking,
+    PolarisError, RawQuery, RawReplayQuery, ReplayQuery, TimeInput,
+    blocking::{self, RawReplayCacheConfig},
 };
 use pyo3::{
     create_exception,
@@ -205,6 +206,15 @@ impl NativeClient {
         self.inner.dataset_root().to_string_lossy().into_owned()
     }
 
+    #[getter]
+    fn replay_cache_dir(&self) -> String {
+        self.inner
+            .cache_dir()
+            .join("replay")
+            .to_string_lossy()
+            .into_owned()
+    }
+
     fn close(&self) {}
 
     fn take_diagnostics(&self) -> Vec<String> {
@@ -321,7 +331,33 @@ impl NativeClient {
             })
             .map_err(native_error)?;
         Ok(NativeReplay {
-            iterator: Some(iterator),
+            iterator: Some(NativeReplayIterator::Single(iterator)),
+        })
+    }
+
+    #[pyo3(signature = (source, market, from_, to, allow_gaps=false))]
+    fn replay_chunked(
+        &self,
+        py: Python<'_>,
+        source: String,
+        market: String,
+        from_: String,
+        to: String,
+        allow_gaps: bool,
+    ) -> PyResult<NativeReplay> {
+        let iterator = py
+            .detach(|| {
+                self.inner.replay_chunked(ReplayQuery {
+                    source,
+                    market,
+                    from: Some(TimeInput::Iso8601(from_)),
+                    to: Some(TimeInput::Iso8601(to)),
+                    allow_gaps,
+                })
+            })
+            .map_err(native_error)?;
+        Ok(NativeReplay {
+            iterator: Some(NativeReplayIterator::Chunked(Box::new(iterator))),
         })
     }
 
@@ -371,7 +407,71 @@ impl NativeClient {
             })
             .map_err(native_error)?;
         Ok(NativeRawReplay {
-            iterator: Some(iterator),
+            iterator: Some(NativeRawReplayIterator::Single(iterator)),
+        })
+    }
+
+    #[pyo3(signature = (source, market, from_, to, limit=1000, cache_enabled=true, cache_dir=None))]
+    fn raw_replay_cached(
+        &self,
+        py: Python<'_>,
+        source: String,
+        market: String,
+        from_: String,
+        to: String,
+        limit: usize,
+        cache_enabled: bool,
+        cache_dir: Option<PathBuf>,
+    ) -> PyResult<NativeRawReplay> {
+        let cache = self.raw_replay_cache_config(cache_enabled, cache_dir);
+        let iterator = py
+            .detach(|| {
+                self.inner.raw_replay_cached(
+                    RawReplayQuery {
+                        source,
+                        market,
+                        from: Some(TimeInput::Iso8601(from_)),
+                        to: Some(TimeInput::Iso8601(to)),
+                        limit,
+                    },
+                    cache,
+                )
+            })
+            .map_err(native_error)?;
+        Ok(NativeRawReplay {
+            iterator: Some(NativeRawReplayIterator::Cached(iterator)),
+        })
+    }
+
+    #[pyo3(signature = (source, market, from_, to, limit=1000, cache_enabled=true, cache_dir=None))]
+    fn raw_replay_chunked(
+        &self,
+        py: Python<'_>,
+        source: String,
+        market: String,
+        from_: String,
+        to: String,
+        limit: usize,
+        cache_enabled: bool,
+        cache_dir: Option<PathBuf>,
+    ) -> PyResult<NativeRawReplay> {
+        let cache = self.raw_replay_cache_config(cache_enabled, cache_dir);
+        let iterator = py
+            .detach(|| {
+                self.inner.raw_replay_chunked(
+                    RawReplayQuery {
+                        source,
+                        market,
+                        from: Some(TimeInput::Iso8601(from_)),
+                        to: Some(TimeInput::Iso8601(to)),
+                        limit,
+                    },
+                    cache,
+                )
+            })
+            .map_err(native_error)?;
+        Ok(NativeRawReplay {
+            iterator: Some(NativeRawReplayIterator::Chunked(Box::new(iterator))),
         })
     }
 
@@ -570,6 +670,19 @@ impl NativeClient {
     }
 }
 
+impl NativeClient {
+    fn raw_replay_cache_config(
+        &self,
+        enabled: bool,
+        directory: Option<PathBuf>,
+    ) -> RawReplayCacheConfig {
+        RawReplayCacheConfig {
+            enabled,
+            directory: directory.unwrap_or_else(|| self.inner.cache_dir().join("replay")),
+        }
+    }
+}
+
 fn aggregate_query(
     source: String,
     market: String,
@@ -591,7 +704,12 @@ fn aggregate_query(
 
 #[pyclass(unsendable, module = "polaris_data._native")]
 struct NativeReplay {
-    iterator: Option<blocking::ReplayIterator>,
+    iterator: Option<NativeReplayIterator>,
+}
+
+enum NativeReplayIterator {
+    Single(blocking::ReplayIterator),
+    Chunked(Box<blocking::ChunkedReplayIterator>),
 }
 
 #[pymethods]
@@ -604,7 +722,10 @@ impl NativeReplay {
         let Some(iterator) = self.iterator.as_mut() else {
             return Ok(None);
         };
-        let next = py.detach(|| iterator.next());
+        let next = py.detach(|| match iterator {
+            NativeReplayIterator::Single(iterator) => iterator.next(),
+            NativeReplayIterator::Chunked(iterator) => iterator.next(),
+        });
         match next {
             Some(Ok(value)) => to_python(py, &value).map(Some),
             Some(Err(error)) => Err(native_error(error)),
@@ -618,7 +739,13 @@ impl NativeReplay {
 
 #[pyclass(unsendable, module = "polaris_data._native")]
 struct NativeRawReplay {
-    iterator: Option<blocking::RawReplayIterator>,
+    iterator: Option<NativeRawReplayIterator>,
+}
+
+enum NativeRawReplayIterator {
+    Single(blocking::RawReplayIterator),
+    Cached(blocking::CachedRawReplayIterator),
+    Chunked(Box<blocking::ChunkedRawReplayIterator>),
 }
 
 #[pymethods]
@@ -631,7 +758,11 @@ impl NativeRawReplay {
         let Some(iterator) = self.iterator.as_mut() else {
             return Ok(None);
         };
-        let next = py.detach(|| iterator.next());
+        let next = py.detach(|| match iterator {
+            NativeRawReplayIterator::Single(iterator) => iterator.next(),
+            NativeRawReplayIterator::Cached(iterator) => iterator.next(),
+            NativeRawReplayIterator::Chunked(iterator) => iterator.next(),
+        });
         match next {
             Some(Ok(value)) => to_python(py, &value).map(Some),
             Some(Err(error)) => Err(native_error(error)),

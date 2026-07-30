@@ -49,6 +49,13 @@ npm install polaris-data
 Python wheels always include the Rust core. CPython 3.9+ is supported through
 PyO3's stable ABI; there is no pure-Python runtime fallback.
 
+## Python 0.10 migration
+
+The undocumented `polaris_data.layout` module and the underscore-prefixed
+`PolarisClient` storage helpers have been removed. Snapshot layout, cache
+management, and replay chunking now run in the shared Rust engine; use the
+documented `PolarisClient` methods and `dataset_root` configuration instead.
+
 ## Quickstart
 
 ```python
