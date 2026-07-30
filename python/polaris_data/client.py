@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import warnings
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -18,9 +18,8 @@ from .errors import (
     StreamDecodeError,
     UnauthorizedError,
 )
-from .layout import LocalDatasetLayout, resolve_dataset_root
 from .models import CatalogResponse, JSONDict, SnapshotEntry
-from .utils import TimeInput, chunk_timerange, to_datetime, to_iso8601
+from .utils import TimeInput, to_iso8601
 
 DEFAULT_BASE_URL = "https://api.polaris.supply"
 DEFAULT_TIMEOUT = 30.0
@@ -43,25 +42,47 @@ class PolarisClient:
         self.api_key = api_key or os.getenv("POLARIS_API_KEY")
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self.dataset_root = resolve_dataset_root(
+        explicit_root = self._resolve_explicit_root(
             dataset_root=dataset_root,
             dataset_download_dir=dataset_download_dir,
-        )
-        self.dataset_download_dir = self.dataset_root
-        self.layout = LocalDatasetLayout(self.dataset_root)
-        self.replay_cache_enabled = replay_cache_enabled
-        self.replay_cache_dir = (
-            Path(replay_cache_dir).expanduser()
-            if replay_cache_dir is not None
-            else self.layout.cache_root / "replay"
         )
         self._native = _native.NativeClient(
             self.api_key,
             self.base_url,
             timeout,
-            self.dataset_root,
+            explicit_root,
+        )
+        self.dataset_root = Path(self._native.dataset_root)
+        self.dataset_download_dir = self.dataset_root
+        self.replay_cache_enabled = replay_cache_enabled
+        self.replay_cache_dir = (
+            Path(replay_cache_dir).expanduser()
+            if replay_cache_dir is not None
+            else Path(self._native.replay_cache_dir)
         )
         self._closed = False
+
+    @staticmethod
+    def _resolve_explicit_root(
+        *,
+        dataset_root: str | os.PathLike[str] | None,
+        dataset_download_dir: str | os.PathLike[str] | None,
+    ) -> Path | None:
+        if dataset_root is None:
+            return (
+                Path(dataset_download_dir).expanduser()
+                if dataset_download_dir is not None
+                else None
+            )
+
+        root = Path(dataset_root).expanduser()
+        if dataset_download_dir is not None:
+            legacy_root = Path(dataset_download_dir).expanduser()
+            if legacy_root != root:
+                raise ValueError(
+                    "dataset_root and dataset_download_dir must match when both are provided"
+                )
+        return root
 
     def close(self) -> None:
         if not self._closed:
@@ -222,170 +243,33 @@ class PolarisClient:
         )
         if effective_chunk_size <= 0:
             raise ValueError("chunk_size must be > 0")
-        if parallel:
-            if from_ is None or to is None:
-                raise ValueError("from_ and to are required when parallel=True")
+        from_text = self._time(from_)
+        to_text = self._time(to)
+        if parallel and (from_text is None or to_text is None):
+            raise ValueError("from_ and to are required when parallel=True")
 
-            def parallel_iterator() -> Iterator[JSONDict]:
-                for chunk_start, chunk_end in chunk_timerange(from_, to, chunk_hours=24):
-                    yield from self.replay(
-                        source=source,
-                        market=market,
-                        from_=chunk_start,
-                        to=chunk_end,
-                        standard=standard,
-                        allow_gaps=allow_gaps,
-                        chunk_size=chunk_size,
-                        parallel=False,
-                    )
-
-            return parallel_iterator()
-
-        method = "replay" if standard else "raw_replay"
-        args: tuple[Any, ...] = (
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-        )
         if standard:
-            iterator = self._call(method, *args, allow_gaps)
-        else:
-            if self.replay_cache_enabled and from_ is not None and to is not None:
-                return self._raw_replay_with_cache(
-                    source=source,
-                    market=market,
-                    from_=from_,
-                    to=to,
-                    args=args,
+            if parallel:
+                iterator = self._call(
+                    "replay_chunked", source, market, from_text, to_text, allow_gaps
                 )
-            iterator = self._call(method, *args, 1000)
-        return self._iterate(iterator)
-
-    @staticmethod
-    def _safe_filename_fragment(value: str) -> str:
-        cleaned = "".join(
-            character
-            if character.isalnum() or character in {"-", "_", "."}
-            else "_"
-            for character in value
-        ).strip("_")
-        return cleaned or "dataset"
-
-    def _default_dataset_filename(
-        self,
-        source: str,
-        market: str,
-        from_: TimeInput,
-        to: TimeInput,
-        standard: bool,
-    ) -> str:
-        from_text = to_iso8601(from_).replace(":", "-")
-        to_text = to_iso8601(to).replace(":", "-")
-        mode = "standard" if standard else "raw"
-        safe = self._safe_filename_fragment
-        return (
-            f"{safe(source)}_{safe(market)}_{safe(from_text)}_{safe(to_text)}_"
-            f"{mode}.jsonl.zst"
-        )
-
-    def _raw_replay_with_cache(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput,
-        to: TimeInput,
-        args: tuple[Any, ...],
-    ) -> Iterator[JSONDict]:
-        canonical = self.replay_cache_dir / self._default_dataset_filename(
-            source, market, from_, to, False
-        )
-        candidates = [canonical.with_suffix(""), canonical]
-        for candidate in candidates:
-            if candidate.exists():
-                try:
-                    rows = _native.decode_file(candidate)
-                except _native.NativeError as error:
-                    raise self._translate_native_error(error, "raw replay") from None
-                return iter(rows)
-
-        iterator = self._call("raw_replay", *args, 1000)
-        cache_path = canonical.with_suffix("")
-
-        def cache_rows() -> Iterator[JSONDict]:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = cache_path.with_name(f".{cache_path.name}.part")
-            try:
-                with temporary.open("w", encoding="utf-8") as output:
-                    for row in self._iterate(iterator):
-                        output.write(json.dumps(row, separators=(",", ":")))
-                        output.write("\n")
-                        yield row
-                temporary.replace(cache_path)
-            finally:
-                temporary.unlink(missing_ok=True)
-
-        return cache_rows()
-
-    def _download_snapshots(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput,
-        to: TimeInput,
-        force: bool = False,
-    ):
-        if force:
-            for entry in self.layout.list_local_snapshots():
-                if entry.source == source and entry.market == market:
-                    Path(entry.path).unlink(missing_ok=True)
-        list(
-            self.replay(
-                source=source,
-                market=market,
-                from_=from_,
-                to=to,
+            else:
+                iterator = self._call("replay", source, market, from_text, to_text, allow_gaps)
+        elif from_text is not None and to_text is not None:
+            method = "raw_replay_chunked" if parallel else "raw_replay_cached"
+            iterator = self._call(
+                method,
+                source,
+                market,
+                from_text,
+                to_text,
+                1000,
+                self.replay_cache_enabled,
+                self.replay_cache_dir,
             )
-        )
-        start_day = to_datetime(from_).date()
-        end_day = to_datetime(to).date()
-        return [
-            entry
-            for entry in self.layout.list_local_snapshots()
-            if entry.source == source
-            and entry.market == market
-            and entry.date is not None
-            and start_day <= date.fromisoformat(entry.date) <= end_day
-        ]
-
-    def _list_local_snapshots(
-        self,
-        *,
-        date: str | date | None = None,
-    ):
-        date_text = date.isoformat() if date is not None and not isinstance(date, str) else date
-        return [
-            entry
-            for entry in self.layout.list_local_snapshots()
-            if date_text is None or entry.date == date_text
-        ]
-
-    def _iter_local_events(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-    ) -> Iterator[JSONDict]:
-        return self.replay(
-            source=source,
-            market=market,
-            from_=from_,
-            to=to,
-        )
+        else:
+            iterator = self._call("raw_replay", source, market, from_text, to_text, 1000)
+        return self._iterate(iterator)
 
     def events(
         self,

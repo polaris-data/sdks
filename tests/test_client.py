@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 import threading
-from datetime import date, datetime
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -32,6 +32,36 @@ def _zstd_ndjson(rows: list[dict]) -> bytes:
         for row in rows
     )
     return zstd.ZstdCompressor().compress(ndjson)
+
+
+def _raw_replay_cache_path(directory: Path) -> Path:
+    return directory / (
+        "binance_BTC-USDT_2024-01-01T00-00-00Z_"
+        "2024-01-01T01-00-00Z_raw.jsonl"
+    )
+
+
+def test_client_uses_deprecated_dataset_root_environment_fallback(
+    tmp_path, monkeypatch
+) -> None:
+    preferred_root = tmp_path / "preferred"
+    legacy_root = tmp_path / "legacy"
+    monkeypatch.setenv("POLARIS_ROOT", str(preferred_root))
+    monkeypatch.setenv("POLARIS_DATASET_DOWNLOAD_DIR", str(legacy_root))
+
+    client = PolarisClient(base_url="http://127.0.0.1:1")
+    try:
+        assert client.dataset_root == preferred_root
+        assert client.dataset_download_dir == preferred_root
+    finally:
+        client.close()
+
+    monkeypatch.delenv("POLARIS_ROOT")
+    client = PolarisClient(base_url="http://127.0.0.1:1")
+    try:
+        assert client.dataset_root == legacy_root
+    finally:
+        client.close()
 
 
 def make_client(
@@ -1634,46 +1664,13 @@ def test_list_snapshots_paginates_across_data_and_snapshots_fields() -> None:
         client.close()
 
 
-def test__download_snapshots_saves_files_and_materializes_daily_artifacts(tmp_path) -> None:
-    calls: list[str] = []
-
+def test_replay_materializes_local_snapshot_data_files_before_network(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path in {"/snapshots", "/download"}:
-            calls.append(str(request.url))
-        if request.url.path == "/snapshots":
-            assert request.headers.get("authorization") == "Bearer polaris_key_test"
-            return httpx.Response(
-                200,
-                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
-            )
-        if request.url.path == "/download":
-            return httpx.Response(
-                200,
-                json=_bulk_download_manifest(
-                    source="binance",
-                    market="BTC-USDT",
-                    day="2024-01-01",
-                    keys=[SNAPSHOT_KEY_DAY_1],
-                ),
-            )
-        if _is_download_request(request):
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson([{"timestamp": 1}, {"timestamp": 2}]),
-                headers={"content-type": "application/zstd"},
-            )
-        return httpx.Response(404)
+        raise AssertionError("network should not be called when local snapshot files exist")
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        entries = client._download_snapshots(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-02T00:00:00Z",
-        )
-        assert [entry.key for entry in entries] == [SNAPSHOT_KEY_DAY_1]
-        assert (
+        snapshot_path = (
             tmp_path
             / "data"
             / "standard"
@@ -1681,103 +1678,7 @@ def test__download_snapshots_saves_files_and_materializes_daily_artifacts(tmp_pa
             / "BTC-USDT"
             / "2024-01-01"
             / f"{SNAPSHOT_KEY_DAY_1}.jsonl.zst"
-        ).exists()
-        assert (tmp_path / "daily" / "binance" / "BTC-USDT" / "2024-01-01.jsonl.zst").exists()
-        assert len(calls) == 2
-    finally:
-        client.close()
-
-
-def test__download_snapshots_preserves_dashed_market_names_in_local_paths(
-    tmp_path,
-) -> None:
-    calls: list[str] = []
-    snapshot_key = "standard-arcus-AAPL-USD-2026-07-11"
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path in {"/snapshots", "/download"}:
-            calls.append(str(request.url))
-        if request.url.path == "/snapshots":
-            return httpx.Response(
-                200,
-                json={
-                    "snapshots": [
-                        {
-                            "key": snapshot_key,
-                            "date": "2026-07-11",
-                            "source": "arcus",
-                            "market": "AAPL-USD",
-                        }
-                    ]
-                },
-            )
-        if request.url.path == "/download":
-            return httpx.Response(
-                200,
-                json=_bulk_download_manifest(
-                    source="arcus",
-                    market="AAPL-USD",
-                    day="2026-07-11",
-                    keys=[snapshot_key],
-                ),
-            )
-        if _is_download_request(request):
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson([{"timestamp": 1}, {"timestamp": 2}]),
-                headers={"content-type": "application/zstd"},
-            )
-        return httpx.Response(404)
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        entries = client._download_snapshots(
-            source="arcus",
-            market="AAPL-USD",
-            from_="2026-07-11T00:00:00Z",
-            to="2026-07-12T00:00:00Z",
         )
-        assert [entry.key for entry in entries] == [snapshot_key]
-        assert (
-            tmp_path
-            / "data"
-            / "standard"
-            / "arcus"
-            / "AAPL-USD"
-            / "2026-07-11"
-            / f"{snapshot_key}.jsonl.zst"
-        ).exists()
-        assert (tmp_path / "daily" / "arcus" / "AAPL-USD" / "2026-07-11.jsonl.zst").exists()
-        assert len(calls) == 2
-    finally:
-        client.close()
-
-
-def test__list_local_snapshots_filters_by_date(tmp_path) -> None:
-    client = make_client(lambda request: httpx.Response(500), dataset_root=tmp_path)
-    try:
-        first = client.layout.data_path_for_key(SNAPSHOT_KEY_DAY_1)
-        second = client.layout.data_path_for_key(
-            "standard-binance-ETH-USDT-2024-01-01"
-        )
-        first.parent.mkdir(parents=True, exist_ok=True)
-        second.parent.mkdir(parents=True, exist_ok=True)
-        first.write_bytes(_zstd_ndjson([{"timestamp": 1}]))
-        second.write_bytes(_zstd_ndjson([{"timestamp": 2}]))
-
-        assert len(client._list_local_snapshots()) == 2
-        assert len(client._list_local_snapshots(date="2024-01-01")) == 2
-    finally:
-        client.close()
-
-
-def test_replay_materializes_local_snapshot_data_files_before_network(tmp_path) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError("network should not be called when local snapshot files exist")
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        snapshot_path = client.layout.data_path_for_key(SNAPSHOT_KEY_DAY_1)
         snapshot_path.parent.mkdir(parents=True, exist_ok=True)
         snapshot_path.write_bytes(
             _zstd_ndjson(
@@ -1840,55 +1741,13 @@ def test_replay_ignores_legacy_flat_snapshot_data_files(tmp_path) -> None:
         client.close()
 
 
-def test__iter_local_events_filters_across_materialized_days(tmp_path) -> None:
-    client = make_client(lambda request: httpx.Response(500), dataset_root=tmp_path)
-    try:
-        day_one = client.layout.daily_path_for_dataset_day(
-            "binance",
-            "BTC-USDT",
-            date(2024, 1, 1),
-        )
-        day_two = client.layout.daily_path_for_dataset_day(
-            "binance",
-            "BTC-USDT",
-            date(2024, 1, 2),
-        )
-        day_one.parent.mkdir(parents=True, exist_ok=True)
-        day_two.parent.mkdir(parents=True, exist_ok=True)
-        day_one.write_bytes(
-            _zstd_ndjson(
-                [
-                    {"timestamp": 1704067200000},
-                    {"timestamp": 1704110400000},
-                ]
-            )
-        )
-        day_two.write_bytes(_zstd_ndjson([{"timestamp": 1704153600000}]))
-
-        rows = list(
-            client._iter_local_events(
-                source="binance",
-                market="BTC-USDT",
-                from_="2024-01-01T12:00:00Z",
-                to="2024-01-02T00:00:00Z",
-            )
-        )
-        assert rows == [{"timestamp": 1704110400000}]
-    finally:
-        client.close()
-
-
 def test_replay_reads_local_snapshot_day_files_before_network(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("network should not be called when local daily files exist")
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        daily_path = client.layout.daily_path_for_dataset_day(
-            "binance",
-            "BTC-USDT",
-            date(2024, 1, 1),
-        )
+        daily_path = tmp_path / "daily" / "binance" / "BTC-USDT" / "2024-01-01.jsonl.zst"
         daily_path.parent.mkdir(parents=True, exist_ok=True)
         daily_path.write_bytes(
             _zstd_ndjson(
@@ -1915,69 +1774,36 @@ def test_replay_reads_local_snapshot_day_files_before_network(tmp_path) -> None:
         client.close()
 
 
-def test_replay_uses_direct_daily_paths_without_scanning_tree(tmp_path) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError("network should not be called when local daily files exist")
-
-    client = make_client(handler, dataset_root=tmp_path)
+def test_replay_parallel_chunks_standard_replay_in_order(tmp_path) -> None:
+    client = make_client(
+        lambda request: (_ for _ in ()).throw(
+            AssertionError("network should not be called when local daily files exist")
+        ),
+        dataset_root=tmp_path,
+    )
     try:
-        daily_path = client.layout.daily_path_for_dataset_day(
-            "binance",
-            "BTC-USDT",
-            date(2024, 1, 1),
-        )
-        daily_path.parent.mkdir(parents=True, exist_ok=True)
-        daily_path.write_bytes(_zstd_ndjson([{"timestamp": 1704067200000}]))
+        for day, timestamp in [
+            ("2024-01-01", 1704067200000),
+            ("2024-01-02", 1704153600000),
+            ("2024-01-03", 1704240000000),
+        ]:
+            path = tmp_path / "daily" / "binance" / "BTC-USDT" / f"{day}.jsonl.zst"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(_zstd_ndjson([{"timestamp": timestamp}]))
 
-        def fail_scan():
-            raise AssertionError("daily tree scan should not be used for known replay days")
-
-        client.layout.list_local_daily_artifacts = fail_scan  # type: ignore[method-assign]
-
-        rows = list(
+        assert list(
             client.replay(
                 source="binance",
                 market="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
-                to="2024-01-02T00:00:00Z",
+                to="2024-01-04T00:00:00Z",
+                parallel=True,
             )
-        )
-        assert rows == [{"timestamp": 1704067200000}]
-    finally:
-        client.close()
-
-
-def test__iter_local_events_stops_after_to_boundary_on_ordered_day_files(tmp_path) -> None:
-    client = make_client(lambda request: httpx.Response(500), dataset_root=tmp_path)
-    try:
-        day_one = client.layout.daily_path_for_dataset_day(
-            "binance",
-            "BTC-USDT",
-            date(2024, 1, 1),
-        )
-        day_two = client.layout.daily_path_for_dataset_day(
-            "binance",
-            "BTC-USDT",
-            date(2024, 1, 2),
-        )
-        day_one.parent.mkdir(parents=True, exist_ok=True)
-        day_two.parent.mkdir(parents=True, exist_ok=True)
-        day_one.write_bytes(_zstd_ndjson([{"timestamp": 1704110400000}]))
-        day_two.write_bytes(
-            zstd.ZstdCompressor().compress(
-                b'{"timestamp":1704175200000}\nnot-json\n'
-            )
-        )
-
-        rows = list(
-            client._iter_local_events(
-                source="binance",
-                market="BTC-USDT",
-                from_="2024-01-01T12:00:00Z",
-                to="2024-01-02T06:00:00Z",
-            )
-        )
-        assert rows == [{"timestamp": 1704110400000}]
+        ) == [
+            {"timestamp": 1704067200000},
+            {"timestamp": 1704153600000},
+            {"timestamp": 1704240000000},
+        ]
     finally:
         client.close()
 
@@ -2611,14 +2437,7 @@ def test_raw_replay_raises_stream_decode_error_for_invalid_cached_zstd(tmp_path)
         replay_cache_dir=tmp_path,
     )
     try:
-        cache_name = client._default_dataset_filename(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
-            standard=False,
-        )
-        (tmp_path / cache_name).with_suffix("").write_bytes(b"not-zs")
+        _raw_replay_cache_path(tmp_path).write_bytes(b"not-zs")
 
         with pytest.raises(StreamDecodeError):
             list(
@@ -2650,14 +2469,7 @@ def test_raw_replay_reads_cached_rows_without_api_call(tmp_path) -> None:
         replay_cache_dir=tmp_path,
     )
     try:
-        cache_name = client._default_dataset_filename(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
-            standard=False,
-        )
-        (tmp_path / cache_name).with_suffix("").write_bytes(b'{"timestamp":99}\n')
+        _raw_replay_cache_path(tmp_path).write_bytes(b'{"timestamp":99}\n')
 
         rows = list(
             client.replay(
@@ -2724,6 +2536,32 @@ def test_raw_replay_populates_cache_and_reuses_on_new_client(tmp_path) -> None:
         ) == [{"timestamp": 31}, {"timestamp": 32}]
     finally:
         offline_client.close()
+
+
+def test_raw_replay_discards_partial_cache_when_iterator_is_dropped(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/raw"
+        return httpx.Response(
+            200,
+            content=_zstd_ndjson([{"timestamp": 1}, {"timestamp": 2}]),
+            headers={"content-type": "application/zstd"},
+        )
+
+    client = make_client(handler, replay_cache_enabled=True, replay_cache_dir=tmp_path)
+    try:
+        iterator = client.replay(
+            source="binance",
+            market="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T01:00:00Z",
+            standard=False,
+        )
+        assert next(iterator) == {"timestamp": 1}
+        iterator.close()
+        assert not _raw_replay_cache_path(tmp_path).exists()
+        assert not list(tmp_path.glob("*.part"))
+    finally:
+        client.close()
 
 
 def test_replay_allows_standard_false_for_raw() -> None:
