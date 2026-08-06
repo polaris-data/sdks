@@ -5,6 +5,7 @@ mod errors;
 mod http;
 mod models;
 mod ohlcv;
+mod realtime;
 mod replay;
 mod storage;
 mod time;
@@ -17,7 +18,8 @@ pub use models::{
     DepthMetricsRow, Diagnostic, DownloadManifestEntry, DownloadManifestQuery,
     DownloadManifestResponse, HistoricalQuery, ListSnapshotsQuery, OhlcvBar, OhlcvFormat,
     OhlcvInterval, OhlcvOutput, OhlcvQuery, OrderbookData, OrderbookEvent, OrderbookLevel,
-    PointSeriesData, PointSeriesEvent, RawQuery, RawReplayQuery, RawReplayStream, ReplayQuery,
-    ReplayStream, SnapshotEntry, StandardEvent, TimeInput, TradeData, TradeEvent,
-    TradingViewCandle, TradingViewOhlcv, TradingViewVolume, VolatilityBar, VolumeBar, VwapBar,
+    PointSeriesData, PointSeriesEvent, RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream,
+    ReplayQuery, ReplayStream, SnapshotEntry, StandardEvent, StreamQuery, TimeInput, TradeData,
+    TradeEvent, TradingViewCandle, TradingViewOhlcv, TradingViewVolume, VolatilityBar, VolumeBar,
+    VwapBar,
 };

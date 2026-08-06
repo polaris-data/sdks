@@ -41,6 +41,17 @@ class StreamDecodeError(PolarisError):
     """Raised when NDJSON stream decoding fails."""
 
 
+class StreamConnectionError(PolarisError):
+    """Raised when a realtime stream cannot establish or retain a connection."""
+
+
+@dataclass
+class StreamProtocolError(PolarisError):
+    """Raised when the realtime server rejects or violates the stream protocol."""
+
+    code: str | None = None
+
+
 class AccessDeniedError(PolarisError):
     """Raised when the requested data requires authentication the client does not have."""
 

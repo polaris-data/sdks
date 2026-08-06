@@ -24,6 +24,7 @@ import type {
   SnapshotDownloadManifest,
   SnapshotDownloadManifestOptions,
   SnapshotEntry,
+  StreamOptions,
   TradingViewOhlcvResponse,
   VolumeBar,
   VolumeOptions,
@@ -53,6 +54,7 @@ import {
 import { OhlcvAggregator } from "./aggregator";
 import type { IStorage } from "./storage/interface";
 import type { PolarisRuntime } from "./runtime/types";
+import { RealtimeStream } from "./realtime";
 
 // ---------------------------------------------------------------------------
 // SDK version – bumped manually during releases
@@ -108,6 +110,24 @@ interface LocalSnapshotFileEntry extends SnapshotEntry {
 const DEFAULT_INFERRED_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1_000;
 const DEFAULT_SNAPSHOT_DOWNLOAD_CONCURRENCY = 8;
 
+function resolveStreamUrl(baseUrl: URL, explicit?: string): string {
+  if (explicit) {
+    const url = new URL(explicit);
+    if (url.protocol !== "ws:" && url.protocol !== "wss:") {
+      throw new PolarisError("streamUrl must use ws:// or wss://");
+    }
+    return url.toString();
+  }
+  const url = new URL(baseUrl.toString());
+  if (url.protocol === "https:") url.protocol = "wss:";
+  else if (url.protocol === "http:") url.protocol = "ws:";
+  else throw new PolarisError(`Cannot derive streamUrl from ${url.protocol}`);
+  url.pathname = "/stream";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
 // ===========================================================================
 // BasePolarisClient
 // ===========================================================================
@@ -115,6 +135,7 @@ const DEFAULT_SNAPSHOT_DOWNLOAD_CONCURRENCY = 8;
 export class BasePolarisClient {
   private readonly _apiKey: string | undefined;
   private readonly _baseUrl: URL;
+  private readonly _streamUrl: string;
   private readonly _timeout: number;
   private readonly _fetch: FetchLike;
   private readonly _root: string;
@@ -122,6 +143,8 @@ export class BasePolarisClient {
   private readonly _snapshotDownloadConcurrency: number;
   private _storage: IStorage | undefined;
   private _layout: StorageLayout | undefined;
+  private readonly _streams = new Set<RealtimeStream>();
+  private _closed = false;
 
   constructor(
     options: PolarisClientOptions = {},
@@ -129,6 +152,7 @@ export class BasePolarisClient {
   ) {
     this._apiKey = runtime.resolveApiKey(options.apiKey);
     this._baseUrl = new URL(options.baseUrl ?? "https://api.polaris.supply");
+    this._streamUrl = resolveStreamUrl(this._baseUrl, options.streamUrl);
     this._timeout = options.timeout ?? 30_000;
     this._fetch = options.fetch ?? globalThis.fetch;
     this._root = runtime.resolveRoot(options.datasetRoot);
@@ -161,6 +185,19 @@ export class BasePolarisClient {
   /** Check API availability. */
   async health(): Promise<Json> {
     return this._getJson("/health", { auth: "none" });
+  }
+
+  stream(options: StreamOptions): RealtimeStream {
+    if (this._closed) throw new PolarisError("PolarisClient is closed");
+    let realtime!: RealtimeStream;
+    realtime = new RealtimeStream(options, {
+      streamUrl: this._streamUrl,
+      apiKey: this._apiKey,
+      runtime: this._runtime,
+      onClose: () => this._streams.delete(realtime),
+    });
+    this._streams.add(realtime);
+    return realtime;
   }
 
   /**
@@ -567,8 +604,13 @@ export class BasePolarisClient {
   // Lifecycle
   // -----------------------------------------------------------------------
 
-  /** Release resources. Currently a no-op (reserved for future use). */
-  close(): void {}
+  /** Close all active realtime streams and release client resources. */
+  close(): void {
+    if (this._closed) return;
+    this._closed = true;
+    for (const stream of [...this._streams]) stream.close();
+    this._streams.clear();
+  }
 
   /** Async disposable support (Node ≥ 18 / TypeScript ≥ 5.2). */
   async [Symbol.asyncDispose](): Promise<void> {

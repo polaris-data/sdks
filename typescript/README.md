@@ -66,13 +66,14 @@ console.log(`Fetched ${rows.length} events`);
 new PolarisClient({
   apiKey?: string,       // optional — omit for public access, or set POLARIS_API_KEY
   baseUrl?: string,       // defaults to "https://api.polaris.supply"
+  streamUrl?: string,     // defaults to wss://<API origin>/stream
   timeout?: number,       // request timeout in ms (default 30 000)
   fetch?: FetchLike,      // custom fetch for testing / proxies
   datasetRoot?: string,   // override local dataset root
 });
 ```
 
-Use it to inspect available data and query historical market data.
+Use it to inspect available data, query historical market data, and open realtime streams.
 
 ### Discovery
 
@@ -87,6 +88,7 @@ Use it to inspect available data and query historical market data.
 | Method | Returns | Use case |
 | --- | --- | --- |
 | `replay(opts)` | Async iterator of historical events | Backfills and replay-style processing without materializing everything up front |
+| `stream(opts)` | Closeable async iterable of realtime events | Open-ended normalized market data for one source and up to 1,000 markets |
 | `raw(opts)` | Throws `PolarisError` in the TypeScript SDK | Reserved for parity with other SDKs; TypeScript historical access remains snapshot-first |
 | `getSnapshotDownloadUrls(opts)` | Daily bulk manifest with pre-signed snapshot URLs | Bulk historical downloads for a single `source` / `market` / UTC `date` |
 
@@ -109,6 +111,32 @@ Use it to inspect available data and query historical market data.
 
 All snapshot-based methods accept `from` and `to` as ISO 8601 strings, `Date`, or epoch microseconds. If one or both bounds are omitted, the client infers a bounded range from catalog metadata.
 `replay({ standard: false })` is not supported in the TypeScript SDK.
+
+### Realtime stream
+
+```ts
+import { PolarisClient } from "polaris-data";
+
+const client = new PolarisClient({ apiKey: "polaris_key_your_key" });
+const events = client.stream({
+  source: "binance",
+  markets: ["BTC-USDT", "ETH-USDT"],
+});
+
+try {
+  for await (const event of events) {
+    console.log(event);
+  }
+} finally {
+  events.close();
+  client.close();
+}
+```
+
+The browser build uses the native browser WebSocket implementation; Node uses
+the bundled Node transport. Streams reconnect automatically after transport
+failures. Because the live protocol has no resume cursor, reconnects can contain
+gaps or duplicate events. Authentication and protocol errors are terminal.
 
 ## Examples
 

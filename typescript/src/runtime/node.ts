@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
+import WebSocket from "ws";
 
 import { NodeStorage } from "../storage/node/index";
 import type { PolarisRuntime } from "./types";
@@ -41,5 +42,9 @@ export const nodeRuntime: PolarisRuntime = {
 
   async createStorage(root) {
     return new NodeStorage(root);
+  },
+
+  createWebSocket(url) {
+    return new WebSocket(url) as unknown as import("./types").WebSocketLike;
   },
 };

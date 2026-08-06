@@ -85,6 +85,13 @@ pub struct ReplayQuery {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamQuery {
+    pub source: String,
+    pub markets: Vec<String>,
+    pub include_buffer: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawQuery {
     pub source: String,
     pub market: String,
@@ -303,6 +310,7 @@ pub enum OhlcvOutput {
 
 pub type ReplayStream = Pin<Box<dyn Stream<Item = Result<StandardEvent, PolarisError>> + Send>>;
 pub type RawReplayStream = Pin<Box<dyn Stream<Item = Result<Value, PolarisError>> + Send>>;
+pub type RealtimeStream = Pin<Box<dyn Stream<Item = Result<StandardEvent, PolarisError>> + Send>>;
 
 // Orderbook-related types
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

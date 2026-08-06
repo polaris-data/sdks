@@ -223,27 +223,19 @@ const client = new PolarisClient({
   apiKey: "your-api-key",
 });
 
-async function loadChartData() {
-  const ohlcv = await client.ohlcv({
-    exchange: 'binance',
-    symbol: 'BTC-USDT',
-    from: '2024-01-01',
-    to: '2024-01-31',
-    interval: '1h',
-  });
+const events = client.stream({
+  source: "binance",
+  markets: ["BTC-USDT"],
+});
 
-  return ohlcv.map(bar => ({
-    time: bar.timestamp,
-    open: bar.open,
-    high: bar.high,
-    low: bar.low,
-    close: bar.close,
-  }));
+try {
+  for await (const event of events) {
+    updateChart(event);
+  }
+} finally {
+  events.close();
+  client.close();
 }
-
-// Use with your charting library
-const chartData = await loadChartData();
-updateChart(chartData);
 ```
 
 ### Market Analysis Dashboard

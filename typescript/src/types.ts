@@ -279,6 +279,8 @@ export interface PolarisClientOptions {
   apiKey?: string;
   /** API base URL. Defaults to `https://api.polaris.supply`. */
   baseUrl?: string;
+  /** Realtime WebSocket URL. Defaults to `/stream` on the API origin. */
+  streamUrl?: string;
   /** Request timeout in milliseconds. Defaults to `30 000` (30 s). */
   timeout?: number;
   /** Custom fetch implementation (useful for testing or proxies). */
@@ -369,6 +371,12 @@ export interface ReplayOptions {
   to?: TimeInput;
   /** `true` (default) streams standardised events from local snapshots. */
   standard?: boolean;
+}
+
+export interface StreamOptions {
+  source: string;
+  markets: string[];
+  includeBuffer?: boolean;
 }
 
 export interface SnapshotDownloadManifestOptions {

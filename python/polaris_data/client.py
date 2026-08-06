@@ -7,7 +7,7 @@ import os
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 from . import _native
 from .errors import (
@@ -16,6 +16,8 @@ from .errors import (
     PolarisError,
     RateLimitedError,
     StreamDecodeError,
+    StreamConnectionError,
+    StreamProtocolError,
     UnauthorizedError,
 )
 from .models import CatalogResponse, JSONDict, SnapshotEntry
@@ -24,6 +26,44 @@ from .utils import TimeInput, to_iso8601
 DEFAULT_BASE_URL = "https://api.polaris.supply"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_NETWORK_CHUNK_SIZE = 8 * 1024 * 1024
+
+
+class RealtimeStream(Iterator[JSONDict]):
+    """Closeable iterator of normalized realtime market events."""
+
+    def __init__(self, client: "PolarisClient", iterator: Iterator[JSONDict]) -> None:
+        self._client = client
+        self._iterator: Iterator[JSONDict] | None = iterator
+
+    def __iter__(self) -> "RealtimeStream":
+        return self
+
+    def __next__(self) -> JSONDict:
+        if self._iterator is None:
+            raise StopIteration
+        try:
+            return next(self._iterator)
+        except _native.NativeError as error:
+            self.close()
+            raise self._client._translate_native_error(error, "stream") from None
+        except StopIteration:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        if self._iterator is not None:
+            close = getattr(self._iterator, "close", None)
+            if close is not None:
+                close()
+            self._iterator = None
+            self._client._streams.discard(self)
+            self._client._emit_diagnostics()
+
+    def __enter__(self) -> "RealtimeStream":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.close()
 
 
 class PolarisClient:
@@ -38,6 +78,7 @@ class PolarisClient:
         dataset_download_dir: str | os.PathLike[str] | None = None,
         replay_cache_enabled: bool = True,
         replay_cache_dir: str | os.PathLike[str] | None = None,
+        stream_url: str | None = None,
     ) -> None:
         self.api_key = api_key or os.getenv("POLARIS_API_KEY")
         self.base_url = base_url.rstrip("/")
@@ -51,6 +92,7 @@ class PolarisClient:
             self.base_url,
             timeout,
             explicit_root,
+            stream_url,
         )
         self.dataset_root = Path(self._native.dataset_root)
         self.dataset_download_dir = self.dataset_root
@@ -61,6 +103,7 @@ class PolarisClient:
             else Path(self._native.replay_cache_dir)
         )
         self._closed = False
+        self._streams: set[RealtimeStream] = set()
 
     @staticmethod
     def _resolve_explicit_root(
@@ -86,6 +129,8 @@ class PolarisClient:
 
     def close(self) -> None:
         if not self._closed:
+            for stream in list(self._streams):
+                stream.close()
             self._native.close()
             self._closed = True
 
@@ -144,6 +189,16 @@ class PolarisClient:
             )
         if kind == "stream_decode":
             return StreamDecodeError(message, status_code, body)
+        if kind == "stream_connection":
+            return StreamConnectionError(message, status_code, body)
+        if kind == "stream_protocol":
+            code = payload.get("code")
+            return StreamProtocolError(
+                message,
+                status_code,
+                body,
+                code if isinstance(code, str) else None,
+            )
         if kind == "coverage_gap":
             label = operation or "replay"
             return PolarisError(
@@ -175,6 +230,19 @@ class PolarisClient:
 
     def health(self) -> JSONDict:
         return self._call("health")
+
+    def stream(
+        self,
+        *,
+        source: str,
+        markets: Sequence[str],
+        include_buffer: bool = False,
+    ) -> RealtimeStream:
+        """Open a reconnecting realtime stream of normalized market events."""
+        iterator = self._call("stream", source, list(markets), include_buffer)
+        stream = RealtimeStream(self, iterator)
+        self._streams.add(stream)
+        return stream
 
     def catalog(
         self,
