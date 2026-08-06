@@ -47,6 +47,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/ws": "^8.18.1",
     "tsup": "^8.0.0",
     "typescript": "^5.5.0",
     "webpack": "^5.99.9"
@@ -67,6 +68,7 @@
     "client-side"
   ],
   "dependencies": {
-    "fzstd": "^0.1.1"
+    "fzstd": "^0.1.1",
+    "ws": "^8.18.3"
   }
 }

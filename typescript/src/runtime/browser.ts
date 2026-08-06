@@ -15,4 +15,12 @@ export const browserRuntime: PolarisRuntime = {
   async createStorage() {
     return new BrowserStorage();
   },
+
+  createWebSocket(url) {
+    const Constructor = (globalThis as unknown as {
+      WebSocket?: new (value: string) => import("./types").WebSocketLike;
+    }).WebSocket;
+    if (!Constructor) throw new Error("WebSocket is not available in this browser");
+    return new Constructor(url);
+  },
 };

@@ -4,10 +4,13 @@ export {
   NotFoundError,
   RateLimitedError,
   StreamDecodeError,
+  StreamConnectionError,
+  StreamProtocolError,
   DownloadNotAllowedError,
 } from "./errors";
 
 export { OhlcvAggregator } from "./aggregator";
+export { RealtimeStream } from "./realtime";
 
 export type {
   TimeInput,
@@ -56,5 +59,6 @@ export type {
   DepthMetricsOptions,
   ListSnapshotsOptions,
   ReplayOptions,
+  StreamOptions,
   SnapshotDownloadManifestOptions,
 } from "./types";

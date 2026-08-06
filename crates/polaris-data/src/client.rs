@@ -18,10 +18,10 @@ use crate::{
         DepthMetricsRow, Diagnostic, DownloadManifestQuery, DownloadManifestResponse,
         HistoricalQuery, ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OrderbookData,
         OrderbookEvent, OrderbookLevel, PointSeriesData, PointSeriesEvent, RawQuery,
-        RawReplayQuery, RawReplayStream, ReplayQuery, ReplayStream, SnapshotEntry, StandardEvent,
-        TradeData, TradeEvent, VolatilityBar, VolumeBar, VwapBar,
+        RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, ReplayStream, SnapshotEntry,
+        StandardEvent, StreamQuery, TradeData, TradeEvent, VolatilityBar, VolumeBar, VwapBar,
     },
-    ohlcv, replay,
+    ohlcv, realtime, replay,
     storage::{
         LocalSnapshotFile, StorageLayout, acquire_sync_lock, data_file_path,
         list_local_snapshot_entries, parse_snapshot_key, temp_file_path,
@@ -38,6 +38,7 @@ pub struct PolarisClient {
     layout: StorageLayout,
     http: HttpClient,
     diagnostics: Arc<Mutex<Vec<Diagnostic>>>,
+    stream_url: url::Url,
 }
 
 impl PolarisClient {
@@ -49,12 +50,14 @@ impl PolarisClient {
         api_key: Option<String>,
         layout: StorageLayout,
         http: HttpClient,
+        stream_url: url::Url,
     ) -> Self {
         Self {
             api_key,
             layout,
             http,
             diagnostics: Arc::new(Mutex::new(Vec::new())),
+            stream_url,
         }
     }
 
@@ -80,6 +83,10 @@ impl PolarisClient {
 
     pub async fn health(&self) -> Result<Value, PolarisError> {
         self.http.get_json("/health", &[], AuthMode::None).await
+    }
+
+    pub async fn stream(&self, query: StreamQuery) -> Result<RealtimeStream, PolarisError> {
+        realtime::open_stream(self.stream_url.clone(), self.api_key.clone(), query).await
     }
 
     pub async fn catalog(&self, query: CatalogQuery) -> Result<CatalogResponse, PolarisError> {

@@ -69,6 +69,20 @@ export class StreamDecodeError extends PolarisError {
   override readonly name: string = "StreamDecodeError";
 }
 
+export class StreamConnectionError extends PolarisError {
+  override readonly name: string = "StreamConnectionError";
+}
+
+export class StreamProtocolError extends PolarisError {
+  override readonly name: string = "StreamProtocolError";
+  readonly code: string | undefined;
+
+  constructor(message: string, code?: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Download blocked by server policy
 // ---------------------------------------------------------------------------

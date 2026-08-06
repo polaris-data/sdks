@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use polaris_data::{
     HistoricalQuery, ListSnapshotsQuery, OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery,
-    PolarisError, RawQuery, RawReplayQuery, ReplayQuery, TimeInput,
+    PolarisError, RawQuery, RawReplayQuery, ReplayQuery, StreamQuery, TimeInput,
     blocking::{self, RawReplayCacheConfig},
 };
 use pyo3::{
@@ -81,6 +81,12 @@ fn native_error(error: PolarisError) -> PyErr {
         }
         PolarisError::Io(error) => json!({"kind": "io", "message": error.to_string()}),
         PolarisError::Request(message) => json!({"kind": "request", "message": message}),
+        PolarisError::StreamConnection(message) => {
+            json!({"kind": "stream_connection", "message": message})
+        }
+        PolarisError::StreamProtocol { code, message } => {
+            json!({"kind": "stream_protocol", "code": code, "message": message})
+        }
         PolarisError::BlockingInAsyncRuntime => json!({
             "kind": "blocking_in_async_runtime",
             "message": "blocking Polaris client cannot run inside an active Tokio runtime; use the async client",
@@ -175,12 +181,13 @@ struct NativeClient {
 #[allow(clippy::too_many_arguments)]
 impl NativeClient {
     #[new]
-    #[pyo3(signature = (api_key=None, base_url="https://api.polaris.supply", timeout=30.0, dataset_root=None))]
+    #[pyo3(signature = (api_key=None, base_url="https://api.polaris.supply", timeout=30.0, dataset_root=None, stream_url=None))]
     fn new(
         api_key: Option<String>,
         base_url: &str,
         timeout: f64,
         dataset_root: Option<PathBuf>,
+        stream_url: Option<String>,
     ) -> PyResult<Self> {
         if !timeout.is_finite() || timeout <= 0.0 {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -195,6 +202,9 @@ impl NativeClient {
         }
         if let Some(dataset_root) = dataset_root {
             builder = builder.dataset_root(dataset_root);
+        }
+        if let Some(stream_url) = stream_url {
+            builder = builder.stream_url(stream_url);
         }
         Ok(Self {
             inner: builder.build().map_err(native_error)?,
@@ -216,6 +226,28 @@ impl NativeClient {
     }
 
     fn close(&self) {}
+
+    #[pyo3(signature = (source, markets, include_buffer=false))]
+    fn stream(
+        &self,
+        py: Python<'_>,
+        source: String,
+        markets: Vec<String>,
+        include_buffer: bool,
+    ) -> PyResult<NativeRealtimeStream> {
+        let iterator = py
+            .detach(|| {
+                self.inner.stream(StreamQuery {
+                    source,
+                    markets,
+                    include_buffer,
+                })
+            })
+            .map_err(native_error)?;
+        Ok(NativeRealtimeStream {
+            iterator: Some(iterator),
+        })
+    }
 
     fn take_diagnostics(&self) -> Vec<String> {
         self.inner
@@ -707,6 +739,39 @@ struct NativeReplay {
     iterator: Option<NativeReplayIterator>,
 }
 
+#[pyclass(unsendable, module = "polaris_data._native")]
+struct NativeRealtimeStream {
+    iterator: Option<blocking::RealtimeIterator>,
+}
+
+#[pymethods]
+impl NativeRealtimeStream {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        loop {
+            let Some(iterator) = self.iterator.as_mut() else {
+                return Ok(None);
+            };
+            match py.detach(|| iterator.next_timeout(std::time::Duration::from_millis(100))) {
+                blocking::RealtimePoll::Event(Ok(value)) => return to_python(py, &value).map(Some),
+                blocking::RealtimePoll::Event(Err(error)) => return Err(native_error(error)),
+                blocking::RealtimePoll::Pending => py.check_signals()?,
+                blocking::RealtimePoll::Closed => {
+                    self.iterator = None;
+                    return Ok(None);
+                }
+            }
+        }
+    }
+
+    fn close(&mut self) {
+        self.iterator = None;
+    }
+}
+
 enum NativeReplayIterator {
     Single(blocking::ReplayIterator),
     Chunked(Box<blocking::ChunkedReplayIterator>),
@@ -786,6 +851,7 @@ fn decode_file<'py>(py: Python<'py>, path: PathBuf) -> PyResult<Bound<'py, PyAny
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeClient>()?;
     module.add_class::<NativeReplay>()?;
+    module.add_class::<NativeRealtimeStream>()?;
     module.add_class::<NativeRawReplay>()?;
     module.add_function(wrap_pyfunction!(decode_file, module)?)?;
     module.add("NativeError", module.py().get_type::<NativeError>())?;

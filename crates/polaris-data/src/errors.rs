@@ -41,6 +41,13 @@ pub enum PolarisError {
     Decode(String),
     #[error("request failed: {0}")]
     Request(String),
+    #[error("realtime stream connection failed: {0}")]
+    StreamConnection(String),
+    #[error("realtime stream protocol error{code_suffix}: {message}", code_suffix = code.as_ref().map(|value| format!(" ({value})")).unwrap_or_default())]
+    StreamProtocol {
+        code: Option<String>,
+        message: String,
+    },
     #[error(
         "blocking Polaris client cannot run inside an active Tokio runtime; use the async client"
     )]

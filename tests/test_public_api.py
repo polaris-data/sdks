@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import json
 from dataclasses import fields, is_dataclass
 from typing import Any, get_type_hints
 
+import pytest
 import polaris_data
 from polaris_data import (
     AccessDeniedError,
@@ -22,8 +24,11 @@ from polaris_data import (
     PolarisClient,
     PolarisError,
     RateLimitedError,
+    RealtimeStream,
     SnapshotEntry,
+    StreamConnectionError,
     StreamDecodeError,
+    StreamProtocolError,
     UnauthorizedError,
 )
 from polaris_data.models import JSONDict
@@ -51,8 +56,11 @@ def test_top_level_exports_are_stable() -> None:
         "PolarisClient",
         "PolarisError",
         "RateLimitedError",
+        "RealtimeStream",
         "SnapshotEntry",
         "StreamDecodeError",
+        "StreamConnectionError",
+        "StreamProtocolError",
         "UnauthorizedError",
     ]
 
@@ -67,6 +75,7 @@ def test_client_constructor_signature_and_defaults_are_stable() -> None:
         ("dataset_download_dir", positional, None),
         ("replay_cache_enabled", positional, True),
         ("replay_cache_dir", positional, None),
+        ("stream_url", positional, None),
     ]
 
 
@@ -101,6 +110,12 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("chunk_size", keyword_only, None),
         ("timeout", keyword_only, None),
         ("parallel", keyword_only, False),
+    ]
+    assert _parameters(PolarisClient.stream) == [
+        ("self", positional, required),
+        ("source", keyword_only, required),
+        ("markets", keyword_only, required),
+        ("include_buffer", keyword_only, False),
     ]
 
     historical_methods = [
@@ -178,6 +193,7 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
     assert inspect.signature(PolarisClient.catalog).return_annotation == "CatalogResponse | JSONDict"
     assert inspect.signature(PolarisClient.list_snapshots).return_annotation == "list[SnapshotEntry]"
     assert inspect.signature(PolarisClient.replay).return_annotation == "Iterator[JSONDict]"
+    assert inspect.signature(PolarisClient.stream).return_annotation == "RealtimeStream"
     assert inspect.signature(PolarisClient.ohlcv).return_annotation == "list[JSONDict] | JSONDict"
 
     assert get_type_hints(CatalogResponse) == {
@@ -213,9 +229,65 @@ def test_error_hierarchy_is_stable() -> None:
         NotFoundError,
         RateLimitedError,
         StreamDecodeError,
+        StreamConnectionError,
+        StreamProtocolError,
         DownloadNotAllowedError,
     ]:
         assert error.__bases__ == (PolarisError,)
+
+
+def test_realtime_stream_is_closeable_and_unregisters_from_client() -> None:
+    class NativeIterator:
+        def __init__(self) -> None:
+            self.closed = False
+            self.rows = iter([{"timestamp": 1, "source": "afx", "market": "AAPLUSDC", "type": "trade", "data": {}}])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self.rows)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class Owner:
+        def __init__(self) -> None:
+            self._streams: set[RealtimeStream] = set()
+
+        def _emit_diagnostics(self) -> None:
+            pass
+
+    owner = Owner()
+    native = NativeIterator()
+    stream = RealtimeStream(owner, native)  # type: ignore[arg-type]
+    owner._streams.add(stream)
+    assert next(stream)["market"] == "AAPLUSDC"
+    stream.close()
+    assert native.closed
+    assert stream not in owner._streams
+    with pytest.raises(StopIteration):
+        next(stream)
+
+
+def test_realtime_native_errors_are_translated() -> None:
+    connection = PolarisClient._translate_native_error(
+        Exception(json.dumps({"kind": "stream_connection", "message": "offline"}))
+    )
+    protocol = PolarisClient._translate_native_error(
+        Exception(
+            json.dumps(
+                {
+                    "kind": "stream_protocol",
+                    "code": "forbidden",
+                    "message": "denied",
+                }
+            )
+        )
+    )
+    assert isinstance(connection, StreamConnectionError)
+    assert isinstance(protocol, StreamProtocolError)
+    assert protocol.code == "forbidden"
 
 
 def test_removed_legacy_layout_module_is_not_importable() -> None:

@@ -1,6 +1,6 @@
 """Python SDK for the Polaris market data API."""
 
-from .client import PolarisClient
+from .client import PolarisClient, RealtimeStream
 from .errors import (
     AccessDeniedError,
     DownloadNotAllowedError,
@@ -8,6 +8,8 @@ from .errors import (
     PolarisError,
     RateLimitedError,
     StreamDecodeError,
+    StreamConnectionError,
+    StreamProtocolError,
     UnauthorizedError,
 )
 from .models import (
@@ -35,8 +37,11 @@ __all__ = [
     "PolarisClient",
     "PolarisError",
     "RateLimitedError",
+    "RealtimeStream",
     "SnapshotEntry",
     "StreamDecodeError",
+    "StreamConnectionError",
+    "StreamProtocolError",
     "UnauthorizedError",
 ]
 

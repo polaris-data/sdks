@@ -93,6 +93,48 @@ For synchronous Rust applications use
 `PolarisError::BlockingInAsyncRuntime` when called from an active Tokio runtime,
 instead of panicking.
 
+## Realtime streams
+
+`stream(...)` opens an unbounded WebSocket feed of the same standardized event
+shape returned by `replay(...)`. A stream covers one source and up to 1,000
+markets, reconnects automatically after transport failures, and closes when its
+iterator is dropped or explicitly closed.
+
+```python
+from polaris_data import PolarisClient
+
+with PolarisClient(api_key="polaris_key_your_key") as client:
+    with client.stream(source="binance", markets=["BTC-USDT", "ETH-USDT"]) as events:
+        for event in events:
+            print(event)
+```
+
+The equivalent async Rust workflow is:
+
+```rust,no_run
+use futures_util::StreamExt;
+use polaris_data::{PolarisClient, StreamQuery};
+
+#[tokio::main]
+async fn main() -> Result<(), polaris_data::PolarisError> {
+    let client = PolarisClient::builder().build()?;
+    let mut events = client.stream(StreamQuery {
+        source: "binance".into(),
+        markets: vec!["BTC-USDT".into(), "ETH-USDT".into()],
+        include_buffer: false,
+    }).await?;
+
+    while let Some(event) = events.next().await {
+        println!("{:?}", event?);
+    }
+    Ok(())
+}
+```
+
+Reconnection is best-effort: the current live protocol has no resume cursor,
+so a reconnect can introduce a gap or duplicate event. Protocol and
+authentication errors are terminal and are not retried.
+
 ## PolarisClient API
 
 `PolarisClient` is the main sync client for the SDK:
@@ -103,10 +145,11 @@ PolarisClient(
     base_url="https://api.polaris.supply",
     timeout=30.0,
     dataset_root=None,
+    stream_url=None,
 )
 ```
 
-Use it to inspect available data and query historical market data.
+Use it to inspect available data, query historical market data, and open realtime streams.
 
 ### Discovery
 
@@ -120,6 +163,7 @@ Use it to inspect available data and query historical market data.
 | Method | Returns | Use case |
 | --- | --- | --- |
 | `replay(source=..., market=..., from_=None, to=None, standard=True, allow_gaps=False, parallel=False)` | Iterator of historical events | Backfills, notebooks, and replay-style processing without materializing everything up front |
+| `stream(source=..., markets=[...], include_buffer=False)` | Closeable iterator of realtime events | Open-ended normalized market data with automatic reconnection |
 | `raw(source=..., market=..., from_=None, to=None, limit=1000)` | List of raw source payloads | Inspect exchange-native payloads and compare raw vs standardized schemas |
 
 ### Standardized Data Schemas

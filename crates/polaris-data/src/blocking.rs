@@ -19,8 +19,8 @@ use crate::{
     BboQuote, CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic, DownloadManifestQuery,
     DownloadManifestResponse, HistoricalQuery, ListSnapshotsQuery, OhlcvOutput, OhlcvQuery,
     OrderbookEvent, PointSeriesEvent, PolarisError, RawQuery, RawReplayQuery, RawReplayStream,
-    ReplayQuery, ReplayStream, SnapshotEntry, StandardEvent, TimeInput, TradeEvent, VolatilityBar,
-    VolumeBar, VwapBar,
+    RealtimeStream, ReplayQuery, ReplayStream, SnapshotEntry, StandardEvent, StreamQuery,
+    TimeInput, TradeEvent, VolatilityBar, VolumeBar, VwapBar,
 };
 
 const DEFAULT_REPLAY_CHUNK_HOURS: i64 = 24;
@@ -36,6 +36,7 @@ pub struct RawReplayCacheConfig {
 pub struct PolarisClientBuilder {
     api_key: Option<String>,
     base_url: String,
+    stream_url: Option<String>,
     timeout: Duration,
     dataset_root: Option<PathBuf>,
 }
@@ -45,6 +46,7 @@ impl Default for PolarisClientBuilder {
         Self {
             api_key: None,
             base_url: "https://api.polaris.supply".to_owned(),
+            stream_url: None,
             timeout: Duration::from_secs(30),
             dataset_root: None,
         }
@@ -66,6 +68,11 @@ impl PolarisClientBuilder {
         self
     }
 
+    pub fn stream_url(mut self, value: impl Into<String>) -> Self {
+        self.stream_url = Some(value.into());
+        self
+    }
+
     pub fn timeout(mut self, value: Duration) -> Self {
         self.timeout = value;
         self
@@ -80,6 +87,9 @@ impl PolarisClientBuilder {
         let mut builder = crate::PolarisClient::builder()
             .base_url(self.base_url)
             .timeout(self.timeout);
+        if let Some(stream_url) = self.stream_url {
+            builder = builder.stream_url(stream_url);
+        }
         if let Some(api_key) = self.api_key {
             builder = builder.api_key(api_key);
         }
@@ -169,6 +179,15 @@ impl PolarisClient {
 
     pub fn trades(&self, query: HistoricalQuery) -> Result<Vec<TradeEvent>, PolarisError> {
         self.run(self.inner.trades(query))
+    }
+
+    pub fn stream(&self, query: StreamQuery) -> Result<RealtimeIterator, PolarisError> {
+        let stream = self.run(self.inner.stream(query))?;
+        Ok(RealtimeIterator {
+            runtime: Arc::clone(&self.runtime),
+            stream,
+            failed_runtime_check: false,
+        })
     }
 
     pub fn replay(&self, query: ReplayQuery) -> Result<ReplayIterator, PolarisError> {
@@ -307,6 +326,53 @@ pub struct ReplayIterator {
     runtime: Arc<Runtime>,
     stream: ReplayStream,
     failed_runtime_check: bool,
+}
+
+pub struct RealtimeIterator {
+    runtime: Arc<Runtime>,
+    stream: RealtimeStream,
+    failed_runtime_check: bool,
+}
+
+pub enum RealtimePoll {
+    Event(Result<StandardEvent, PolarisError>),
+    Pending,
+    Closed,
+}
+
+impl RealtimeIterator {
+    pub fn next_timeout(&mut self, timeout: Duration) -> RealtimePoll {
+        if Handle::try_current().is_ok() {
+            if self.failed_runtime_check {
+                return RealtimePoll::Closed;
+            }
+            self.failed_runtime_check = true;
+            return RealtimePoll::Event(Err(PolarisError::BlockingInAsyncRuntime));
+        }
+        match self
+            .runtime
+            .block_on(tokio::time::timeout(timeout, self.stream.next()))
+        {
+            Ok(Some(event)) => RealtimePoll::Event(event),
+            Ok(None) => RealtimePoll::Closed,
+            Err(_) => RealtimePoll::Pending,
+        }
+    }
+}
+
+impl Iterator for RealtimeIterator {
+    type Item = Result<StandardEvent, PolarisError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if Handle::try_current().is_ok() {
+            if self.failed_runtime_check {
+                return None;
+            }
+            self.failed_runtime_check = true;
+            return Some(Err(PolarisError::BlockingInAsyncRuntime));
+        }
+        self.runtime.block_on(self.stream.next())
+    }
 }
 
 impl Iterator for ReplayIterator {
