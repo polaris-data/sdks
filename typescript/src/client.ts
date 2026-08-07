@@ -60,7 +60,7 @@ import { RealtimeStream } from "./realtime";
 // SDK version – bumped manually during releases
 // ---------------------------------------------------------------------------
 
-const VERSION = "0.5.2";
+const VERSION = "0.5.4";
 
 // ---------------------------------------------------------------------------
 // Internal shorthand

@@ -53,6 +53,20 @@ def python_runtime_version() -> str:
     raise ValueError(f"could not find a literal __version__ assignment in {init_path}")
 
 
+def typescript_runtime_version() -> str:
+    client_path = ROOT / "typescript/src/client.ts"
+    pattern = re.compile(
+        r'^\s*const\s+VERSION\s*=\s*"([^"]+)"\s*;\s*(?://.*)?$',
+        re.MULTILINE,
+    )
+    matches = pattern.findall(client_path.read_text())
+    if len(matches) == 1:
+        return matches[0]
+    raise ValueError(
+        f"could not find a unique literal VERSION assignment in {client_path}"
+    )
+
+
 def json_string(path: str, *keys: str) -> str:
     manifest_path = ROOT / path
     value: object = json.loads(manifest_path.read_text())
@@ -94,6 +108,7 @@ def version_sources(ecosystem: str) -> dict[str, str]:
         "typescript/package-lock.json packages[\"\"]": json_string(
             "typescript/package-lock.json", "packages", "", "version"
         ),
+        "typescript/src/client.ts": typescript_runtime_version(),
     }
 
 
