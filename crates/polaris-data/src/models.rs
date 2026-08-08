@@ -188,6 +188,7 @@ pub struct CatalogInstrument {
 pub struct CatalogMarket {
     pub source: String,
     pub market: String,
+    pub symbol: String,
     pub start: Option<String>,
     pub end: Option<String>,
     pub source_type: Option<String>,

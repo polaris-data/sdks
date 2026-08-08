@@ -103,6 +103,7 @@ async fn catalog_normalizes_flat_shape() {
             "markets": [{
                 "source": "binance",
                 "market": "BTC-USDT",
+                "symbol": "BTCUSDT",
                 "start": "2024-01-01T00:00:00Z",
                 "end": "2024-01-15T00:00:00Z",
                 "source_type": "exchange",
@@ -133,6 +134,7 @@ async fn catalog_normalizes_flat_shape() {
     assert_eq!(response.markets.len(), 1);
     assert_eq!(response.markets[0].source, "binance");
     assert_eq!(response.markets[0].market, "BTC-USDT");
+    assert_eq!(response.markets[0].symbol, "BTCUSDT");
     assert_eq!(response.markets[0].instrument.base.as_deref(), Some("BTC"));
     assert_eq!(
         response.markets[0].instrument.quote.as_deref(),
@@ -187,6 +189,7 @@ async fn catalog_normalizes_legacy_shape() {
     assert_eq!(response.markets.len(), 1);
     assert_eq!(response.markets[0].source, "binance");
     assert_eq!(response.markets[0].market, "BTC-USDT");
+    assert_eq!(response.markets[0].symbol, "BTC-USDT");
     assert_eq!(response.markets[0].source_type.as_deref(), Some("exchange"));
     assert_eq!(response.markets[0].instrument.base, None);
 }

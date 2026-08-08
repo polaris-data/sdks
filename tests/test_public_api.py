@@ -200,6 +200,7 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
         "markets": list[CatalogMarketEntry],
         "updatedAt": str,
     }
+    assert get_type_hints(CatalogMarketEntry)["symbol"] is str
     assert get_type_hints(BulkDownloadManifest) == {
         "source": str,
         "market": str,

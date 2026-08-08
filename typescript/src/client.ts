@@ -1535,6 +1535,7 @@ function normalizeFlatCatalogMarket(entry: unknown): CatalogMarket {
   return {
     source,
     market,
+    symbol: typeof entry.symbol === "string" ? entry.symbol : market,
     start: typeof entry.start === "string" ? entry.start : undefined,
     end: typeof entry.end === "string" ? entry.end : undefined,
     source_type:

@@ -26,6 +26,7 @@ class CatalogAccess(TypedDict):
 class CatalogMarketEntry(TypedDict):
     source: str
     market: str
+    symbol: str
     start: str
     end: str
     source_type: str

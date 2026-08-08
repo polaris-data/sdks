@@ -314,6 +314,7 @@ def test_catalog_returns_payload() -> None:
             {
                 "source": "binance",
                 "market": "BTC-USDT",
+                "symbol": "BTCUSDT",
                 "instrument": {
                     "base": "BTC",
                     "quote": "USDT",
@@ -336,6 +337,8 @@ def test_catalog_returns_payload() -> None:
     client = make_client(handler)
     try:
         result = client.catalog()
+        assert result["markets"][0]["symbol"] == "BTCUSDT"
+        assert result["markets"][1]["symbol"] == "BTC"
         assert result["markets"][0]["instrument"]["base"] == "BTC"
         assert result["markets"][0]["instrument"]["tick_size"] == "0.1"
         assert result["markets"][1]["instrument"] == {

@@ -1469,6 +1469,11 @@ fn normalize_flat_market(entry: &Value) -> Result<CatalogMarket, PolarisError> {
 
     Ok(CatalogMarket {
         source,
+        symbol: entry
+            .get("symbol")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| market.clone()),
         market,
         start: entry
             .get("start")
