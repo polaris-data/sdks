@@ -1,0 +1,95 @@
+---
+title: "Trades"
+sidebarTitle: "Trades"
+description: "Query normalized trade events with client.trades()"
+keywords:
+  - trades
+  - executions
+  - Python SDK
+  - client.trades
+---
+
+Use `client.trades()` when you want execution-level records only. Trade events represent executed transactions only. They are normalized so you can compare fills across venues without translating symbol formats or side conventions.
+
+## Method signature
+
+```python
+trades(source, market, from_, to, limit=1000)
+```
+
+## Parameters
+
+| Parameter | Type | Required | Notes |
+| --- | --- | --- | --- |
+| source | str | Yes | Source ID |
+| market | str | Yes | Normalized market or instrument ID |
+| from_ | str/datetime/date/int | Yes | Inclusive start time (ISO 8601, datetime, date, or epoch microseconds) |
+| to | str/datetime/date/int | Yes | Exclusive end time (same formats as from_) |
+| limit | int | No | Page size (default: 1000) |
+
+**Note:** API key required for historical ranges. Set `POLARIS_API_KEY` environment variable or pass `api_key` to `PolarisClient()`.
+
+## Return value
+
+List of normalized trade event dictionaries.
+
+## Example response
+
+```python
+[
+    {
+        'timestamp': 1704067200000000,
+        'venue': 'binance',
+        'symbol': 'BTC-USDT',
+        'type': 'trade',
+        'data': {
+            'price': 43250.50,
+            'quantity': 0.5,
+            'side': 'buy'
+        }
+    }
+]
+```
+
+## Fields
+
+Trade events use the standard event envelope with `type: "trade"` and the following trade-specific fields under `data`:
+
+- `data.price`: matched execution price
+- `data.quantity`: executed size in base units
+- `data.side`: aggressor side, one of `buy`, `sell`, or `unknown`
+
+The envelope-level `timestamp` is the execution time in UTC microseconds since the Unix epoch.
+
+## Example
+
+```python
+from datetime import datetime, timedelta, timezone
+from polaris_data import PolarisClient
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(hours=1)
+
+with PolarisClient() as client:
+    trades = client.trades(
+        source="hyperliquid",
+        market="SPX",
+        from_=start,
+        to=end,
+    )
+
+print(trades[:2])
+```
+
+## How it works
+
+`client.trades()` uses snapshot-first replay: it queries the `/snapshots` endpoint for historical data and reads from local cached files when available. The SDK handles pagination and data derivation automatically.
+
+For more details on snapshot-based queries, see [Snapshots](/reference/snapshots).
+
+## Related documentation
+
+- [Events](/schemas/events) if you need more than just executions
+- [OHLCV](/schemas/ohlcv) if you want interval-based aggregations derived from trade flow
+- [Raw API](/reference/api-reference) if you need venue-native trade messages instead
+- [Authentication](/guides/authentication)

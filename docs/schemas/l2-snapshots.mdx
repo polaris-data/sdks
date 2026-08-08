@@ -1,0 +1,101 @@
+---
+title: "L2 Snapshots"
+sidebarTitle: "L2 Snapshots"
+description: "Query normalized order book snapshots with client.l2_snapshots()"
+keywords:
+  - l2_snapshots
+  - order book
+  - orderbook
+  - market depth
+  - Python SDK
+  - client.l2_snapshots
+---
+
+Use `client.l2_snapshots()` when you need order book snapshots for market microstructure analysis. This method returns standardized Level 2 order book data with bids and asks at multiple price levels.
+
+## Method signature
+
+```python
+l2_snapshots(source, market, from_, to, limit=1000)
+```
+
+## Parameters
+
+| Parameter | Type | Required | Notes |
+| --- | --- | --- | --- |
+| source | str | Yes | Source ID |
+| market | str | Yes | Normalized market or instrument ID |
+| from_ | str/datetime/date/int | Yes | Inclusive start time (ISO 8601, datetime, date, or epoch microseconds) |
+| to | str/datetime/date/int | Yes | Exclusive end time (same formats as from_) |
+| limit | int | No | Page size (default: 1000) |
+
+**Note:** API key required for historical ranges. Set `POLARIS_API_KEY` environment variable or pass `api_key` to `PolarisClient()`.
+
+## Return value
+
+List of normalized order book snapshot dictionaries.
+
+## Example response
+
+```python
+[
+    {
+        'timestamp': 1704067200000000,
+        'venue': 'binance',
+        'symbol': 'BTC-USDT',
+        'type': 'orderbook',
+        'data': {
+            'bids': [
+                {'price': 43250.00, 'quantity': 1.5},
+                {'price': 43249.50, 'quantity': 2.0}
+            ],
+            'asks': [
+                {'price': 43250.50, 'quantity': 1.2},
+                {'price': 43251.00, 'quantity': 3.5}
+            ]
+        }
+    }
+]
+```
+
+## Fields
+
+L2 snapshots use the standard event envelope with `type: "orderbook"` and the following order book-specific fields under `data`:
+
+- `data.bids`: array of bid levels, each with `price` and `quantity`
+- `data.asks`: array of ask levels, each with `price` and `quantity`
+
+Bid levels are sorted descending by price, ask levels are sorted ascending. The envelope-level `timestamp` is the snapshot time in UTC microseconds since the Unix epoch.
+
+## Example
+
+```python
+from datetime import datetime, timedelta, timezone
+from polaris_data import PolarisClient
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(hours=1)
+
+with PolarisClient() as client:
+    snapshots = client.l2_snapshots(
+        source="binance",
+        market="BTC-USDT",
+        from_=start,
+        to=end,
+    )
+
+print(snapshots[:2])
+```
+
+## How it works
+
+`client.l2_snapshots()` uses snapshot-first replay: it queries the `/snapshots` endpoint for historical data and reads from local cached files when available. The SDK handles pagination and data normalization automatically.
+
+For more details on snapshot-based queries, see [Snapshots](/reference/snapshots).
+
+## Related documentation
+
+- [Depth metrics](/schemas/depth-metrics) for derived liquidity metrics
+- [BBO](/schemas/bbo) if you only need top-of-book quotes
+- [Events](/schemas/events) if you need order book updates mixed with other event types
+- [Authentication](/guides/authentication)

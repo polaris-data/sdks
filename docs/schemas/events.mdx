@@ -1,0 +1,133 @@
+---
+title: "Events"
+sidebarTitle: "Events"
+description: "Query mixed normalized event streams with client.events()"
+keywords:
+  - events
+  - market events
+  - Python SDK
+  - client.events
+---
+
+Use `client.events()` when you want more than just trade executions. This method returns mixed event types in a single normalized stream, including trades, bars, datapoints, and order book events.
+
+## Method signature
+
+```python
+events(source, market, from_, to, limit=1000)
+```
+
+## Parameters
+
+| Parameter | Type | Required | Notes |
+| --- | --- | --- | --- |
+| source | str | Yes | Source ID |
+| market | str | Yes | Normalized market or instrument ID |
+| from_ | str/datetime/date/int | Yes | Inclusive start time (ISO 8601, datetime, date, or epoch microseconds) |
+| to | str/datetime/date/int | Yes | Exclusive end time (same formats as from_) |
+| limit | int | No | Page size (default: 1000) |
+
+**Note:** API key required for historical ranges. Set `POLARIS_API_KEY` environment variable or pass `api_key` to `PolarisClient()`.
+
+## Return value
+
+List of mixed normalized event records.
+
+## Common event types
+
+The `/events` endpoint returns mixed event types:
+
+- `trade`: executed transactions
+- `bar`: OHLCV candles
+- `datapoint`: market state updates such as funding rates or liquidations
+- `orderbook`: order book snapshots or updates
+
+## Common datapoint labels
+
+`datapoint` events carry a market state update under `data` with a `label` and `value`:
+
+- `funding_rate`: perpetual funding rate
+- `open_interest`: open contracts or positions
+- `liquidation`: liquidation event
+- `index_price`: mark or index price update
+
+Example:
+
+```json
+{
+  "timestamp": 1767225600456000,
+  "venue": "lighter",
+  "symbol": "SOL-USD",
+  "type": "datapoint",
+  "data": {
+    "label": "funding_rate",
+    "value": 0.00017
+  }
+}
+```
+
+## Example response
+
+```python
+[
+    {
+        'timestamp': 1704067200000000,
+        'venue': 'binance',
+        'symbol': 'BTC-USDT',
+        'type': 'trade',
+        'data': {
+            'price': 43250.50,
+            'quantity': 0.5,
+            'side': 'buy'
+        }
+    },
+    {
+        'timestamp': 1704067260000000,
+        'venue': 'binance',
+        'symbol': 'BTC-USDT',
+        'type': 'bar',
+        'data': {
+            'interval': '1m',
+            'open': 43250.00,
+            'high': 43260.00,
+            'low': 43245.00,
+            'close': 43255.00,
+            'volume': 12.5
+        }
+    }
+]
+```
+
+Events use the standard event envelope, with each event's typed payload under `data`.
+
+## Example
+
+```python
+from datetime import datetime, timedelta, timezone
+from polaris_data import PolarisClient
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(hours=1)
+
+with PolarisClient() as client:
+    events = client.events(
+        source="hyperliquid",
+        market="SPX",
+        from_=start,
+        to=end,
+    )
+
+print(events[:2])
+```
+
+## How it works
+
+`client.events()` uses snapshot-first replay: it queries the `/snapshots` endpoint for historical data and reads from local cached files when available. The SDK handles pagination and data derivation automatically.
+
+For more details on snapshot-based queries, see [Snapshots](/reference/snapshots).
+
+## Related documentation
+
+- [Trades](/schemas/trades) if you only need executions
+- [OHLCV](/schemas/ohlcv) if you only need candles
+- [Authentication](/guides/authentication)

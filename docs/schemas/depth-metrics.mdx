@@ -1,0 +1,108 @@
+---
+title: "Depth Metrics"
+sidebarTitle: "Depth Metrics"
+description: "Query liquidity metrics with client.depth_metrics()"
+keywords:
+  - depth_metrics
+  - liquidity
+  - market impact
+  - slippage
+  - order book metrics
+  - Python SDK
+  - client.depth_metrics
+---
+
+Use `client.depth_metrics()` when you need derived liquidity metrics for market impact estimation and liquidity analysis. This method calculates depth, spread, imbalance, and slippage metrics from order book data.
+
+## Method signature
+
+```python
+depth_metrics(source, market, from_, to, depth_pct=0.01, slippage_notional=10000.0, limit=1000)
+```
+
+## Parameters
+
+| Parameter | Type | Required | Notes |
+| --- | --- | --- | --- |
+| source | str | Yes | Source ID |
+| market | str | Yes | Normalized market or instrument ID |
+| from_ | str/datetime/date/int | Yes | Inclusive start time (ISO 8601, datetime, date, or epoch microseconds) |
+| to | str/datetime/date/int | Yes | Exclusive end time (same formats as from_) |
+| depth_pct | float | No | Depth percentage for bid/ask imbalance (default: 0.01 = 1%) |
+| slippage_notional | float | No | Notional amount for slippage calculation (default: 10000.0) |
+| limit | int | No | Page size (default: 1000) |
+
+**Note:** API key required for historical ranges. Set `POLARIS_API_KEY` environment variable or pass `api_key` to `PolarisClient()`.
+
+## Return value
+
+List of derived depth and liquidity metric rows.
+
+## Example response
+
+```python
+[
+    {
+        'timestamp': 1704067200000000,
+        'venue': 'binance',
+        'symbol': 'BTC-USDT',
+        'spread': 0.50,
+        'spread_bps': 1.16,
+        'bid_depth': 150.5,
+        'ask_depth': 145.2,
+        'bid_ask_imbalance': 0.0176,
+        'slippage_bps': 2.5
+    }
+]
+```
+
+## Fields
+
+Depth metrics records include:
+
+- `timestamp`: observation time in UTC microseconds since the Unix epoch
+- `venue`: exchange identifier
+- `symbol`: normalized instrument symbol
+- `spread`: absolute bid-ask spread
+- `spread_bps`: spread in basis points
+- `bid_depth`: total bid volume within `depth_pct` of mid
+- `ask_depth`: total ask volume within `depth_pct` of mid
+- `bid_ask_imbalance`: (bid_depth - ask_depth) / (bid_depth + ask_depth)
+- `slippage_bps`: estimated slippage in basis points for `slippage_notional` size
+
+Positive `bid_ask_imbalance` indicates more depth on bids (buy pressure), negative indicates more depth on asks (sell pressure).
+
+## Example
+
+```python
+from datetime import datetime, timedelta, timezone
+from polaris_data import PolarisClient
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(hours=6)
+
+with PolarisClient() as client:
+    metrics = client.depth_metrics(
+        source="binance",
+        market="BTC-USDT",
+        from_=start,
+        to=end,
+        depth_pct=0.01,      # 1% depth
+        slippage_notional=10000.0,  # $10k notional
+    )
+
+print(metrics[:2])
+```
+
+## How it works
+
+`client.depth_metrics()` derives liquidity metrics from order book snapshots using snapshot-first replay. The SDK queries the `/snapshots` endpoint for historical data, reads from local cached files when available, and calculates depth, spread, imbalance, and slippage metrics from the order book data.
+
+For more details on snapshot-based queries, see [Snapshots](/reference/snapshots).
+
+## Related documentation
+
+- [L2 snapshots](/schemas/l2-snapshots) for raw order book data
+- [BBO](/schemas/bbo) if you only need top-of-book quotes
+- [Events](/schemas/events) if you need order book updates mixed with other event types
+- [Authentication](/guides/authentication)

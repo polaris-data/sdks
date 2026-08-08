@@ -1,0 +1,508 @@
+---
+title: "Rust SDK"
+sidebarTitle: "Rust SDK"
+description: "Install the Polaris Rust client, discover markets, and query events, trades, snapshots, replay data, and OHLCV bars."
+keywords:
+  - Rust SDK
+  - polaris-data
+  - polaris_data
+  - PolarisClient
+  - Tokio
+  - Hyperliquid
+  - trades
+  - OHLCV
+---
+
+The Polaris Rust SDK is available on crates.io as [`polaris-data`](https://crates.io/crates/polaris-data).
+
+## Install
+
+```bash
+cargo add polaris-data
+```
+
+If your project does not already use Tokio, add it as well:
+
+```bash
+cargo add tokio --features macros,rt-multi-thread
+```
+
+The package name is `polaris-data` and the crate name is `polaris_data`.
+
+Or add it manually to `Cargo.toml`:
+
+```toml
+[dependencies]
+polaris-data = "0.4"
+```
+
+The SDK is async-first and is designed for Tokio-based services, backfills, and trading infrastructure.
+
+## Quickstart
+
+Use `events(...)` when you want standardized historical rows in an async service or backfill job.
+
+```rust
+use polaris_data::{HistoricalQuery, PolarisClient};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = PolarisClient::builder().build()?;
+
+    let rows = client
+        .events(HistoricalQuery {
+            source: "binance".into(),
+            market: "BTC-USDT".into(),
+            from: Some("2024-01-01T00:00:00Z".into()),
+            to: Some("2024-01-01T01:00:00Z".into()),
+            allow_gaps: false,
+        })
+        .await?;
+
+    println!("Fetched {} events", rows.len());
+    Ok(())
+}
+```
+
+## Create a client
+
+If you omit `api_key`, the client reads `POLARIS_API_KEY` from the environment.
+
+```rust
+use polaris_data::PolarisClient;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = PolarisClient::builder().build()?;
+    println!("{}", client.health().await?);
+    Ok(())
+}
+```
+
+The main builder is:
+
+```rust
+use std::time::Duration;
+
+use polaris_data::PolarisClient;
+
+let client = PolarisClient::builder()
+    .api_key("polaris_key_your_key")
+    .base_url("https://api.polaris.supply")
+    .timeout(Duration::from_secs(30))
+    .dataset_root("/tmp/polaris-cache")
+    .build()?;
+```
+
+## Core methods
+
+Use `PolarisClient` for discovery and snapshot-backed historical queries.
+
+| Method | Returns | Use it for |
+| --- | --- | --- |
+| `health()` | JSON object | Confirm API availability |
+| `catalog(CatalogQuery)` | `CatalogResponse` | Discover sources and exact market IDs |
+| `list_snapshots(ListSnapshotsQuery)` | `Vec<SnapshotEntry>` | Find snapshot files for a range |
+| `replay(ReplayQuery)` | `ReplayStream` | Stream standardized historical rows |
+| `events(HistoricalQuery)` | `Vec<StandardEvent>` | Load mixed event types into async jobs |
+| `trades(HistoricalQuery)` | `Vec<TradeEvent>` | Analyze executions |
+| `ohlcv(OhlcvQuery)` | `OhlcvOutput` | Build bars or TradingView-style output |
+| `l2_snapshots(HistoricalQuery)` | `Vec<OrderbookEvent>` | Order book reconstruction and microstructure analysis |
+| `funding_rates(HistoricalQuery)` | `Vec<PointSeriesEvent>` | Perpetual funding studies and carry modeling |
+| `mark_prices(HistoricalQuery)` | `Vec<PointSeriesEvent>` | Basis analysis, mark tracking, and liquidation-related research |
+| `volume(OhlcvQuery)` | `Vec<VolumeBar>` | Bucketed trade volume series for volume profiling and participation analysis |
+| `vwap(OhlcvQuery)` | `Vec<VwapBar>` | Bucketed VWAP series for execution benchmarking and price smoothing |
+| `volatility(OhlcvQuery)` | `Vec<VolatilityBar>` | Bucketed realized volatility series for risk modeling and intraperiod volatility analysis |
+| `bbo(HistoricalQuery)` | `Vec<BboQuote>` | Best bid/offer quote series for spread tracking, quote analytics, and top-of-book monitoring |
+| `depth_metrics(HistoricalQuery, depth_pct, slippage_notional)` | `Vec<DepthMetricsRow>` | Derived depth, spread, imbalance, and slippage metrics for liquidity analysis and market impact estimation |
+
+`from` and `to` accept ISO 8601 strings, `chrono::DateTime<Utc>`, or Unix epoch microseconds as `i64` or `u64`. If you omit one or both bounds, the SDK infers a bounded historical range from catalog metadata, using the latest 7 days by default and applying public cutoff rules for preview datasets when no API key is present.
+
+## Discover a market before you query it
+
+Use `catalog(...)` to find the exact Polaris market ID for a venue.
+
+```rust
+use polaris_data::{CatalogQuery, PolarisClient};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = PolarisClient::builder().build()?;
+
+    let catalog = client
+        .catalog(CatalogQuery {
+            source: Some("hyperliquid".into()),
+            market: None,
+        })
+        .await?;
+
+    let markets: Vec<_> = catalog.markets.iter().map(|row| row.market.as_str()).collect();
+    println!("{:?}", &markets[..markets.len().min(10)]);
+    Ok(())
+}
+```
+
+If you want a high-level view of supported venues and example market IDs before you query the exact pair, start with [Market Coverage](/markets/market-coverage).
+
+## Query events
+
+Use `events(...)` when you want standardized historical event rows beyond trades alone.
+
+```rust
+use polaris_data::{HistoricalQuery, PolarisClient};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = PolarisClient::builder().build()?;
+
+    let rows = client
+        .events(HistoricalQuery {
+            source: "binance".into(),
+            market: "BTC-USDT".into(),
+            from: Some("2024-01-01T00:00:00Z".into()),
+            to: Some("2024-01-01T01:00:00Z".into()),
+            allow_gaps: false,
+        })
+        .await?;
+
+    println!("{}", rows.len());
+    println!("{:?}", rows.first());
+    Ok(())
+}
+```
+
+## Query trades
+
+`trades(...)` returns normalized trade events. The SDK loads standardized snapshot data locally and filters trade rows for you.
+
+```rust
+use polaris_data::{HistoricalQuery, PolarisClient};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = PolarisClient::builder().build()?;
+
+    let trades = client
+        .trades(HistoricalQuery {
+            source: "hyperliquid".into(),
+            market: "SPX".into(),
+            from: Some("2024-01-01T00:00:00Z".into()),
+            to: Some("2024-01-01T01:00:00Z".into()),
+            allow_gaps: false,
+        })
+        .await?;
+
+    println!("{:?}", trades.first());
+    Ok(())
+}
+```
+
+## Query OHLCV bars
+
+Use `ohlcv(...)` when you want interval bars instead of individual trades.
+
+```rust
+use polaris_data::{OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery, PolarisClient};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = PolarisClient::builder().build()?;
+
+    let output = client
+        .ohlcv(OhlcvQuery {
+            source: "hyperliquid".into(),
+            market: "BTC".into(),
+            from: Some("2024-01-01T00:00:00Z".into()),
+            to: Some("2024-01-02T00:00:00Z".into()),
+            interval: OhlcvInterval::M1,
+            format: OhlcvFormat::TradingView,
+            allow_gaps: false,
+        })
+        .await?;
+
+    match output {
+        OhlcvOutput::Bars(bars) => println!("{} bars", bars.len()),
+        OhlcvOutput::TradingView(tv) => println!("{} candles", tv.candles.len()),
+    }
+
+    Ok(())
+}
+```
+
+Supported intervals are `100ms`, `1s`, `10s`, `1m`, `5m`, `15m`, and `1h`.
+
+## Query order book snapshots
+
+Use `l2_snapshots(...)` when you need order book depth data for microstructure analysis.
+
+```rust
+use polaris_data::{HistoricalQuery, PolarisClient};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = PolarisClient::builder().build()?;
+
+    let snapshots = client
+        .l2_snapshots(HistoricalQuery {
+            source: "binance".into(),
+            market: "BTC-USDT".into(),
+            from: Some("2024-01-01T00:00:00Z".into()),
+            to: Some("2024-01-01T00:05:00Z".into()),
+            allow_gaps: false,
+        })
+        .await?;
+
+    println!("{:?}", snapshots.first());
+    Ok(())
+}
+```
+
+## Query funding rates
+
+Use `funding_rates(...)` to analyze perpetual funding rates and carry modeling.
+
+```rust
+use polaris_data::{HistoricalQuery, PolarisClient};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = PolarisClient::builder().build()?;
+
+    let funding_rates = client
+        .funding_rates(HistoricalQuery {
+            source: "hyperliquid".into(),
+            market: "BTC".into(),
+            from: Some("2024-01-01T00:00:00Z".into()),
+            to: Some("2024-01-02T00:00:00Z".into()),
+            allow_gaps: false,
+        })
+        .await?;
+
+    println!("{:?}", funding_rates.first());
+    Ok(())
+}
+```
+
+## Query mark prices
+
+Use `mark_prices(...)` for basis analysis, mark tracking, and liquidation-related research.
+
+```rust
+use polaris_data::{HistoricalQuery, PolarisClient};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = PolarisClient::builder().build()?;
+
+    let mark_prices = client
+        .mark_prices(HistoricalQuery {
+            source: "hyperliquid".into(),
+            market: "BTC".into(),
+            from: Some("2024-01-01T00:00:00Z".into()),
+            to: Some("2024-01-02T00:00:00Z".into()),
+            allow_gaps: false,
+        })
+        .await?;
+
+    println!("{:?}", mark_prices.first());
+    Ok(())
+}
+```
+
+## Query volume profiles
+
+Use `volume(...)` for volume profiling and participation analysis.
+
+```rust
+use polaris_data::{OhlcvInterval, OhlcvQuery, PolarisClient};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = PolarisClient::builder().build()?;
+
+    let volume = client
+        .volume(OhlcvQuery {
+            source: "hyperliquid".into(),
+            market: "SPX".into(),
+            from: Some("2024-01-01T00:00:00Z".into()),
+            to: Some("2024-01-01T06:00:00Z".into()),
+            interval: OhlcvInterval::H1,
+            allow_gaps: false,
+        })
+        .await?;
+
+    println!("{:?}", volume.first());
+    Ok(())
+}
+```
+
+## Query VWAP series
+
+Use `vwap(...)` for execution benchmarking and price smoothing.
+
+```rust
+use polaris_data::{OhlcvInterval, OhlcvQuery, PolarisClient};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = PolarisClient::builder().build()?;
+
+    let vwap = client
+        .vwap(OhlcvQuery {
+            source: "hyperliquid".into(),
+            market: "SPX".into(),
+            from: Some("2024-01-01T00:00:00Z".into()),
+            to: Some("2024-01-01T06:00:00Z".into()),
+            interval: OhlcvInterval::H1,
+            allow_gaps: false,
+        })
+        .await?;
+
+    println!("{:?}", vwap.first());
+    Ok(())
+}
+```
+
+## Query volatility series
+
+Use `volatility(...)` for risk modeling and intraperiod volatility analysis.
+
+```rust
+use polaris_data::{OhlcvInterval, OhlcvQuery, PolarisClient};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = PolarisClient::builder().build()?;
+
+    let volatility = client
+        .volatility(OhlcvQuery {
+            source: "hyperliquid".into(),
+            market: "SPX".into(),
+            from: Some("2024-01-01T00:00:00Z".into()),
+            to: Some("2024-01-01T06:00:00Z".into()),
+            interval: OhlcvInterval::H1,
+            allow_gaps: false,
+        })
+        .await?;
+
+    println!("{:?}", volatility.first());
+    Ok(())
+}
+```
+
+## Query best bid/offer
+
+Use `bbo(...)` for spread tracking, quote analytics, and top-of-book monitoring.
+
+```rust
+use polaris_data::{HistoricalQuery, PolarisClient};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = PolarisClient::builder().build()?;
+
+    let bbo_quotes = client
+        .bbo(HistoricalQuery {
+            source: "binance".into(),
+            market: "BTC-USDT".into(),
+            from: Some("2024-01-01T00:00:00Z".into()),
+            to: Some("2024-01-01T00:30:00Z".into()),
+            allow_gaps: false,
+        })
+        .await?;
+
+    println!("{:?}", bbo_quotes.first());
+    Ok(())
+}
+```
+
+## Query depth metrics
+
+Use `depth_metrics(...)` for liquidity analysis and market impact estimation.
+
+```rust
+use polaris_data::{HistoricalQuery, PolarisClient};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = PolarisClient::builder().build()?;
+
+    let depth_metrics = client
+        .depth_metrics(
+            HistoricalQuery {
+                source: "binance".into(),
+                market: "BTC-USDT".into(),
+                from: Some("2024-01-01T00:00:00Z".into()),
+                to: Some("2024-01-01T00:30:00Z".into()),
+                allow_gaps: false,
+            },
+            0.01,    // depth_pct
+            10000.0, // slippage_notional
+        )
+        .await?;
+
+    println!("{:?}", depth_metrics.first());
+    Ok(())
+}
+```
+
+## Local dataset storage
+
+The SDK stores standardized snapshots and local cache data under the shared Polaris app-data root so the Rust SDK and other Polaris tools can reuse the same files.
+
+Default roots:
+
+- macOS: `~/Library/Application Support/polaris`
+- Linux: `$XDG_DATA_HOME/polaris` or `~/.local/share/polaris`
+- Windows: `%APPDATA%\\polaris`
+
+Within that root, the SDK uses this layout:
+
+```text
+<root>/
+  data/
+  tmp/
+  cache/
+```
+
+Use `dataset_root(...)` on the builder to override the root explicitly.
+
+- `POLARIS_ROOT` overrides the shared root globally.
+- `POLARIS_DATASET_DOWNLOAD_DIR` is still accepted as a deprecated compatibility override.
+
+## Snapshot-first replay
+
+For standardized historical data, `replay(...)`, `events(...)`, `trades(...)`, and `ohlcv(...)` use a snapshot-first flow:
+
+1. Discover snapshot files through `/snapshots`.
+2. Download missing `.jsonl.zst` files through `/download`.
+3. Cache them locally under the Polaris data root.
+4. Reuse local files on subsequent reads instead of making repeat network calls.
+
+This SDK does not call direct `/events`, `/trades`, `/ohlcv`, or `/raw` endpoints.
+
+## Gap handling
+
+By default, snapshot-backed methods fail if the requested range is not fully covered by available standardized snapshots.
+
+Set `allow_gaps: true` when you want the SDK to:
+
+- return only covered rows
+- skip missing intervals
+- emit a `log::warn!` entry describing the gaps
+
+## Authentication
+
+Public sources work without an API key. For premium sources or extended history, set your key via `POLARIS_API_KEY` or configure it directly on the builder:
+
+```bash
+export POLARIS_API_KEY="polaris_key_your_key"
+```
+
+See [Authentication](/guides/authentication) for the shared auth model.
+
+## Next steps
+
+- Read [Authentication](/guides/authentication) if you want the shared auth model behind the SDK.
+- Read [Snapshots](/reference/snapshots) if your Rust workflow starts from historical files.
+- Read [Trades](/schemas/trades), [Events](/schemas/events), or [OHLCV](/schemas/ohlcv) for detailed method documentation.

@@ -1,0 +1,96 @@
+---
+title: "Volatility"
+sidebarTitle: "Volatility"
+description: "Query realized volatility series with client.volatility()"
+keywords:
+  - volatility
+  - realized volatility
+  - risk modeling
+  - Python SDK
+  - client.volatility
+---
+
+Use `client.volatility()` when you need realized volatility data for risk modeling and intraperiod volatility analysis. This method calculates volatility metrics over fixed time intervals.
+
+## Method signature
+
+```python
+volatility(source, market, from_, to, interval, method="log_returns", limit=1000)
+```
+
+## Parameters
+
+| Parameter | Type | Required | Notes |
+| --- | --- | --- | --- |
+| source | str | Yes | Source ID |
+| market | str | Yes | Normalized market or instrument ID |
+| from_ | str/datetime/date/int | Yes | Inclusive start time (ISO 8601, datetime, date, or epoch microseconds) |
+| to | str/datetime/date/int | Yes | Exclusive end time (same formats as from_) |
+| interval | str | Yes | Duration token such as `1m`, `5m`, `1h` |
+| method | str | No | Calculation method: `"log_returns"` (default) |
+| limit | int | No | Page size (default: 1000) |
+
+**Note:** API key required for historical ranges. Set `POLARIS_API_KEY` environment variable or pass `api_key` to `PolarisClient()`.
+
+## Return value
+
+List of bucketed realized volatility series rows.
+
+## Example response
+
+```python
+[
+    {
+        'timestamp': 1704067200000000,
+        'venue': 'binance',
+        'symbol': 'BTC-USDT',
+        'volatility': 0.0234,
+        'interval': '1h'
+    }
+]
+```
+
+## Fields
+
+Volatility records include:
+
+- `timestamp`: bucket start time in UTC microseconds since the Unix epoch
+- `venue`: exchange identifier
+- `symbol`: normalized instrument symbol
+- `volatility`: realized volatility for the interval (decimal, e.g., 0.0234 = 2.34%)
+- `interval`: duration token such as `1m`, `5m`, or `1h`
+
+The default method uses log returns calculated from trade prices within each interval.
+
+## Example
+
+```python
+from datetime import datetime, timedelta, timezone
+from polaris_data import PolarisClient
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(days=7)
+
+with PolarisClient() as client:
+    vol_data = client.volatility(
+        source="binance",
+        market="BTC-USDT",
+        from_=start,
+        to=end,
+        interval="1h",
+    )
+
+print(vol_data[:2])
+```
+
+## How it works
+
+`client.volatility()` calculates realized volatility from standardized trade data using snapshot-first replay. The SDK queries the `/snapshots` endpoint for historical data, reads from local cached files when available, and derives volatility metrics from the underlying trade events.
+
+For more details on snapshot-based queries, see [Snapshots](/reference/snapshots).
+
+## Related documentation
+
+- [OHLCV](/schemas/ohlcv) if you need price data for volatility calculations
+- [Trades](/schemas/trades) if you need execution-level data
+- [Authentication](/guides/authentication)

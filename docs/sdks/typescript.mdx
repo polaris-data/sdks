@@ -1,0 +1,480 @@
+---
+title: "TypeScript SDK"
+sidebarTitle: "TypeScript SDK"
+description: "Install the Polaris TypeScript client, discover markets, and query trades, events, snapshots, replay data, and OHLCV bars."
+keywords:
+  - TypeScript SDK
+  - polaris-data
+  - PolarisClient
+  - Node.js
+  - Hyperliquid
+  - trades
+  - OHLCV
+---
+
+The Polaris TypeScript SDK is available on npm as [`polaris-data`](https://www.npmjs.com/package/polaris-data).
+
+## Install
+
+```bash
+npm install polaris-data
+```
+
+Or install with yarn:
+
+```bash
+yarn add polaris-data
+```
+
+The SDK ships as a dual ESM/CJS build. It requires Node.js 18 or later.
+
+## Quickstart
+
+Use `replay(...)` when you want to stream historical rows in a script or backfill job. You can run this without an API key set.
+
+```typescript
+import { PolarisClient } from "polaris-data";
+
+await using client = new PolarisClient();
+
+for await (const event of client.replay({
+  source: "binance",
+  market: "BTC-USDT",
+  from: "2024-01-01T00:00:00Z",
+  to: "2024-01-01T01:00:00Z",
+})) {
+  console.log(event);
+}
+```
+
+## Create a client
+
+If you omit `apiKey`, the client reads `POLARIS_API_KEY` from the environment.
+
+```typescript
+import { PolarisClient } from "polaris-data";
+
+await using client = new PolarisClient();
+
+console.log(await client.health());
+```
+
+The main constructor is:
+
+```typescript
+new PolarisClient({
+  apiKey?: string,
+  baseUrl?: string,  // default: "https://api.polaris.supply"
+  timeout?: number,   // default: 30_000 (ms)
+  datasetRoot?: string,
+});
+```
+
+## Core methods
+
+Use `PolarisClient` for discovery, historical replay, and direct query workflows.
+
+| Method | Returns | Use it for |
+| --- | --- | --- |
+| `health()` | JSON object | Confirm API availability |
+| `catalog(source?, market?)` | JSON object | Discover sources and exact market IDs |
+| `listSnapshots(source, market, from, to, limit?)` | List of snapshot entries | Find snapshot files for a range |
+| `replay(params)` | Async generator | Stream historical data for replay or backfills |
+| `events(params)` | List of normalized events | Load mixed event types into scripts |
+| `trades(params)` | List of normalized trades | Analyze executions |
+| `raw(params)` | List of raw payloads | Inspect venue-native messages |
+| `ohlcv(params)` | List of bars or TradingView-style JSON | Plot fast market charts |
+| `l2Snapshots(params)` | List of orderbook snapshot rows | Order book reconstruction and microstructure analysis |
+| `fundingRates(params)` | List of funding-rate point series rows | Perpetual funding studies and carry modeling |
+| `markPrices(params)` | List of mark-price point series rows | Basis analysis, mark tracking, and liquidation-related research |
+| `ohlcvTradingView(params)` | TradingView-shaped OHLCV payload | Feeding TradingView-compatible chart consumers directly |
+| `volume(params)` | Bucketed trade volume series | Volume profiling and participation analysis |
+| `vwap(params)` | Bucketed VWAP series | Execution benchmarking and price smoothing |
+| `volatility(params)` | Bucketed realized volatility series | Risk modeling and intraperiod volatility analysis |
+| `bbo(params)` | Best bid/offer quote series | Spread tracking, quote analytics, and top-of-book monitoring |
+| `depthMetrics(params)` | Derived depth, spread, imbalance, and slippage metrics | Liquidity analysis and market impact estimation |
+
+`from` and `to` accept ISO 8601 strings, `Date` objects, or Unix epoch microseconds (number).
+
+## Discover a market before you query it
+
+Use `catalog(...)` to find the exact Polaris market ID for a venue.
+
+```typescript
+import { PolarisClient } from "polaris-data";
+
+await using client = new PolarisClient();
+
+const catalog = await client.catalog({ source: "hyperliquid" });
+const markets = catalog.markets.map((m) => m.market);
+console.log(markets.slice(0, 10));
+```
+
+If you want a high-level view of supported venues and example market IDs before you query the exact pair, start with [Market Coverage](/markets/market-coverage).
+
+## Query events
+
+Use `events(...)` when you want standardized historical event rows beyond trades alone.
+
+```typescript
+import { PolarisClient } from "polaris-data";
+
+await using client = new PolarisClient();
+
+const rows = await client.events({
+  source: "binance",
+  market: "BTC-USDT",
+  from: "2024-01-01T00:00:00Z",
+  to: "2024-01-01T01:00:00Z",
+});
+
+console.log(rows.length);
+console.log(rows[0]);
+```
+
+## Query trades
+
+`trades(...)` returns a list of normalized trade events. The SDK handles pagination and snapshot-backed historical reads for you.
+
+```typescript
+import { PolarisClient } from "polaris-data";
+
+const end = new Date();
+const start = new Date(end.getTime() - 3600_000); // 1 hour ago
+
+await using client = new PolarisClient();
+
+const trades = await client.trades({
+  source: "hyperliquid",
+  market: "SPX",
+  from: start,
+  to: end,
+});
+
+console.log(trades[0]);
+```
+
+## Query OHLCV bars
+
+Use `ohlcv(...)` when you want interval bars instead of individual trades.
+
+```typescript
+import { PolarisClient } from "polaris-data";
+
+const end = new Date();
+const start = new Date(end.getTime() - 6 * 3600_000); // 6 hours ago
+
+await using client = new PolarisClient();
+
+const bars = await client.ohlcv({
+  source: "hyperliquid",
+  market: "SPX",
+  from: start,
+  to: end,
+  interval: "1m",
+});
+
+console.log(bars[0]);
+```
+
+If you pass `format: "tradingview"`, `ohlcv(...)` returns TradingView-style candle and volume arrays.
+
+The OHLCV aggregation engine preserves precision by scaling volume by `1e12` during accumulation to avoid floating-point drift.
+
+## Query order book snapshots
+
+Use `l2Snapshots(...)` when you need order book depth data for microstructure analysis.
+
+```typescript
+import { PolarisClient } from "polaris-data";
+
+const end = new Date();
+const start = new Date(end.getTime() - 5 * 60_000); // 5 minutes ago
+
+await using client = new PolarisClient();
+
+const snapshots = await client.l2Snapshots({
+  source: "binance",
+  market: "BTC-USDT",
+  from: start,
+  to: end,
+});
+
+console.log(snapshots[0]);
+```
+
+## Query funding rates
+
+Use `fundingRates(...)` to analyze perpetual funding rates and carry modeling.
+
+```typescript
+import { PolarisClient } from "polaris-data";
+
+const end = new Date();
+const start = new Date(end.getTime() - 24 * 3600_000); // 24 hours ago
+
+await using client = new PolarisClient();
+
+const fundingRates = await client.fundingRates({
+  source: "hyperliquid",
+  market: "BTC",
+  from: start,
+  to: end,
+});
+
+console.log(fundingRates[0]);
+```
+
+## Query mark prices
+
+Use `markPrices(...)` for basis analysis, mark tracking, and liquidation-related research.
+
+```typescript
+import { PolarisClient } from "polaris-data";
+
+const end = new Date();
+const start = new Date(end.getTime() - 24 * 3600_000); // 24 hours ago
+
+await using client = new PolarisClient();
+
+const markPrices = await client.markPrices({
+  source: "hyperliquid",
+  market: "BTC",
+  from: start,
+  to: end,
+});
+
+console.log(markPrices[0]);
+```
+
+## Query volume profiles
+
+Use `volume(...)` for volume profiling and participation analysis.
+
+```typescript
+import { PolarisClient } from "polaris-data";
+
+const end = new Date();
+const start = new Date(end.getTime() - 6 * 3600_000); // 6 hours ago
+
+await using client = new PolarisClient();
+
+const volume = await client.volume({
+  source: "hyperliquid",
+  market: "SPX",
+  from: start,
+  to: end,
+  interval: "1h",
+});
+
+console.log(volume[0]);
+```
+
+## Query VWAP series
+
+Use `vwap(...)` for execution benchmarking and price smoothing.
+
+```typescript
+import { PolarisClient } from "polaris-data";
+
+const end = new Date();
+const start = new Date(end.getTime() - 6 * 3600_000); // 6 hours ago
+
+await using client = new PolarisClient();
+
+const vwap = await client.vwap({
+  source: "hyperliquid",
+  market: "SPX",
+  from: start,
+  to: end,
+  interval: "1h",
+});
+
+console.log(vwap[0]);
+```
+
+## Query volatility series
+
+Use `volatility(...)` for risk modeling and intraperiod volatility analysis.
+
+```typescript
+import { PolarisClient } from "polaris-data";
+
+const end = new Date();
+const start = new Date(end.getTime() - 6 * 3600_000); // 6 hours ago
+
+await using client = new PolarisClient();
+
+const volatility = await client.volatility({
+  source: "hyperliquid",
+  market: "SPX",
+  from: start,
+  to: end,
+  interval: "1h",
+});
+
+console.log(volatility[0]);
+```
+
+## Query best bid/offer
+
+Use `bbo(...)` for spread tracking, quote analytics, and top-of-book monitoring.
+
+```typescript
+import { PolarisClient } from "polaris-data";
+
+const end = new Date();
+const start = new Date(end.getTime() - 30 * 60_000); // 30 minutes ago
+
+await using client = new PolarisClient();
+
+const bboQuotes = await client.bbo({
+  source: "binance",
+  market: "BTC-USDT",
+  from: start,
+  to: end,
+});
+
+console.log(bboQuotes[0]);
+```
+
+## Query depth metrics
+
+Use `depthMetrics(...)` for liquidity analysis and market impact estimation.
+
+```typescript
+import { PolarisClient } from "polaris-data";
+
+const end = new Date();
+const start = new Date(end.getTime() - 30 * 60_000); // 30 minutes ago
+
+await using client = new PolarisClient();
+
+const depthMetrics = await client.depthMetrics({
+  source: "binance",
+  market: "BTC-USDT",
+  from: start,
+  to: end,
+  depthPct: 0.01,
+  slippageNotional: 10000.0,
+});
+
+console.log(depthMetrics[0]);
+```
+
+## Local dataset storage
+
+The SDK stores standardized snapshots and local day files under a shared Polaris app-data root so the TypeScript SDK and other Polaris tools can reuse the same files.
+
+Default roots:
+
+- macOS: `~/Library/Application Support/polaris`
+- Linux: `$XDG_DATA_HOME/polaris` or `~/.local/share/polaris`
+- Windows: `%APPDATA%\polaris`
+
+Within that root, the SDK uses this layout:
+
+```text
+<root>/
+  data/
+  daily/
+  tmp/
+  cache/
+  locks/
+```
+
+Pass `datasetRoot` to the constructor to override the root explicitly.
+
+## Snapshot-first replay
+
+For standardized historical data, `replay(...)`, `events(...)`, `trades(...)`, and default or TradingView `ohlcv(...)` prefer `/snapshots` and `/snapshots/download`, then read local day files when they already exist.
+
+```typescript
+import { PolarisClient } from "polaris-data";
+
+await using client = new PolarisClient();
+
+for await (const event of client.replay({
+  source: "binance",
+  market: "BTC-USDT",
+  from: "2024-01-01T00:00:00Z",
+  to: "2024-01-01T01:00:00Z",
+})) {
+  console.log(event);
+}
+```
+
+On first call, the SDK discovers daily `.jsonl.zst` snapshot files, downloads them once to the local dataset directory, and serves all subsequent queries from the local cache with no additional network round-trips.
+
+If the requested standardized range cannot be satisfied from daily snapshots, the SDK falls back to the legacy `/events?format=file` flow for standardized replay, event, trade, and local OHLCV derivation.
+
+## Authentication
+
+Public sources (e.g. Binance BTC-USDT) work without an API key. For premium sources, raw snapshots, or extended history, set your key via the `POLARIS_API_KEY` environment variable or pass it directly:
+
+```typescript
+import { PolarisClient } from "polaris-data";
+
+await using client = new PolarisClient({ apiKey: "pk_live_your_key" });
+
+const trades = await client.trades({
+  source: "hyperliquid",
+  market: "SPX",
+  from: "2024-01-01T00:00:00Z",
+  to: "2024-01-02T00:00:00Z",
+});
+```
+
+See [Authentication](/guides/authentication) for the full auth model.
+
+## Error handling
+
+The SDK uses a custom error class hierarchy rooted at `PolarisError`.
+
+```typescript
+import {
+  PolarisClient,
+  PolarisError,
+  UnauthorizedError,
+  NotFoundError,
+  RateLimitedError,
+  StreamDecodeError,
+  DownloadNotAllowedError,
+} from "polaris-data";
+
+await using client = new PolarisClient();
+
+try {
+  for await (const event of client.replay({
+    source: "binance",
+    market: "BTC-USDT",
+    from: "2024-01-01T00:00:00Z",
+    to: "2024-01-01T01:00:00Z",
+  })) {
+    console.log(event);
+  }
+} catch (error) {
+  if (error instanceof UnauthorizedError) {
+    console.log("API key is required");
+  } else if (error instanceof RateLimitedError) {
+    console.log(`Rate limited. Reset at: ${error.resetAt}`);
+  } else {
+    throw error;
+  }
+}
+```
+
+| Error | HTTP status | Meaning |
+| --- | --- | --- |
+| `UnauthorizedError` | 401 | API key is missing or invalid |
+| `NotFoundError` | 404 | Requested source or market does not exist |
+| `RateLimitedError` | 429 | Too many requests — retry after `resetAt` |
+| `StreamDecodeError` | — | Failed to decode a streamed response |
+| `DownloadNotAllowedError` | — | Download is blocked by the server |
+
+## Next steps
+
+- Read [Catalog](/reference/catalog) before you hardcode source and market IDs.
+- Read [Authentication](/guides/authentication) if you want the shared auth model behind the SDK.
+- Read [Snapshots](/reference/snapshots) if your TypeScript workflow starts from historical files.
+- Read [Trades](/schemas/trades), [Events](/schemas/events), or [OHLCV](/schemas/ohlcv) for detailed method documentation.

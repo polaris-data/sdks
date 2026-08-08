@@ -1,0 +1,125 @@
+---
+title: "OHLCV"
+sidebarTitle: "OHLCV"
+description: "Query interval-aligned OHLCV bars with client.ohlcv()"
+keywords:
+  - ohlcv
+  - candles
+  - bars
+  - Python SDK
+  - client.ohlcv
+---
+
+Use `client.ohlcv()` when you want interval-based bar data instead of raw executions. This method aggregates OHLCV bars from standardized trade data. OHLCV data is interval-aligned and deterministic: candle boundaries are fixed to UTC intervals, which keeps joins and cross-venue aggregation consistent.
+
+## Method signature
+
+```python
+ohlcv(source, market, from_, to, interval, format=None)
+```
+
+## Parameters
+
+| Parameter | Type | Required | Notes |
+| --- | --- | --- | --- |
+| source | str | Yes | Source ID |
+| market | str | Yes | Normalized market or instrument ID |
+| from_ | str/datetime/date/int | Yes | Inclusive start time (ISO 8601, datetime, date, or epoch microseconds) |
+| to | str/datetime/date/int | Yes | Exclusive end time (same formats as from_) |
+| interval | str | Yes | Duration token such as `1m`, `5m`, `1h` |
+| format | str | No | Response format: `None` (default JSON), `"tradingview"` for TV-compatible JSON |
+
+**Note:** API key required for historical ranges. Set `POLARIS_API_KEY` environment variable or pass `api_key` to `PolarisClient()`.
+
+## Return value
+
+- Default: List of OHLCV bar dictionaries
+- With `format="tradingview"`: Dictionary with `candles` and `volumes` arrays
+
+## Example response
+
+```python
+[
+    {
+        'timestamp': 1704067200000000,
+        'open': 43250.00,
+        'high': 43260.00,
+        'low': 43245.00,
+        'close': 43255.00,
+        'volume': 12.5,
+        'trades': 45,
+        'interval': '1m'
+    }
+]
+```
+
+## Fields
+
+The default response is a list of bar dictionaries with these fields:
+
+- `timestamp`: bar open time in UTC microseconds since the Unix epoch
+- `open`, `high`, `low`, `close`: interval prices
+- `volume`: traded base volume for the bar
+- `trades`: number of trades aggregated into the bar
+- `interval`: duration token such as `1m`, `5m`, or `1h`
+
+When OHLCV appears inside `/events` or snapshot files, it uses the standard event envelope and the bar-specific fields live under the nested `data` object.
+
+## Example
+
+```python
+from datetime import datetime, timedelta, timezone
+from polaris_data import PolarisClient
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(hours=6)
+
+with PolarisClient() as client:
+    bars = client.ohlcv(
+        source="hyperliquid",
+        market="SPX",
+        from_=start,
+        to=end,
+        interval="1m",
+    )
+
+print(bars[:2])
+```
+
+## TradingView format
+
+If you pass `format="tradingview"`, the response uses these fields:
+
+- `candles[].time`: Unix seconds
+- `candles[].open`, `candles[].high`, `candles[].low`, `candles[].close`
+- `volumes[].time`: Unix seconds
+- `volumes[].value`: bar volume
+
+
+
+```python
+with PolarisClient() as client:
+    tv_data = client.ohlcv(
+        source="hyperliquid",
+        market="SPX",
+        from_=start,
+        to=end,
+        interval="1m",
+        format="tradingview",
+    )
+
+print(tv_data)
+# {'candles': [...], 'volumes': [...]}
+```
+
+## How it works
+
+`client.ohlcv()` aggregates bars from standardized trade data using snapshot-first replay. The SDK queries the `/snapshots` endpoint for historical data, reads from local cached files when available, and derives OHLCV bars from the underlying trade events. The SDK handles pagination and data derivation automatically.
+
+For more details on snapshot-based queries, see [Snapshots](/reference/snapshots).
+
+## Related documentation
+
+- [Trades](/schemas/trades) if you need execution-level data instead of bars
+- [Snapshots](/reference/snapshots) for bulk historical standardized files
+- [Authentication](/guides/authentication)

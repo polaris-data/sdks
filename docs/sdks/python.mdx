@@ -1,0 +1,463 @@
+---
+title: "Python SDK"
+sidebarTitle: "Python SDK"
+description: "Install the Polaris Python client, discover markets, and query trades, events, snapshots, replay data, and OHLCV bars."
+keywords:
+  - Python SDK
+  - polaris_data
+  - PolarisClient
+  - Jupyter notebook
+  - pandas
+  - Hyperliquid
+  - trades
+  - OHLCV
+---
+
+The Polaris Python SDK is available on PyPI as [`polaris-data`](https://pypi.org/project/polaris-data/).
+
+## Install
+
+```bash
+pip install polaris-data
+```
+
+If you use `uv`, install it into a project with:
+
+```bash
+uv add polaris-data
+```
+
+Or install it into the active environment with:
+
+```bash
+uv pip install polaris-data
+```
+
+## Quickstart
+
+Use `replay(...)` when you want to stream historical rows in a notebook, script, or backfill job. You can run this without an API key set, and `from_` and `to` are optional. If you omit them, the SDK uses the most recent available window up to the last 7 days of data, or the public cutoff date for preview datasets.
+
+```python
+from polaris_data import PolarisClient
+
+with PolarisClient() as client:
+    for row in client.replay(
+        source="binance",
+        market="BTC-USDT",
+    ):
+        print(row)
+```
+
+## Create a client
+
+If you omit `api_key`, the client reads `POLARIS_API_KEY` from the environment.
+
+```python
+from polaris_data import PolarisClient
+
+with PolarisClient() as client:
+    print(client.health())
+```
+
+The main constructor is:
+
+```python
+PolarisClient(
+    api_key=None,
+    base_url="https://api.polaris.supply",
+    timeout=30.0,
+    dataset_root=None,
+)
+```
+
+## Core methods
+
+Use `PolarisClient` for discovery, historical replay, and direct query workflows.
+
+| Method | Returns | Use it for |
+| --- | --- | --- |
+| `health()` | JSON object | Confirm API availability |
+| `catalog(source=None, market=None)` | JSON object | Discover sources and exact market IDs |
+| `list_snapshots(source, market, from_, to, limit=1000)` | List of snapshot entries | Find snapshot files for a range |
+| `replay(source, market, from_=None, to=None, standard=True)` | Iterator of rows | Stream historical data for replay or backfills |
+| `events(source, market, from_=None, to=None)` | List of normalized events | Load mixed event types into scripts or notebooks |
+| `trades(source, market, from_=None, to=None)` | List of normalized trades | Analyze executions |
+| `raw(source, market, from_=None, to=None, limit=1000)` | List of raw payloads | Inspect venue-native messages |
+| `ohlcv(source, market, interval, from_=None, to=None, format=None)` | List of bars or TradingView-style JSON | Plot fast market charts |
+| `l2_snapshots(source, market, from_=None, to=None)` | List of orderbook snapshot rows | Order book reconstruction and microstructure analysis |
+| `funding_rates(source, market, from_=None, to=None)` | List of funding-rate point series rows | Perpetual funding studies and carry modeling |
+| `mark_prices(source, market, from_=None, to=None)` | List of mark-price point series rows | Basis analysis, mark tracking, and liquidation-related research |
+| `volume(source, market, interval, from_=None, to=None)` | Bucketed trade volume series | Volume profiling and participation analysis |
+| `vwap(source, market, interval, from_=None, to=None)` | Bucketed VWAP series | Execution benchmarking and price smoothing |
+| `volatility(source, market, interval, from_=None, to=None, method="log_returns")` | Bucketed realized volatility series | Risk modeling and intraperiod volatility analysis |
+| `bbo(source, market, from_=None, to=None)` | Best bid/offer quote series | Spread tracking, quote analytics, and top-of-book monitoring |
+| `depth_metrics(source, market, from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0)` | Derived depth, spread, imbalance, and slippage metrics | Liquidity analysis and market impact estimation |
+
+`from_` and `to` accept ISO 8601 strings, `datetime`, `date`, or Unix epoch microseconds. They are optional on `replay(...)`, `events(...)`, `trades(...)`, `raw(...)`, and `ohlcv(...)`. If you omit either boundary, the SDK fills the request from the most recent available window up to the last 7 days of data, or the public cutoff date for preview datasets.
+
+For historical event queries, `standard=True` is the default on `replay(...)`. Pass `standard=False` when you explicitly want raw schema payloads through replay.
+
+## Discover a market before you query it
+
+Use `catalog(...)` to find the exact Polaris market ID for a venue.
+
+```python
+from polaris_data import PolarisClient
+
+with PolarisClient() as client:
+    catalog = client.catalog(source="hyperliquid")
+    markets = [row["market"] for row in catalog["markets"]]
+    print(markets[:10])
+```
+
+If you want a high-level view of supported venues and example market IDs before you query the exact pair, start with [Market Coverage](/markets/market-coverage).
+
+## Query events
+
+Use `events(...)` when you want standardized historical event rows beyond trades alone. Omit `from_` and `to` to query the recent default window, or pass them explicitly when you need a fixed range.
+
+```python
+from polaris_data import PolarisClient
+
+with PolarisClient() as client:
+    rows = client.events(
+        source="binance",
+        market="BTC-USDT",
+    )
+
+print(len(rows))
+print(rows[0])
+```
+
+## Query trades
+
+`trades(...)` returns a list of normalized trade events. The SDK handles pagination and snapshot-backed historical reads for you. `from_` and `to` are optional, so you can start with the recent default window and only add explicit boundaries when you need a specific range.
+
+```python
+from datetime import datetime, timedelta, timezone
+
+from polaris_data import PolarisClient
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(hours=1)
+
+with PolarisClient() as client:
+    trades = client.trades(
+        source="hyperliquid",
+        market="SPX",
+        from_=start,
+        to=end,
+    )
+
+print(trades[0])
+```
+
+## Query OHLCV bars
+
+Use `ohlcv(...)` when you want interval bars instead of individual trades. `from_` and `to` are optional here as well.
+
+```python
+from datetime import datetime, timedelta, timezone
+
+from polaris_data import PolarisClient
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(hours=6)
+
+with PolarisClient() as client:
+    bars = client.ohlcv(
+        source="hyperliquid",
+        market="SPX",
+        from_=start,
+        to=end,
+        interval="1m",
+    )
+
+print(bars[0])
+```
+
+If you pass `format="tradingview"`, `ohlcv(...)` returns TradingView-style candle and volume arrays.
+
+## Query order book snapshots
+
+Use `l2_snapshots(...)` when you need order book depth data for microstructure analysis.
+
+```python
+from datetime import datetime, timedelta, timezone
+
+from polaris_data import PolarisClient
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(minutes=5)
+
+with PolarisClient() as client:
+    snapshots = client.l2_snapshots(
+        source="binance",
+        market="BTC-USDT",
+        from_=start,
+        to=end,
+    )
+
+print(snapshots[0])
+```
+
+## Query funding rates
+
+Use `funding_rates(...)` to analyze perpetual funding rates and carry modeling.
+
+```python
+from datetime import datetime, timedelta, timezone
+
+from polaris_data import PolarisClient
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(hours=24)
+
+with PolarisClient() as client:
+    funding_rates = client.funding_rates(
+        source="hyperliquid",
+        market="BTC",
+        from_=start,
+        to=end,
+    )
+
+print(funding_rates[0])
+```
+
+## Query mark prices
+
+Use `mark_prices(...)` for basis analysis, mark tracking, and liquidation-related research.
+
+```python
+from datetime import datetime, timedelta, timezone
+
+from polaris_data import PolarisClient
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(hours=24)
+
+with PolarisClient() as client:
+    mark_prices = client.mark_prices(
+        source="hyperliquid",
+        market="BTC",
+        from_=start,
+        to=end,
+    )
+
+print(mark_prices[0])
+```
+
+## Query volume profiles
+
+Use `volume(...)` for volume profiling and participation analysis.
+
+```python
+from datetime import datetime, timedelta, timezone
+
+from polaris_data import PolarisClient
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(hours=6)
+
+with PolarisClient() as client:
+    volume = client.volume(
+        source="hyperliquid",
+        market="SPX",
+        from_=start,
+        to=end,
+        interval="1h",
+    )
+
+print(volume[0])
+```
+
+## Query VWAP series
+
+Use `vwap(...)` for execution benchmarking and price smoothing.
+
+```python
+from datetime import datetime, timedelta, timezone
+
+from polaris_data import PolarisClient
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(hours=6)
+
+with PolarisClient() as client:
+    vwap = client.vwap(
+        source="hyperliquid",
+        market="SPX",
+        from_=start,
+        to=end,
+        interval="1h",
+    )
+
+print(vwap[0])
+```
+
+## Query volatility series
+
+Use `volatility(...)` for risk modeling and intraperiod volatility analysis.
+
+```python
+from datetime import datetime, timedelta, timezone
+
+from polaris_data import PolarisClient
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(hours=6)
+
+with PolarisClient() as client:
+    volatility = client.volatility(
+        source="hyperliquid",
+        market="SPX",
+        from_=start,
+        to=end,
+        interval="1h",
+    )
+
+print(volatility[0])
+```
+
+## Query best bid/offer
+
+Use `bbo(...)` for spread tracking, quote analytics, and top-of-book monitoring.
+
+```python
+from datetime import datetime, timedelta, timezone
+
+from polaris_data import PolarisClient
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(minutes=30)
+
+with PolarisClient() as client:
+    bbo_quotes = client.bbo(
+        source="binance",
+        market="BTC-USDT",
+        from_=start,
+        to=end,
+    )
+
+print(bbo_quotes[0])
+```
+
+## Query depth metrics
+
+Use `depth_metrics(...)` for liquidity analysis and market impact estimation.
+
+```python
+from datetime import datetime, timedelta, timezone
+
+from polaris_data import PolarisClient
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(minutes=30)
+
+with PolarisClient() as client:
+    depth_metrics = client.depth_metrics(
+        source="binance",
+        market="BTC-USDT",
+        from_=start,
+        to=end,
+        depth_pct=0.01,
+        slippage_notional=10000.0,
+    )
+
+print(depth_metrics[0])
+```
+
+## Local dataset storage
+
+The SDK stores standardized snapshots and local day files under a shared Polaris app-data root so the Python SDK and CLI can reuse the same files.
+
+Default roots:
+
+- macOS: `~/Library/Application Support/polaris`
+- Linux: `$XDG_DATA_HOME/polaris` or `~/.local/share/polaris`
+- Windows: `%APPDATA%\polaris`
+
+Within that root, the SDK uses this layout:
+
+```text
+<root>/
+  data/
+  daily/
+  tmp/
+  cache/
+  locks/
+```
+
+Pass `dataset_root=...` to `PolarisClient(...)` to override the root explicitly.
+
+- `POLARIS_ROOT` overrides the shared root globally.
+- `POLARIS_DATASET_DOWNLOAD_DIR` is still accepted as a deprecated compatibility override.
+
+## Snapshot-first replay
+
+For standardized historical data, `replay(...)`, `events(...)`, `trades(...)`, and default or TradingView `ohlcv(...)` prefer `/snapshots` and `/snapshots/download`, then read local day files when they already exist. This applies whether you pass an explicit range or rely on the default recent window.
+
+```python
+from polaris_data import PolarisClient
+
+with PolarisClient() as client:
+    for row in client.replay(
+        source="binance",
+        market="BTC-USDT",
+        from_="2024-01-01T00:00:00Z",
+        to="2024-01-01T01:00:00Z",
+    ):
+        print(row)
+```
+
+If the requested standardized range cannot be satisfied from daily snapshots, the SDK falls back to the legacy `/events?format=file` flow for standardized replay, event, trade, and local OHLCV derivation.
+
+## Authentication
+
+Public sources (e.g. Binance BTC-USDT) work without an API key. For premium sources, raw snapshots, or extended history, set your key via the `POLARIS_API_KEY` environment variable or pass it directly:
+
+```python
+from polaris_data import PolarisClient
+
+with PolarisClient(api_key="pk_live_your_key") as client:
+    trades = client.trades(
+        source="hyperliquid",
+        market="SPX",
+        from_="2024-01-01T00:00:00Z",
+        to="2024-01-02T00:00:00Z",
+    )
+```
+
+See [Authentication](/guides/authentication) for the full auth model.
+
+## Error handling
+
+```python
+from polaris_data import PolarisClient, RateLimitedError, UnauthorizedError
+
+client = PolarisClient()
+
+try:
+    client.replay(
+        source="binance",
+        market="BTC-USDT",
+        from_="2024-01-01T00:00:00Z",
+        to="2024-01-01T01:00:00Z",
+    )
+except UnauthorizedError:
+    print("API key is required")
+except RateLimitedError as err:
+    print(f"Rate limited. Reset at: {err.reset_at}")
+```
+
+## Notebook workflow
+
+If you want a notebook that discovers a market, loads a DataFrame, and plots a chart, start with [Example Notebooks](/guides/jupyter-notebook-quickstart).
+
+## Next steps
+
+- Read [Example Notebooks](/guides/jupyter-notebook-quickstart) if you want notebook-ready workflows with pandas and matplotlib.
+- Read [Catalog](/reference/catalog) before you hardcode source and market IDs.
+- Read [Authentication](/guides/authentication) if you want the shared auth model behind the SDK.
+- Read [Snapshots](/reference/snapshots) if your Python workflow starts from historical files.
+- Read [Trades](/schemas/trades), [Events](/schemas/events), or [OHLCV](/schemas/ohlcv) for detailed method documentation.
