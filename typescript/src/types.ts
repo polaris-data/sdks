@@ -54,6 +54,7 @@ export interface CatalogInstrument {
 export interface CatalogMarket {
   source: string;
   market: string;
+  symbol: string;
   start?: string;
   end?: string;
   source_type?: string;
