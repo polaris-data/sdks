@@ -1,0 +1,60 @@
+---
+title: "API overview"
+sidebarTitle: "API Overview"
+description: "Choose the right Polaris REST endpoint and jump into smaller endpoint-specific reference pages."
+---
+
+Polaris provides REST endpoints at `https://api.polaris.supply`. Most endpoints are public. Add bearer auth only when you need broader historical access, account-tier visibility, or a dataset policy that requires it. Choose the endpoint that matches your task, then read the smaller page for that endpoint.
+
+## Start with the right endpoint
+
+| Task | Page |
+| --- | --- |
+| Understand when you need a token and how bearer auth works | [Authentication](/guides/authentication) |
+| Discover valid sources, markets, and time bounds | [Catalog](/reference/catalog) |
+| List available snapshot files (standard or raw) | [Snapshots](/reference/snapshots) |
+| Get bulk download URLs for a UTC date, or download a snapshot file by key | [Download](/reference/download) |
+
+## Endpoint families
+
+### Metadata
+
+- `GET /catalog` for public market discovery, with optional account-tier visibility when you send bearer auth
+
+### Historical files
+
+- `GET /snapshots` for public hourly snapshot listing. Add `raw=true` to list venue-native raw snapshot files (requires paid auth)
+- `GET /download` for bulk daily download manifests or single-file download. Use `source`/`market`/`date` for the bulk JSON manifest, or `key` for one file
+
+## Common response patterns
+
+`/snapshots` returns a paginated JSON response:
+
+```json
+{
+  "source": "hyperliquid",
+  "market": "BTC-USD",
+  "access": { "status": "open", "public_cutoff_date": null },
+  "total": 2,
+  "total_bytes": 987654321,
+  "limit": 2,
+  "has_more": false,
+  "next_cursor": null,
+  "snapshots": []
+}
+```
+
+`/download` supports two response shapes: a bulk daily manifest when you request `source`, `market`, `date`, and `mode=json`, or a single-file redirect / JSON URL response when you request `key`.
+
+## Recommended reading order
+
+1. [Authentication](/guides/authentication)
+2. [Catalog](/reference/catalog)
+3. [Snapshots](/reference/snapshots)
+4. [Download](/reference/download)
+
+## Next steps
+
+- Read [Authentication](/guides/authentication) if you are about to make your first request.
+- Read [Market coverage](/markets/market-coverage) if you are deciding between snapshots and direct API queries.
+- Read [Trades](/schemas/trades) if you want the simplest recent-data endpoint.

@@ -1,0 +1,90 @@
+---
+title: "Mark Prices"
+sidebarTitle: "Mark Prices"
+description: "Query mark price series with client.mark_prices()"
+keywords:
+  - mark_prices
+  - mark price
+  - perpetuals
+  - futures
+  - Python SDK
+  - client.mark_prices
+---
+
+Use `client.mark_prices()` when you need mark price data for perpetual contracts. This method returns a time series of mark prices used for basis analysis, mark tracking, and liquidation-related research.
+
+## Method signature
+
+```python
+mark_prices(source, market, from_, to, limit=1000)
+```
+
+## Parameters
+
+| Parameter | Type | Required | Notes |
+| --- | --- | --- | --- |
+| source | str | Yes | Source ID |
+| market | str | Yes | Normalized market or instrument ID |
+| from_ | str/datetime/date/int | Yes | Inclusive start time (ISO 8601, datetime, date, or epoch microseconds) |
+| to | str/datetime/date/int | Yes | Exclusive end time (same formats as from_) |
+| limit | int | No | Page size (default: 1000) |
+
+**Note:** API key required for historical ranges. Set `POLARIS_API_KEY` environment variable or pass `api_key` to `PolarisClient()`.
+
+## Return value
+
+List of mark price point series rows.
+
+## Example response
+
+```python
+[
+    {
+        'timestamp': 1704067200000000,
+        'venue': 'binance',
+        'symbol': 'BTCUSDT',
+        'mark_price': 43250.75
+    }
+]
+```
+
+## Fields
+
+Mark price records include:
+
+- `timestamp`: observation time in UTC microseconds since the Unix epoch
+- `venue`: exchange identifier
+- `symbol`: normalized instrument symbol
+- `mark_price`: the mark price used for margin and liquidation calculations
+
+## Example
+
+```python
+from datetime import datetime, timedelta, timezone
+from polaris_data import PolarisClient
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(days=7)
+
+with PolarisClient() as client:
+    prices = client.mark_prices(
+        source="binance",
+        market="BTCUSDT",
+        from_=start,
+        to=end,
+    )
+
+print(prices[:2])
+```
+
+## How it works
+
+`client.mark_prices()` uses snapshot-first replay: it queries the `/snapshots` endpoint for historical data and reads from local cached files when available. Mark prices are extracted from standardized datapoint events with the `index_price` or mark price labels.
+
+For more details on snapshot-based queries, see [Snapshots](/reference/snapshots).
+
+## Related documentation
+
+- [Funding rates](/schemas/funding-rates) for related perpetual contract metrics
+- [Events](/schemas/events) if you need mark prices mixed with other datapoints
+- [Authentication](/guides/authentication)

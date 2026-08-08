@@ -1,0 +1,55 @@
+# Polaris documentation
+
+> Documentation for Polaris, a market data platform for discovering, downloading, and querying frontier market datasets across crypto derivatives, RWAs, and compute markets.
+
+Use this file to choose the right Polaris page for the job.
+
+Start with `Catalog` when you need exact market IDs, venue coverage, or historical bounds before making API or SDK requests.
+
+Start with `Snapshots` and `Download` when you want bulk historical files.
+
+Start with `Trades`, `Events`, or `OHLCV` when you already know the market and need query patterns for recent or historical data in code.
+
+## Start here
+
+- [Introduction](https://docs.polaris.supply/index.md): Overview of Polaris, what it is for, and the main product surfaces.
+- [Quickstart](https://docs.polaris.supply/quickstart.md): Install the CLI, browse datasets, and download your first data.
+- [Authentication](https://docs.polaris.supply/guides/authentication.md): When public access is enough and when to add a Polaris API key.
+- [Market coverage](https://docs.polaris.supply/markets/market-coverage.md): High-level venue coverage across perpetuals, options, RWAs, and compute markets.
+- [Standardised formats](https://docs.polaris.supply/reference/standardised-formats.md): Canonical cross-venue event envelope and typed payloads.
+
+## Access and support
+
+- [Account](https://www.polaris.supply/account): Log in to fetch your Polaris API key and manage your current plan.
+- [Telegram support](https://t.me/hilliamt): Start a Telegram conversation for support, pricing questions, and general enquiries.
+
+## SDKs
+
+- [Python SDK](https://docs.polaris.supply/sdks/python.md): Python client for market discovery, snapshots, replay, trades, events, OHLCV, order book snapshots, funding rates, mark prices, volume profiles, VWAP, volatility, best bid/offer, and depth metrics.
+- [TypeScript SDK](https://docs.polaris.supply/sdks/typescript.md): TypeScript client for market discovery, snapshots, replay, trades, events, OHLCV, order book snapshots, funding rates, mark prices, volume profiles, VWAP, volatility, best bid/offer, and depth metrics.
+- [Rust SDK](https://docs.polaris.supply/sdks/rust.md): Rust client for market discovery, snapshots, replay, trades, events, OHLCV, order book snapshots, funding rates, mark prices, volume profiles, VWAP, volatility, best bid/offer, and depth metrics.
+
+## Standardised Data Schemas
+
+- [Events](https://docs.polaris.supply/schemas/events.md): Query mixed normalized event streams with `client.events()`.
+- [Trades](https://docs.polaris.supply/schemas/trades.md): Query normalized trade events with `client.trades()`.
+- [OHLCV](https://docs.polaris.supply/schemas/ohlcv.md): Query interval-aligned OHLCV bars with `client.ohlcv()`.
+- [L2 Snapshots](https://docs.polaris.supply/schemas/l2-snapshots.md): Query order book depth data with `client.l2_snapshots()`.
+- [Funding Rates](https://docs.polaris.supply/schemas/funding-rates.md): Query perpetual funding rates with `client.funding_rates()`.
+- [Mark Prices](https://docs.polaris.supply/schemas/mark-prices.md): Query mark prices for basis analysis with `client.mark_prices()`.
+- [Volume](https://docs.polaris.supply/schemas/volume.md): Query bucketed trade volume with `client.volume()`.
+- [VWAP](https://docs.polaris.supply/schemas/vwap.md): Query volume-weighted average price with `client.vwap()`.
+- [Volatility](https://docs.polaris.supply/schemas/volatility.md): Query realized volatility series with `client.volatility()`.
+- [BBO](https://docs.polaris.supply/schemas/bbo.md): Query best bid/offer quotes with `client.bbo()`.
+- [Depth Metrics](https://docs.polaris.supply/schemas/depth-metrics.md): Query liquidity and slippage metrics with `client.depth_metrics()`.
+
+## API reference
+
+- [API overview](https://docs.polaris.supply/reference/api-reference.md): Choose the right Polaris REST endpoint and navigate to focused reference pages.
+- [Catalog](https://docs.polaris.supply/reference/catalog.md): `GET /catalog` for market discovery, coverage, and bounds.
+- [Snapshots](https://docs.polaris.supply/reference/snapshots.md): `GET /snapshots` for historical file listing, including raw snapshot discovery notes.
+- [Download](https://docs.polaris.supply/reference/download.md): `GET /download` for bulk file retrieval by `source`, `market`, and `date`.
+
+## Resources
+
+- [Example Notebooks](https://docs.polaris.supply/guides/jupyter-notebook-quickstart.md): Notebook setup plus curated Polaris Python examples using pandas and matplotlib.

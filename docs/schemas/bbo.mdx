@@ -1,0 +1,100 @@
+---
+title: "BBO"
+sidebarTitle: "BBO"
+description: "Query best bid/offer quotes with client.bbo()"
+keywords:
+  - bbo
+  - best bid offer
+  - top of book
+  - quotes
+  - spread
+  - Python SDK
+  - client.bbo
+---
+
+Use `client.bbo()` when you need top-of-book quote data for spread tracking and quote monitoring. This method returns the best bid and best offer prices and quantities.
+
+## Method signature
+
+```python
+bbo(source, market, from_, to, limit=1000)
+```
+
+## Parameters
+
+| Parameter | Type | Required | Notes |
+| --- | --- | --- | --- |
+| source | str | Yes | Source ID |
+| market | str | Yes | Normalized market or instrument ID |
+| from_ | str/datetime/date/int | Yes | Inclusive start time (ISO 8601, datetime, date, or epoch microseconds) |
+| to | str/datetime/date/int | Yes | Exclusive end time (same formats as from_) |
+| limit | int | No | Page size (default: 1000) |
+
+**Note:** API key required for historical ranges. Set `POLARIS_API_KEY` environment variable or pass `api_key` to `PolarisClient()`.
+
+## Return value
+
+List of best bid/offer quote series rows.
+
+## Example response
+
+```python
+[
+    {
+        'timestamp': 1704067200000000,
+        'venue': 'binance',
+        'symbol': 'BTC-USDT',
+        'bid_price': 43250.00,
+        'bid_quantity': 1.5,
+        'ask_price': 43250.50,
+        'ask_quantity': 1.2
+    }
+]
+```
+
+## Fields
+
+BBO records include:
+
+- `timestamp`: quote time in UTC microseconds since the Unix epoch
+- `venue`: exchange identifier
+- `symbol`: normalized instrument symbol
+- `bid_price`: best bid price
+- `bid_quantity`: quantity available at best bid
+- `ask_price`: best offer price
+- `ask_quantity`: quantity available at best offer
+
+The bid-ask spread can be calculated as `ask_price - bid_price`.
+
+## Example
+
+```python
+from datetime import datetime, timedelta, timezone
+from polaris_data import PolarisClient
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(hours=1)
+
+with PolarisClient() as client:
+    quotes = client.bbo(
+        source="binance",
+        market="BTC-USDT",
+        from_=start,
+        to=end,
+    )
+
+print(quotes[:2])
+```
+
+## How it works
+
+`client.bbo()` uses snapshot-first replay: it queries the `/snapshots` endpoint for historical data and reads from local cached files when available. The SDK extracts the top levels from order book snapshots to provide best bid/offer data.
+
+For more details on snapshot-based queries, see [Snapshots](/reference/snapshots).
+
+## Related documentation
+
+- [L2 snapshots](/schemas/l2-snapshots) if you need full order book depth
+- [Depth metrics](/schemas/depth-metrics) for derived liquidity metrics
+- [Events](/schemas/events) if you need BBO updates mixed with other event types
+- [Authentication](/guides/authentication)
