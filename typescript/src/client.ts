@@ -62,7 +62,7 @@ import { OrderbookBuilder } from "./orderbook";
 // SDK version – bumped manually during releases
 // ---------------------------------------------------------------------------
 
-const VERSION = "0.5.4";
+const VERSION = "0.5.5";
 
 // ---------------------------------------------------------------------------
 // Internal shorthand
