@@ -218,6 +218,14 @@ uv run python benchmarks/streaming_memory.py
 
 It generates a 3,000-level local book with one million deltas, consumes raw standardized events, direct BBO, and materialized L2 streams in isolated processes, and reports end-to-end wall time, rows per second, and peak RSS. The command fails when peak RSS from 100,000 to one million deltas grows by more than the larger of 20% or 64 MiB, or when long-run throughput falls below 75% of short-run throughput.
 
+Reference results from a local development build:
+
+| Mode | Scale | Throughput | Peak RSS |
+| --- | ---: | ---: | ---: |
+| Raw events | 1,000,001 rows | ~83k rows/s | ~36 MiB |
+| Direct BBO | 1,000,001 quotes | ~173k rows/s | ~35 MiB |
+| Materialized 3,000-level L2 | 1,001 books | ~73 books/s | ~65 MiB |
+
 Use three isolated runs to compare median speed reliably, and optionally set machine-specific throughput floors:
 
 ```bash
