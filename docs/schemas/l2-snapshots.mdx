@@ -11,7 +11,7 @@ keywords:
   - client.l2_snapshots
 ---
 
-Use `client.l2_snapshots()` when you need order book snapshots for market microstructure analysis. This method returns standardized Level 2 order book data with bids and asks at multiple price levels.
+Use `client.l2_snapshots()` when you need complete Level 2 books for market microstructure analysis. The SDK reconstructs standardized `orderbook` snapshots and `orderbook_delta` updates by default.
 
 ## Method signature
 
@@ -60,12 +60,27 @@ List of normalized order book snapshot dictionaries.
 
 ## Fields
 
-L2 snapshots use the standard event envelope with `type: "orderbook"` and the following order book-specific fields under `data`:
+Materialized L2 rows use the standard event envelope with `type: "orderbook"` and the following fields under `data`:
 
 - `data.bids`: array of bid levels, each with `price` and `quantity`
 - `data.asks`: array of ask levels, each with `price` and `quantity`
 
 Bid levels are sorted descending by price, ask levels are sorted ascending. The envelope-level `timestamp` is the snapshot time in UTC microseconds since the Unix epoch.
+
+A snapshot replaces both sides. A delta changes only listed prices, and quantity
+zero removes a price. Deltas are not applied until a snapshot has been received,
+and state is cleared across coverage gaps and reconnects. Pass
+`materialize_orderbooks=False` in Python, `materialize_orderbooks: false` in
+Rust, or `materializeOrderbooks: false` in TypeScript to return raw snapshots
+and deltas instead.
+
+## Reconstruction lifecycle
+
+1. `orderbook` with bid `100 × 2` initializes the book.
+2. `orderbook_delta` with bid `100 × 3` replaces that quantity.
+3. `orderbook_delta` with bid `100 × 0` deletes the price.
+4. A coverage gap or reconnect clears the reconstructed state.
+5. Any following delta is skipped until another `orderbook` snapshot arrives.
 
 ## Example
 

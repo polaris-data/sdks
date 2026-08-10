@@ -476,14 +476,23 @@ pub struct ChunkedReplayIterator {
 impl ChunkedReplayIterator {
     fn new(client: PolarisClient, query: ReplayQuery) -> Result<Self, PolarisError> {
         let (next_start_us, end_us) = required_range(query.from.as_ref(), query.to.as_ref())?;
+        let materialized = if query.materialize_orderbooks {
+            Some(client.replay(query.clone())?)
+        } else {
+            None
+        };
         Ok(Self {
             client,
             source: query.source,
             market: query.market,
-            next_start_us,
+            next_start_us: if materialized.is_some() {
+                end_us
+            } else {
+                next_start_us
+            },
             end_us,
             allow_gaps: query.allow_gaps,
-            current: None,
+            current: materialized,
         })
     }
 }
@@ -509,6 +518,7 @@ impl Iterator for ChunkedReplayIterator {
                 from: Some(TimeInput::EpochMicros(self.next_start_us)),
                 to: Some(TimeInput::EpochMicros(chunk_end_us)),
                 allow_gaps: self.allow_gaps,
+                materialize_orderbooks: false,
             };
             self.next_start_us = chunk_end_us;
             match self.client.replay(query) {

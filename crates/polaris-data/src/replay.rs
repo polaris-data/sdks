@@ -7,6 +7,7 @@ use std::{
 use async_stream::try_stream;
 
 use crate::{
+    OrderbookBuilder,
     errors::PolarisError,
     models::{ReplayStream, StandardEvent},
 };
@@ -17,8 +18,13 @@ pub(crate) fn replay_stream(
     to_us: i64,
     source: String,
     market: String,
+    materialize_orderbooks: bool,
+    mut gaps: Vec<(i64, i64)>,
 ) -> ReplayStream {
     Box::pin(try_stream! {
+        let mut orderbooks = OrderbookBuilder::new();
+        gaps.sort_unstable();
+        let mut gaps = gaps.into_iter().peekable();
         for path in paths {
             let events = tokio::task::spawn_blocking({
                 let path = path.clone();
@@ -30,7 +36,20 @@ pub(crate) fn replay_stream(
             .map_err(|err| PolarisError::Request(format!("snapshot reader join failed: {err}")))??;
 
             for event in events {
-                yield event;
+                while gaps
+                    .peek()
+                    .is_some_and(|(_, end_us)| event.timestamp.saturating_mul(1_000) >= *end_us)
+                {
+                    orderbooks.clear();
+                    gaps.next();
+                }
+                if materialize_orderbooks {
+                    if let Some(event) = orderbooks.apply(event)? {
+                        yield event;
+                    }
+                } else {
+                    yield event;
+                }
             }
         }
     })
@@ -92,4 +111,58 @@ fn read_lines<R: Read>(
         out.push(event);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use futures_util::StreamExt;
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn materialization_clears_across_known_coverage_gaps() {
+        let root = TempDir::new().unwrap();
+        let first = root.path().join("first.jsonl");
+        let second = root.path().join("second.jsonl");
+        std::fs::write(
+            &first,
+            format!(
+                "{}\n",
+                json!({"timestamp":1000,"source":"s","market":"m","type":"orderbook","data":{"bids":[[100,1]],"asks":[[101,1]]}})
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &second,
+            format!(
+                "{}\n{}\n{}\n",
+                json!({"timestamp":3000,"source":"s","market":"m","type":"orderbook_delta","data":{"bids":[[100,9]]}}),
+                json!({"timestamp":3500,"source":"s","market":"m","type":"trade","data":{"price":95,"quantity":1}}),
+                json!({"timestamp":4000,"source":"s","market":"m","type":"orderbook","data":{"bids":[[90,2]],"asks":[[91,3]]}})
+            ),
+        )
+        .unwrap();
+
+        let rows = replay_stream(
+            vec![first, second],
+            0,
+            10_000_000,
+            "s".to_owned(),
+            "m".to_owned(),
+            true,
+            vec![(2_000_000, 3_000_000)],
+        )
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].event_type, "orderbook");
+        assert_eq!(rows[1].event_type, "trade");
+        assert_eq!(rows[2].data["bids"], json!([{"price":90.0,"quantity":2.0}]));
+    }
 }

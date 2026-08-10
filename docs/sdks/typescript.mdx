@@ -96,6 +96,13 @@ Use `PolarisClient` for discovery, historical replay, and direct query workflows
 
 `from` and `to` accept ISO 8601 strings, `Date` objects, or Unix epoch microseconds (number).
 
+`stream`, `replay`, `events`, and `l2Snapshots` reconstruct standardized
+orderbooks by default. Snapshots replace the complete state, deltas update
+listed prices, and zero quantity deletes a price. Books clear across gaps and
+reconnects, with deltas skipped until a new snapshot. Set
+`materializeOrderbooks: false` for raw deltas, or use the exported
+`OrderbookBuilder` directly.
+
 ## Discover a market before you query it
 
 Use `catalog(...)` to find the exact Polaris market ID for a venue.

@@ -10,6 +10,7 @@ export {
 } from "./errors";
 
 export { OhlcvAggregator } from "./aggregator";
+export { OrderbookBuilder } from "./orderbook";
 export { RealtimeStream } from "./realtime";
 
 export type {

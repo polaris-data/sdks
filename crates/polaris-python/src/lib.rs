@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use polaris_data::{
     HistoricalQuery, ListSnapshotsQuery, OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery,
-    PolarisError, RawQuery, RawReplayQuery, ReplayQuery, StreamQuery, TimeInput,
+    OrderbookBuilder, PolarisError, RawQuery, RawReplayQuery, ReplayQuery, StandardEvent,
+    StreamQuery, TimeInput,
     blocking::{self, RawReplayCacheConfig},
 };
 use pyo3::{
@@ -112,6 +113,7 @@ fn historical_query(
         from: time_input(from_),
         to: time_input(to),
         allow_gaps,
+        materialize_orderbooks: true,
     }
 }
 
@@ -227,13 +229,14 @@ impl NativeClient {
 
     fn close(&self) {}
 
-    #[pyo3(signature = (source, markets, include_buffer=false))]
+    #[pyo3(signature = (source, markets, include_buffer=false, materialize_orderbooks=true))]
     fn stream(
         &self,
         py: Python<'_>,
         source: String,
         markets: Vec<String>,
         include_buffer: bool,
+        materialize_orderbooks: bool,
     ) -> PyResult<NativeRealtimeStream> {
         let iterator = py
             .detach(|| {
@@ -241,6 +244,7 @@ impl NativeClient {
                     source,
                     markets,
                     include_buffer,
+                    materialize_orderbooks,
                 })
             })
             .map_err(native_error)?;
@@ -303,7 +307,7 @@ impl NativeClient {
         to_python(py, &result)
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
+    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, materialize_orderbooks=true))]
     fn events<'py>(
         &self,
         py: Python<'py>,
@@ -312,11 +316,13 @@ impl NativeClient {
         from_: Option<String>,
         to: Option<String>,
         allow_gaps: bool,
+        materialize_orderbooks: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let result = py
             .detach(|| {
-                self.inner
-                    .events(historical_query(source, market, from_, to, allow_gaps))
+                let mut query = historical_query(source, market, from_, to, allow_gaps);
+                query.materialize_orderbooks = materialize_orderbooks;
+                self.inner.events(query)
             })
             .map_err(native_error)?;
         to_python(py, &result)
@@ -341,7 +347,7 @@ impl NativeClient {
         to_python(py, &result)
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
+    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, materialize_orderbooks=true))]
     fn replay(
         &self,
         py: Python<'_>,
@@ -350,6 +356,7 @@ impl NativeClient {
         from_: Option<String>,
         to: Option<String>,
         allow_gaps: bool,
+        materialize_orderbooks: bool,
     ) -> PyResult<NativeReplay> {
         let iterator = py
             .detach(|| {
@@ -359,6 +366,7 @@ impl NativeClient {
                     from: time_input(from_),
                     to: time_input(to),
                     allow_gaps,
+                    materialize_orderbooks,
                 })
             })
             .map_err(native_error)?;
@@ -367,7 +375,7 @@ impl NativeClient {
         })
     }
 
-    #[pyo3(signature = (source, market, from_, to, allow_gaps=false))]
+    #[pyo3(signature = (source, market, from_, to, allow_gaps=false, materialize_orderbooks=true))]
     fn replay_chunked(
         &self,
         py: Python<'_>,
@@ -376,6 +384,7 @@ impl NativeClient {
         from_: String,
         to: String,
         allow_gaps: bool,
+        materialize_orderbooks: bool,
     ) -> PyResult<NativeReplay> {
         let iterator = py
             .detach(|| {
@@ -385,6 +394,7 @@ impl NativeClient {
                     from: Some(TimeInput::Iso8601(from_)),
                     to: Some(TimeInput::Iso8601(to)),
                     allow_gaps,
+                    materialize_orderbooks,
                 })
             })
             .map_err(native_error)?;
@@ -545,7 +555,7 @@ impl NativeClient {
         }
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
+    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, materialize_orderbooks=true))]
     fn l2_snapshots<'py>(
         &self,
         py: Python<'py>,
@@ -554,17 +564,22 @@ impl NativeClient {
         from_: Option<String>,
         to: Option<String>,
         allow_gaps: bool,
+        materialize_orderbooks: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let result = py
             .detach(|| {
-                self.inner
-                    .events(historical_query(source, market, from_, to, allow_gaps))
+                let mut query = historical_query(source, market, from_, to, allow_gaps);
+                query.materialize_orderbooks = materialize_orderbooks;
+                self.inner.events(query)
             })
             .map_err(native_error)?;
         let result = result
             .into_iter()
             .filter(|event| {
-                event.event_type == "l2_snapshot" || event.event_type == "orderbook_snapshot"
+                matches!(
+                    event.event_type.as_str(),
+                    "orderbook" | "orderbook_delta" | "l2_snapshot" | "orderbook_snapshot"
+                )
             })
             .collect::<Vec<_>>();
         to_python(py, &result)
@@ -739,6 +754,44 @@ struct NativeReplay {
     iterator: Option<NativeReplayIterator>,
 }
 
+#[pyclass(name = "NativeOrderbookBuilder", module = "polaris_data._native")]
+struct NativeOrderbookBuilder {
+    inner: OrderbookBuilder,
+}
+
+#[pymethods]
+impl NativeOrderbookBuilder {
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: OrderbookBuilder::new(),
+        }
+    }
+
+    fn apply<'py>(
+        &mut self,
+        py: Python<'py>,
+        event: &Bound<'py, PyAny>,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let event: StandardEvent = pythonize::depythonize(event).map_err(|error| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid standardized event: {error}"))
+        })?;
+        self.inner
+            .apply(event)
+            .map_err(native_error)?
+            .map(|event| to_python(py, &event))
+            .transpose()
+    }
+
+    fn clear(&mut self) {
+        self.inner.clear();
+    }
+
+    fn clear_book(&mut self, source: &str, market: &str) {
+        self.inner.clear_book(source, market);
+    }
+}
+
 #[pyclass(unsendable, module = "polaris_data._native")]
 struct NativeRealtimeStream {
     iterator: Option<blocking::RealtimeIterator>,
@@ -850,6 +903,7 @@ fn decode_file<'py>(py: Python<'py>, path: PathBuf) -> PyResult<Bound<'py, PyAny
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeClient>()?;
+    module.add_class::<NativeOrderbookBuilder>()?;
     module.add_class::<NativeReplay>()?;
     module.add_class::<NativeRealtimeStream>()?;
     module.add_class::<NativeRawReplay>()?;

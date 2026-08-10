@@ -285,6 +285,7 @@ async fn events_download_snapshots_and_reuse_local_cache() {
         from: Some("2024-01-01T00:00:00Z".into()),
         to: Some("2024-01-01T01:00:00Z".into()),
         allow_gaps: false,
+        materialize_orderbooks: true,
     };
 
     let first = client.events(query.clone()).await.expect("first events");
@@ -370,6 +371,7 @@ async fn replay_allow_gaps_returns_partial_rows_and_logs_warning() {
             from: Some("2024-01-01T00:00:00Z".into()),
             to: Some("2024-01-01T03:00:00Z".into()),
             allow_gaps: true,
+            materialize_orderbooks: true,
         })
         .await
         .expect("replay");
@@ -437,6 +439,7 @@ async fn replay_strict_gap_handling_returns_coverage_error() {
             from: Some("2024-01-01T00:00:00Z".into()),
             to: Some("2024-01-01T03:00:00Z".into()),
             allow_gaps: false,
+            materialize_orderbooks: true,
         })
         .await
     {
@@ -607,6 +610,7 @@ async fn preview_catalog_without_api_key_infers_public_cutoff_window() {
             from: None,
             to: None,
             allow_gaps: false,
+            materialize_orderbooks: true,
         })
         .await
         .expect("rows");
@@ -710,6 +714,7 @@ async fn invalid_ndjson_and_invalid_zstd_are_mapped_to_decode_errors() {
             from: Some("2024-01-01T00:00:00Z".into()),
             to: Some("2024-01-01T01:00:00Z".into()),
             allow_gaps: false,
+            materialize_orderbooks: true,
         })
         .await
         .expect_err("invalid zstd");
@@ -751,6 +756,7 @@ async fn invalid_ndjson_and_invalid_zstd_are_mapped_to_decode_errors() {
             from: Some("2024-01-01T00:00:00Z".into()),
             to: Some("2024-01-01T01:00:00Z".into()),
             allow_gaps: false,
+            materialize_orderbooks: true,
         })
         .await
         .expect_err("invalid ndjson");
@@ -831,6 +837,7 @@ async fn concurrent_clients_atomically_share_one_snapshot_download() {
         from: Some("2024-01-01T00:00:00Z".into()),
         to: Some("2024-01-02T00:00:00Z".into()),
         allow_gaps: false,
+        materialize_orderbooks: true,
     };
     let (left, right) = tokio::join!(first.events(query.clone()), second.events(query));
 

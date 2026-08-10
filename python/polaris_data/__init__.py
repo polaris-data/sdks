@@ -1,6 +1,6 @@
 """Python SDK for the Polaris market data API."""
 
-from .client import PolarisClient, RealtimeStream
+from .client import OrderbookBuilder, PolarisClient, RealtimeStream
 from .errors import (
     AccessDeniedError,
     DownloadNotAllowedError,
@@ -32,6 +32,7 @@ __all__ = [
     "CatalogMarketEntry",
     "CatalogResponse",
     "NotFoundError",
+    "OrderbookBuilder",
     "DownloadNotAllowedError",
     "LocalSnapshotEntry",
     "PolarisClient",

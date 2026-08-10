@@ -323,6 +323,8 @@ export interface HistoricalQueryOptions {
   market: string;
   from?: TimeInput;
   to?: TimeInput;
+  /** Materialize complete orderbooks from snapshots and deltas. Defaults to `true`. */
+  materializeOrderbooks?: boolean;
 }
 
 export interface ListSnapshotsOptions {
@@ -372,12 +374,16 @@ export interface ReplayOptions {
   to?: TimeInput;
   /** `true` (default) streams standardised events from local snapshots. */
   standard?: boolean;
+  /** Materialize complete orderbooks from snapshots and deltas. Defaults to `true`. */
+  materializeOrderbooks?: boolean;
 }
 
 export interface StreamOptions {
   source: string;
   markets: string[];
   includeBuffer?: boolean;
+  /** Materialize complete orderbooks from snapshots and deltas. Defaults to `true`. */
+  materializeOrderbooks?: boolean;
 }
 
 export interface SnapshotDownloadManifestOptions {

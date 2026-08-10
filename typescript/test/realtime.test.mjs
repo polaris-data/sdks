@@ -86,7 +86,7 @@ test("stream subscribes with token, deduplicates markets, and yields standard ev
   }
 });
 
-test("stream reconnects and resubscribes after an abnormal close", async () => {
+test("stream clears materialized orderbooks after an abnormal close", async () => {
   let connections = 0;
   const { server, url } = await startServer((socket) => {
     const attempt = ++connections;
@@ -98,8 +98,7 @@ test("stream reconnects and resubscribes after an abnormal close", async () => {
         changed: 1,
         active_subscriptions: 1,
       }));
-      if (attempt === 1) socket.close(1013, "retry");
-      else {
+      if (attempt === 1) {
         socket.send(JSON.stringify({
           source: "afx",
           market: "AAPLUSDC",
@@ -111,11 +110,23 @@ test("stream reconnects and resubscribes after an abnormal close", async () => {
               timestamp: 1786017601000,
               source: "afx",
               market: "AAPLUSDC",
-              type: "point",
-              data: { series: "mark_price", value: "1.0" },
+              type: "orderbook",
+              data: { bids: [[100, 1]], asks: [[101, 1]] },
             },
           },
         }));
+        socket.close(1013, "retry");
+      } else {
+        for (const event of [
+          { timestamp: 1786017602000, type: "orderbook_delta", data: { bids: [[100, 9]] } },
+          { timestamp: 1786017603000, type: "orderbook", data: { bids: [[90, 2]], asks: [[91, 3]] } },
+        ]) {
+          socket.send(JSON.stringify({
+            source: "afx",
+            market: "AAPLUSDC",
+            kind: { type: "data", stream: "standard", event },
+          }));
+        }
       }
     });
   });
@@ -124,11 +135,13 @@ test("stream reconnects and resubscribes after an abnormal close", async () => {
     const { PolarisClient } = await import("../dist/node/index.js");
     const client = new PolarisClient({ streamUrl: url });
     const realtime = client.stream({ source: "afx", markets: ["AAPLUSDC"] });
-    const event = await Promise.race([
-      realtime[Symbol.asyncIterator]().next(),
+    const iterator = realtime[Symbol.asyncIterator]();
+    const events = await Promise.race([
+      (async () => [(await iterator.next()).value, (await iterator.next()).value])(),
       new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 3_000)),
     ]);
-    assert.equal(event.value.type, "point");
+    assert.equal(events[0].type, "orderbook");
+    assert.deepEqual(events[1].data.bids, [{ price: 90, quantity: 2 }]);
     assert.equal(connections, 2);
     realtime.close();
     client.close();
