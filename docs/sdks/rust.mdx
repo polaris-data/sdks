@@ -43,13 +43,14 @@ The SDK is async-first and is designed for Tokio-based services, backfills, and 
 Use `events(...)` when you want standardized historical rows in an async service or backfill job.
 
 ```rust
+use futures_util::StreamExt;
 use polaris_data::{HistoricalQuery, PolarisClient};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = PolarisClient::builder().build()?;
 
-    let rows = client
+    let mut rows = client
         .events(HistoricalQuery {
             source: "binance".into(),
             market: "BTC-USDT".into(),
@@ -60,7 +61,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
 
-    println!("Fetched {} events", rows.len());
+    let mut count = 0;
+    while let Some(row) = rows.next().await {
+        println!("{:?}", row?);
+        count += 1;
+    }
+    println!("Fetched {count} events");
     Ok(())
 }
 ```
@@ -105,17 +111,17 @@ Use `PolarisClient` for discovery and snapshot-backed historical queries.
 | `catalog(CatalogQuery)` | `CatalogResponse` | Discover sources and exact market IDs |
 | `list_snapshots(ListSnapshotsQuery)` | `Vec<SnapshotEntry>` | Find snapshot files for a range |
 | `replay(ReplayQuery)` | `ReplayStream` | Stream standardized historical rows |
-| `events(HistoricalQuery)` | `Vec<StandardEvent>` | Load mixed event types into async jobs |
-| `trades(HistoricalQuery)` | `Vec<TradeEvent>` | Analyze executions |
+| `events(HistoricalQuery)` | `HistoricalStream<StandardEvent>` | Process mixed event types with bounded memory |
+| `trades(HistoricalQuery)` | `HistoricalStream<TradeEvent>` | Analyze executions |
 | `ohlcv(OhlcvQuery)` | `OhlcvOutput` | Build bars or TradingView-style output |
-| `l2_snapshots(HistoricalQuery)` | `Vec<OrderbookEvent>` | Order book reconstruction and microstructure analysis |
-| `funding_rates(HistoricalQuery)` | `Vec<PointSeriesEvent>` | Perpetual funding studies and carry modeling |
-| `mark_prices(HistoricalQuery)` | `Vec<PointSeriesEvent>` | Basis analysis, mark tracking, and liquidation-related research |
+| `l2_snapshots(HistoricalQuery)` | `HistoricalStream<OrderbookEvent>` | Order book reconstruction and microstructure analysis |
+| `funding_rates(HistoricalQuery)` | `HistoricalStream<PointSeriesEvent>` | Perpetual funding studies and carry modeling |
+| `mark_prices(HistoricalQuery)` | `HistoricalStream<PointSeriesEvent>` | Basis analysis, mark tracking, and liquidation-related research |
 | `volume(OhlcvQuery)` | `Vec<VolumeBar>` | Bucketed trade volume series for volume profiling and participation analysis |
 | `vwap(OhlcvQuery)` | `Vec<VwapBar>` | Bucketed VWAP series for execution benchmarking and price smoothing |
 | `volatility(OhlcvQuery)` | `Vec<VolatilityBar>` | Bucketed realized volatility series for risk modeling and intraperiod volatility analysis |
-| `bbo(HistoricalQuery)` | `Vec<BboQuote>` | Best bid/offer quote series for spread tracking, quote analytics, and top-of-book monitoring |
-| `depth_metrics(HistoricalQuery, depth_pct, slippage_notional)` | `Vec<DepthMetricsRow>` | Derived depth, spread, imbalance, and slippage metrics for liquidity analysis and market impact estimation |
+| `bbo(BboQuery)` | `HistoricalStream<BboQuote>` | Best bid/offer quotes with optional native interval coalescing |
+| `depth_metrics(HistoricalQuery, depth_pct, slippage_notional)` | `HistoricalStream<DepthMetricsRow>` | Derived depth, spread, imbalance, and slippage metrics for liquidity analysis and market impact estimation |
 
 `from` and `to` accept ISO 8601 strings, `chrono::DateTime<Utc>`, or Unix epoch microseconds as `i64` or `u64`. If you omit one or both bounds, the SDK infers a bounded historical range from catalog metadata, using the latest 7 days by default and applying public cutoff rules for preview datasets when no API key is present.
 
@@ -157,13 +163,14 @@ If you want a high-level view of supported venues and example market IDs before 
 Use `events(...)` when you want standardized historical event rows beyond trades alone.
 
 ```rust
+use futures_util::StreamExt;
 use polaris_data::{HistoricalQuery, PolarisClient};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = PolarisClient::builder().build()?;
 
-    let rows = client
+    let mut rows = client
         .events(HistoricalQuery {
             source: "binance".into(),
             market: "BTC-USDT".into(),
@@ -174,8 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
 
-    println!("{}", rows.len());
-    println!("{:?}", rows.first());
+    println!("{:?}", rows.next().await.transpose()?);
     Ok(())
 }
 ```
@@ -185,13 +191,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 `trades(...)` returns normalized trade events. The SDK loads standardized snapshot data locally and filters trade rows for you.
 
 ```rust
+use futures_util::StreamExt;
 use polaris_data::{HistoricalQuery, PolarisClient};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = PolarisClient::builder().build()?;
 
-    let trades = client
+    let mut trades = client
         .trades(HistoricalQuery {
             source: "hyperliquid".into(),
             market: "SPX".into(),
@@ -202,7 +209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
 
-    println!("{:?}", trades.first());
+    println!("{:?}", trades.next().await.transpose()?);
     Ok(())
 }
 ```
@@ -246,13 +253,14 @@ Supported intervals are `100ms`, `1s`, `10s`, `1m`, `5m`, `15m`, and `1h`.
 Use `l2_snapshots(...)` when you need order book depth data for microstructure analysis.
 
 ```rust
+use futures_util::StreamExt;
 use polaris_data::{HistoricalQuery, PolarisClient};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = PolarisClient::builder().build()?;
 
-    let snapshots = client
+    let mut snapshots = client
         .l2_snapshots(HistoricalQuery {
             source: "binance".into(),
             market: "BTC-USDT".into(),
@@ -263,7 +271,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
 
-    println!("{:?}", snapshots.first());
+    println!("{:?}", snapshots.next().await.transpose()?);
     Ok(())
 }
 ```
@@ -273,13 +281,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Use `funding_rates(...)` to analyze perpetual funding rates and carry modeling.
 
 ```rust
+use futures_util::StreamExt;
 use polaris_data::{HistoricalQuery, PolarisClient};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = PolarisClient::builder().build()?;
 
-    let funding_rates = client
+    let mut funding_rates = client
         .funding_rates(HistoricalQuery {
             source: "hyperliquid".into(),
             market: "BTC".into(),
@@ -290,7 +299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
 
-    println!("{:?}", funding_rates.first());
+    println!("{:?}", funding_rates.next().await.transpose()?);
     Ok(())
 }
 ```
@@ -300,13 +309,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Use `mark_prices(...)` for basis analysis, mark tracking, and liquidation-related research.
 
 ```rust
+use futures_util::StreamExt;
 use polaris_data::{HistoricalQuery, PolarisClient};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = PolarisClient::builder().build()?;
 
-    let mark_prices = client
+    let mut mark_prices = client
         .mark_prices(HistoricalQuery {
             source: "hyperliquid".into(),
             market: "BTC".into(),
@@ -317,7 +327,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
 
-    println!("{:?}", mark_prices.first());
+    println!("{:?}", mark_prices.next().await.transpose()?);
     Ok(())
 }
 ```
@@ -408,24 +418,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Use `bbo(...)` for spread tracking, quote analytics, and top-of-book monitoring.
 
 ```rust
-use polaris_data::{HistoricalQuery, PolarisClient};
+use futures_util::StreamExt;
+use polaris_data::{BboQuery, OhlcvInterval, PolarisClient};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = PolarisClient::builder().build()?;
 
-    let bbo_quotes = client
-        .bbo(HistoricalQuery {
+    let mut bbo_quotes = client
+        .bbo(BboQuery {
             source: "binance".into(),
             market: "BTC-USDT".into(),
             from: Some("2024-01-01T00:00:00Z".into()),
             to: Some("2024-01-01T00:30:00Z".into()),
             allow_gaps: false,
-            materialize_orderbooks: true,
+            interval: Some(OhlcvInterval::S1),
         })
         .await?;
 
-    println!("{:?}", bbo_quotes.first());
+    println!("{:?}", bbo_quotes.next().await.transpose()?);
     Ok(())
 }
 ```
@@ -435,13 +446,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Use `depth_metrics(...)` for liquidity analysis and market impact estimation.
 
 ```rust
+use futures_util::StreamExt;
 use polaris_data::{HistoricalQuery, PolarisClient};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = PolarisClient::builder().build()?;
 
-    let depth_metrics = client
+    let mut depth_metrics = client
         .depth_metrics(
             HistoricalQuery {
                 source: "binance".into(),
@@ -451,12 +463,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 allow_gaps: false,
                 materialize_orderbooks: true,
             },
-            0.01,    // depth_pct
-            10000.0, // slippage_notional
+            Some(0.01),    // depth_pct
+            Some(10000.0), // slippage_notional
         )
         .await?;
 
-    println!("{:?}", depth_metrics.first());
+    println!("{:?}", depth_metrics.next().await.transpose()?);
     Ok(())
 }
 ```

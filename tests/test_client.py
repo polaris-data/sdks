@@ -36,8 +36,7 @@ def _zstd_ndjson(rows: list[dict]) -> bytes:
 
 def _raw_replay_cache_path(directory: Path) -> Path:
     return directory / (
-        "binance_BTC-USDT_2024-01-01T00-00-00Z_"
-        "2024-01-01T01-00-00Z_raw.jsonl"
+        "binance_BTC-USDT_2024-01-01T00-00-00Z_2024-01-01T01-00-00Z_raw.jsonl"
     )
 
 
@@ -277,8 +276,18 @@ def _partial_snapshot_handler(calls: list[tuple[str, str | None]]):
                     "snapshots": [
                         {"key": key, "date": "2024-01-01", "hour": hour}
                         for key, hour in (
-                            (_hourly_snapshot_key("binance", "BTC-USDT", "2024-01-01", 0), 0),
-                            (_hourly_snapshot_key("binance", "BTC-USDT", "2024-01-01", 2), 2),
+                            (
+                                _hourly_snapshot_key(
+                                    "binance", "BTC-USDT", "2024-01-01", 0
+                                ),
+                                0,
+                            ),
+                            (
+                                _hourly_snapshot_key(
+                                    "binance", "BTC-USDT", "2024-01-01", 2
+                                ),
+                                2,
+                            ),
                         )
                     ]
                 },
@@ -416,7 +425,8 @@ def test_raw_infers_bounded_range_when_dataset_is_shorter_than_7_days() -> None:
 def test_events_infer_preview_cutoff_window_without_api_key(tmp_path) -> None:
     snapshot_dates = [f"2024-01-{day:02d}" for day in range(9, 16)]
     snapshot_keys = {
-        f"standard-binance-BTC-USDT-{date_text}": date_text for date_text in snapshot_dates
+        f"standard-binance-BTC-USDT-{date_text}": date_text
+        for date_text in snapshot_dates
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -499,7 +509,9 @@ def test_raw_rejects_legacy_catalog_shape() -> None:
                 ),
             )
         if request.url.path == "/raw":
-            raise AssertionError("raw endpoint should not be called for legacy catalog shape")
+            raise AssertionError(
+                "raw endpoint should not be called for legacy catalog shape"
+            )
         raise AssertionError(f"unexpected request: {request.url}")
 
     client = make_client(handler)
@@ -601,11 +613,13 @@ def test_trades_use_snapshot_download_flow_by_default(tmp_path) -> None:
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        assert client.trades(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
+        assert list(
+            client.trades(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+            )
         ) == [
             {
                 "timestamp": 1704067200000,
@@ -716,11 +730,13 @@ def test_trades_download_hourly_snapshots_for_partial_day_ranges(tmp_path) -> No
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        assert client.trades(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T02:00:00Z",
+        assert list(
+            client.trades(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T02:00:00Z",
+            )
         ) == [
             {
                 "timestamp": _ts("2024-01-01T00:00:01Z"),
@@ -787,11 +803,13 @@ def test_trades_select_intraday_snapshot_keys_without_hour_metadata(tmp_path) ->
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        assert client.trades(
-            source="hyperliquid",
-            market="BTC",
-            from_="2026-07-11T01:05:00Z",
-            to="2026-07-11T01:15:00Z",
+        assert list(
+            client.trades(
+                source="hyperliquid",
+                market="BTC",
+                from_="2026-07-11T01:05:00Z",
+                to="2026-07-11T01:15:00Z",
+            )
         ) == [
             {
                 "timestamp": _ts("2026-07-11T01:05:01Z"),
@@ -808,7 +826,9 @@ def test_trades_select_intraday_snapshot_keys_without_hour_metadata(tmp_path) ->
         client.close()
 
 
-def test_trades_require_snapshot_coverage_and_do_not_fall_back_to_events(tmp_path) -> None:
+def test_trades_require_snapshot_coverage_and_do_not_fall_back_to_events(
+    tmp_path,
+) -> None:
     calls: list[tuple[str, str | None]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -935,7 +955,9 @@ def test_vwap_aggregates_from_snapshot_download_flow(tmp_path) -> None:
         client.close()
 
 
-def test_vwap_require_snapshot_coverage_and_do_not_fall_back_to_events(tmp_path) -> None:
+def test_vwap_require_snapshot_coverage_and_do_not_fall_back_to_events(
+    tmp_path,
+) -> None:
     calls: list[tuple[str, str | None]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1259,7 +1281,10 @@ def test_volatility_allow_gaps_returns_covered_rows_and_warns(tmp_path) -> None:
 def test_ohlcv_aggregates_from_snapshot_download_flow(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/snapshots":
-            return httpx.Response(200, json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]})
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
+            )
         if request.url.path == "/download":
             return httpx.Response(
                 200,
@@ -1397,7 +1422,10 @@ def test_ohlcv_normalizes_millisecond_snapshot_timestamps(tmp_path) -> None:
 def test_volume_aggregates_from_snapshot_download_flow(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/snapshots":
-            return httpx.Response(200, json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]})
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
+            )
         if request.url.path == "/download":
             return httpx.Response(
                 200,
@@ -1464,7 +1492,10 @@ def test_volume_aggregates_from_snapshot_download_flow(tmp_path) -> None:
 def test_ohlcv_tradingview_format_returns_local_json(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/snapshots":
-            return httpx.Response(200, json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]})
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
+            )
         if request.url.path == "/download":
             return httpx.Response(
                 200,
@@ -1502,7 +1533,13 @@ def test_ohlcv_tradingview_format_returns_local_json(tmp_path) -> None:
             format="tradingview",
         ) == {
             "candles": [
-                {"time": 1704067200.0, "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0}
+                {
+                    "time": 1704067200.0,
+                    "open": 100.0,
+                    "high": 100.0,
+                    "low": 100.0,
+                    "close": 100.0,
+                }
             ],
             "volumes": [{"time": 1704067200.0, "value": 1.5}],
         }
@@ -1510,7 +1547,9 @@ def test_ohlcv_tradingview_format_returns_local_json(tmp_path) -> None:
         client.close()
 
 
-def test_volume_require_snapshot_coverage_and_do_not_fall_back_to_events(tmp_path) -> None:
+def test_volume_require_snapshot_coverage_and_do_not_fall_back_to_events(
+    tmp_path,
+) -> None:
     calls: list[tuple[str, str | None]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1539,7 +1578,9 @@ def test_volume_require_snapshot_coverage_and_do_not_fall_back_to_events(tmp_pat
         client.close()
 
 
-def test_ohlcv_require_snapshot_coverage_and_do_not_fall_back_to_events(tmp_path) -> None:
+def test_ohlcv_require_snapshot_coverage_and_do_not_fall_back_to_events(
+    tmp_path,
+) -> None:
     calls: list[tuple[str, str | None]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1615,7 +1656,9 @@ def test_ohlcv_allow_gaps_skips_missing_hours_and_preserves_gap_open(tmp_path) -
 def test_ohlcv_rejects_stale_parquet_format() -> None:
     client = make_client(lambda request: httpx.Response(500))
     try:
-        with pytest.raises(ValueError, match="format must be one of: None, 'tradingview'"):
+        with pytest.raises(
+            ValueError, match="format must be one of: None, 'tradingview'"
+        ):
             client.ohlcv(
                 source="binance",
                 market="BTC-USDT",
@@ -1669,7 +1712,9 @@ def test_list_snapshots_paginates_across_data_and_snapshots_fields() -> None:
 
 def test_replay_materializes_local_snapshot_data_files_before_network(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError("network should not be called when local snapshot files exist")
+        raise AssertionError(
+            "network should not be called when local snapshot files exist"
+        )
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
@@ -1746,11 +1791,15 @@ def test_replay_ignores_legacy_flat_snapshot_data_files(tmp_path) -> None:
 
 def test_replay_reads_local_snapshot_day_files_before_network(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError("network should not be called when local daily files exist")
+        raise AssertionError(
+            "network should not be called when local daily files exist"
+        )
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        daily_path = tmp_path / "daily" / "binance" / "BTC-USDT" / "2024-01-01.jsonl.zst"
+        daily_path = (
+            tmp_path / "daily" / "binance" / "BTC-USDT" / "2024-01-01.jsonl.zst"
+        )
         daily_path.parent.mkdir(parents=True, exist_ok=True)
         daily_path.write_bytes(
             _zstd_ndjson(
@@ -1814,7 +1863,10 @@ def test_replay_parallel_chunks_standard_replay_in_order(tmp_path) -> None:
 def test_events_use_snapshot_download_flow_by_default(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/snapshots":
-            return httpx.Response(200, json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]})
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
+            )
         if request.url.path == "/download":
             return httpx.Response(
                 200,
@@ -1840,11 +1892,13 @@ def test_events_use_snapshot_download_flow_by_default(tmp_path) -> None:
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        assert client.events(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-02T00:00:00Z",
+        assert list(
+            client.events(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-02T00:00:00Z",
+            )
         ) == [
             {"timestamp": 1704067200000},
             {"timestamp": 1704067260000},
@@ -1853,7 +1907,9 @@ def test_events_use_snapshot_download_flow_by_default(tmp_path) -> None:
         client.close()
 
 
-def test_events_require_snapshot_coverage_and_do_not_fall_back_to_events(tmp_path) -> None:
+def test_events_require_snapshot_coverage_and_do_not_fall_back_to_events(
+    tmp_path,
+) -> None:
     calls: list[tuple[str, str | None]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1877,6 +1933,52 @@ def test_events_require_snapshot_coverage_and_do_not_fall_back_to_events(tmp_pat
                 to="2024-01-02T00:00:00Z",
             )
         assert calls == [("/snapshots", None)]
+    finally:
+        client.close()
+
+
+def test_events_defer_decode_errors_until_iteration_reaches_them(tmp_path) -> None:
+    body = zstd.ZstdCompressor().compress(
+        b'{"timestamp":1704067200000,"type":"trade","data":{"price":1,"quantity":1}}\n'
+        b"not-json\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
+            )
+        if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=[SNAPSHOT_KEY_DAY_1],
+                ),
+            )
+        if _is_download_request(request):
+            return httpx.Response(
+                200,
+                content=body,
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        rows = client.events(
+            source="binance",
+            market="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T01:00:00Z",
+            materialize_orderbooks=False,
+        )
+        assert next(rows)["timestamp"] == 1704067200000
+        with pytest.raises(StreamDecodeError, match="invalid ndjson line"):
+            next(rows)
     finally:
         client.close()
 
@@ -1958,11 +2060,13 @@ def test_l2_snapshots_use_snapshot_download_flow_by_default(tmp_path) -> None:
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        assert client.l2_snapshots(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
+        assert list(
+            client.l2_snapshots(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+            )
         ) == [
             {
                 "timestamp": _ts("2024-01-01T00:00:00Z"),
@@ -2043,18 +2147,22 @@ def test_l2_snapshots_materialize_deltas_and_support_raw_opt_out(tmp_path) -> No
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        materialized = client.l2_snapshots(
-            source="lighter",
-            market="BTC-USD",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
+        materialized = list(
+            client.l2_snapshots(
+                source="lighter",
+                market="BTC-USD",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+            )
         )
-        raw = client.l2_snapshots(
-            source="lighter",
-            market="BTC-USD",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
-            materialize_orderbooks=False,
+        raw = list(
+            client.l2_snapshots(
+                source="lighter",
+                market="BTC-USD",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+                materialize_orderbooks=False,
+            )
         )
     finally:
         client.close()
@@ -2067,7 +2175,9 @@ def test_l2_snapshots_materialize_deltas_and_support_raw_opt_out(tmp_path) -> No
     assert raw == snapshot_rows
 
 
-def test_funding_rates_filter_point_series_from_standardized_snapshots(tmp_path) -> None:
+def test_funding_rates_filter_point_series_from_standardized_snapshots(
+    tmp_path,
+) -> None:
     snapshot_rows = [
         {
             "timestamp": _ts("2024-01-01T00:00:00Z"),
@@ -2123,11 +2233,13 @@ def test_funding_rates_filter_point_series_from_standardized_snapshots(tmp_path)
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        assert client.funding_rates(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
+        assert list(
+            client.funding_rates(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+            )
         ) == [snapshot_rows[0], snapshot_rows[3]]
     finally:
         client.close()
@@ -2191,11 +2303,13 @@ def test_mark_prices_filter_point_series_from_standardized_snapshots(tmp_path) -
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        assert client.mark_prices(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
+        assert list(
+            client.mark_prices(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+            )
         ) == [snapshot_rows[1], snapshot_rows[3]]
     finally:
         client.close()
@@ -2247,11 +2361,13 @@ def test_bbo_derives_best_prices_and_quantities_from_l2_snapshots(tmp_path) -> N
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        assert client.bbo(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
+        assert list(
+            client.bbo(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+            )
         ) == [
             {
                 "timestamp": _ts("2024-01-01T00:00:00Z"),
@@ -2320,13 +2436,15 @@ def test_depth_metrics_derive_depth_spread_and_slippage_from_l2_snapshots(
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        rows = client.depth_metrics(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
-            depth_pct=0.01,
-            slippage_notional=100.25,
+        rows = list(
+            client.depth_metrics(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+                depth_pct=0.01,
+                slippage_notional=100.25,
+            )
         )
     finally:
         client.close()
@@ -2379,6 +2497,190 @@ def test_depth_metrics_derive_depth_spread_and_slippage_from_l2_snapshots(
     )
 
 
+def test_bbo_interval_emits_last_quote_in_non_empty_aligned_buckets(tmp_path) -> None:
+    snapshot_rows = [
+        {
+            "timestamp": _ts("2024-01-01T00:00:00.100Z"),
+            "type": "orderbook",
+            "source": "lighter",
+            "market": "BTC-USD",
+            "data": {"bids": [[100.0, 2.0]], "asks": [[101.0, 3.0]]},
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:00:00.800Z"),
+            "type": "orderbook_delta",
+            "source": "lighter",
+            "market": "BTC-USD",
+            "data": {"bids": [[99.0, 4.0]]},
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:00:01.200Z"),
+            "type": "orderbook_delta",
+            "source": "lighter",
+            "market": "BTC-USD",
+            "data": {"asks": [[101.0, 0.0], [100.5, 1.5]]},
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:00:03.100Z"),
+            "type": "orderbook_delta",
+            "source": "lighter",
+            "market": "BTC-USD",
+            "data": {"bids": [[100.0, 0.0], [100.25, 1.0]]},
+        },
+    ]
+    snapshot_key = "standard-lighter-BTC-USD-2024-01-01"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": snapshot_key, "date": "2024-01-01"}]},
+            )
+        if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                json=_bulk_download_manifest(
+                    source="lighter",
+                    market="BTC-USD",
+                    day="2024-01-01",
+                    keys=[snapshot_key],
+                ),
+            )
+        if _is_download_request(request):
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(snapshot_rows),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        rows = list(
+            client.bbo(
+                source="lighter",
+                market="BTC-USD",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T00:00:04Z",
+                interval="1s",
+            )
+        )
+    finally:
+        client.close()
+
+    assert [row["timestamp"] for row in rows] == [
+        _ts("2024-01-01T00:00:00Z"),
+        _ts("2024-01-01T00:00:01Z"),
+        _ts("2024-01-01T00:00:03Z"),
+    ]
+    assert rows[0]["bid_price"] == 100.0
+    assert rows[0]["bid_quantity"] == 2.0
+    assert rows[1]["ask_price"] == 100.5
+    assert rows[2]["bid_price"] == 100.25
+
+    for interval in ["100ms", "10s", "1m", "5m", "15m", "1h"]:
+        with PolarisClient(dataset_root=tmp_path) as cached_client:
+            assert list(
+                cached_client.bbo(
+                    source="lighter",
+                    market="BTC-USD",
+                    from_="2024-01-01T00:00:00Z",
+                    to="2024-01-01T00:00:04Z",
+                    interval=interval,
+                )
+            )
+
+
+def test_bbo_clears_state_across_allowed_coverage_gaps(tmp_path) -> None:
+    keys = {
+        _hourly_snapshot_key("lighter", "BTC-USD", "2024-01-01", 0): [
+            {
+                "timestamp": _ts("2024-01-01T00:00:01Z"),
+                "type": "orderbook",
+                "source": "lighter",
+                "market": "BTC-USD",
+                "data": {"bids": [[100.0, 1.0]], "asks": [[101.0, 1.0]]},
+            }
+        ],
+        _hourly_snapshot_key("lighter", "BTC-USD", "2024-01-01", 2): [
+            {
+                "timestamp": _ts("2024-01-01T02:00:05Z"),
+                "type": "orderbook_delta",
+                "source": "lighter",
+                "market": "BTC-USD",
+                "data": {"bids": [[100.5, 2.0]]},
+            },
+            {
+                "timestamp": _ts("2024-01-01T02:00:10Z"),
+                "type": "orderbook",
+                "source": "lighter",
+                "market": "BTC-USD",
+                "data": {"bids": [[90.0, 3.0]], "asks": [[91.0, 4.0]]},
+            },
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={
+                    "snapshots": [
+                        {"key": key, "date": "2024-01-01", "hour": hour}
+                        for hour, key in [(0, next(iter(keys))), (2, list(keys)[1])]
+                    ]
+                },
+            )
+        if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                json=_bulk_download_manifest(
+                    source="lighter",
+                    market="BTC-USD",
+                    day="2024-01-01",
+                    keys=list(keys),
+                ),
+            )
+        if _is_download_request(request):
+            key = request.url.path.removeprefix("/").removesuffix(".jsonl.zst")
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(keys[key]),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        with pytest.warns(UserWarning, match="skipped missing intervals"):
+            rows = list(
+                client.bbo(
+                    source="lighter",
+                    market="BTC-USD",
+                    from_="2024-01-01T00:00:00Z",
+                    to="2024-01-01T03:00:00Z",
+                    allow_gaps=True,
+                )
+            )
+    finally:
+        client.close()
+
+    assert [row["timestamp"] for row in rows] == [
+        _ts("2024-01-01T00:00:01Z"),
+        _ts("2024-01-01T02:00:10Z"),
+    ]
+    assert rows[-1]["bid_price"] == 90.0
+
+
+def test_bbo_rejects_unknown_interval() -> None:
+    client = make_client(lambda request: httpx.Response(500))
+    try:
+        with pytest.raises(ValueError, match="interval must be one of"):
+            client.bbo(source="lighter", market="BTC-USD", interval="2s")
+    finally:
+        client.close()
+
+
 def test_depth_metrics_validate_positive_inputs() -> None:
     client = make_client(lambda request: httpx.Response(500))
     try:
@@ -2400,7 +2702,9 @@ def test_depth_metrics_validate_positive_inputs() -> None:
         client.close()
 
 
-def test_replay_requires_snapshot_coverage_and_do_not_fall_back_to_events(tmp_path) -> None:
+def test_replay_requires_snapshot_coverage_and_do_not_fall_back_to_events(
+    tmp_path,
+) -> None:
     calls: list[tuple[str, str | None]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -2524,7 +2828,9 @@ def test_raw_uses_file_export_by_default() -> None:
         client.close()
 
 
-def test_raw_replay_raises_stream_decode_error_for_invalid_cached_zstd(tmp_path) -> None:
+def test_raw_replay_raises_stream_decode_error_for_invalid_cached_zstd(
+    tmp_path,
+) -> None:
     called = False
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -2618,7 +2924,9 @@ def test_raw_replay_populates_cache_and_reuses_on_new_client(tmp_path) -> None:
         online_client.close()
 
     def offline_handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError("network should not be called when replay cache already exists")
+        raise AssertionError(
+            "network should not be called when replay cache already exists"
+        )
 
     offline_client = make_client(
         offline_handler,

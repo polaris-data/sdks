@@ -92,9 +92,11 @@ with PolarisClient() as client:
         market=market,
         interval="1m",
     )
-    trades = client.trades(
-        source=source,
-        market=market,
+    trades = list(
+        client.trades(
+            source=source,
+            market=market,
+        )
     )
 
 bars_df = pd.DataFrame(bars)

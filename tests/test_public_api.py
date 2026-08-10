@@ -138,7 +138,6 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         PolarisClient.trades,
         PolarisClient.funding_rates,
         PolarisClient.mark_prices,
-        PolarisClient.bbo,
     ]
     for method in historical_methods:
         assert _parameters(method) == [
@@ -149,6 +148,16 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
             ("to", keyword_only, None),
             ("allow_gaps", keyword_only, False),
         ]
+
+    assert _parameters(PolarisClient.bbo) == [
+        ("self", positional, required),
+        ("source", keyword_only, required),
+        ("market", keyword_only, required),
+        ("from_", keyword_only, None),
+        ("to", keyword_only, None),
+        ("interval", keyword_only, None),
+        ("allow_gaps", keyword_only, False),
+    ]
 
     assert _parameters(PolarisClient.raw) == [
         ("self", positional, required),
@@ -203,13 +212,37 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
 
 
 def test_documented_result_annotations_and_models_are_stable() -> None:
-    assert inspect.signature(OrderbookBuilder.apply).return_annotation == "JSONDict | None"
+    assert (
+        inspect.signature(OrderbookBuilder.apply).return_annotation == "JSONDict | None"
+    )
     assert inspect.signature(PolarisClient.health).return_annotation == "JSONDict"
-    assert inspect.signature(PolarisClient.catalog).return_annotation == "CatalogResponse | JSONDict"
-    assert inspect.signature(PolarisClient.list_snapshots).return_annotation == "list[SnapshotEntry]"
-    assert inspect.signature(PolarisClient.replay).return_annotation == "Iterator[JSONDict]"
+    assert (
+        inspect.signature(PolarisClient.catalog).return_annotation
+        == "CatalogResponse | JSONDict"
+    )
+    assert (
+        inspect.signature(PolarisClient.list_snapshots).return_annotation
+        == "list[SnapshotEntry]"
+    )
+    assert (
+        inspect.signature(PolarisClient.replay).return_annotation
+        == "Iterator[JSONDict]"
+    )
+    for method in [
+        PolarisClient.events,
+        PolarisClient.trades,
+        PolarisClient.l2_snapshots,
+        PolarisClient.funding_rates,
+        PolarisClient.mark_prices,
+        PolarisClient.bbo,
+        PolarisClient.depth_metrics,
+    ]:
+        assert inspect.signature(method).return_annotation == "Iterator[JSONDict]"
     assert inspect.signature(PolarisClient.stream).return_annotation == "RealtimeStream"
-    assert inspect.signature(PolarisClient.ohlcv).return_annotation == "list[JSONDict] | JSONDict"
+    assert (
+        inspect.signature(PolarisClient.ohlcv).return_annotation
+        == "list[JSONDict] | JSONDict"
+    )
 
     assert get_type_hints(CatalogResponse) == {
         "markets": list[CatalogMarketEntry],
@@ -256,7 +289,17 @@ def test_realtime_stream_is_closeable_and_unregisters_from_client() -> None:
     class NativeIterator:
         def __init__(self) -> None:
             self.closed = False
-            self.rows = iter([{"timestamp": 1, "source": "afx", "market": "AAPLUSDC", "type": "trade", "data": {}}])
+            self.rows = iter(
+                [
+                    {
+                        "timestamp": 1,
+                        "source": "afx",
+                        "market": "AAPLUSDC",
+                        "type": "trade",
+                        "data": {},
+                    }
+                ]
+            )
 
         def __iter__(self):
             return self
@@ -284,6 +327,35 @@ def test_realtime_stream_is_closeable_and_unregisters_from_client() -> None:
     assert stream not in owner._streams
     with pytest.raises(StopIteration):
         next(stream)
+
+
+def test_historical_generator_closes_its_native_iterator() -> None:
+    class NativeIterator:
+        def __init__(self) -> None:
+            self.closed = False
+            self.rows = iter([{"timestamp": 1}, {"timestamp": 2}])
+
+        def __next__(self):
+            return next(self.rows)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class Owner:
+        def __init__(self) -> None:
+            self.diagnostics = 0
+
+        def _emit_diagnostics(self) -> None:
+            self.diagnostics += 1
+
+    owner = Owner()
+    native = NativeIterator()
+    rows = PolarisClient._iterate(owner, native, "events")  # type: ignore[arg-type]
+    assert inspect.isgenerator(rows)
+    assert next(rows) == {"timestamp": 1}
+    rows.close()
+    assert native.closed
+    assert owner.diagnostics == 1
 
 
 def test_realtime_native_errors_are_translated() -> None:

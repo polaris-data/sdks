@@ -1,10 +1,14 @@
 use std::{
     fs::File,
     io::{BufRead, BufReader, Read},
-    path::Path,
+    path::{Path, PathBuf},
+    pin::Pin,
 };
 
 use async_stream::try_stream;
+use futures_core::Stream;
+use futures_util::StreamExt;
+use tokio::sync::mpsc;
 
 use crate::{
     OrderbookBuilder,
@@ -12,83 +16,101 @@ use crate::{
     models::{ReplayStream, StandardEvent},
 };
 
-pub(crate) fn replay_stream(
-    paths: Vec<std::path::PathBuf>,
+const EVENT_CHANNEL_CAPACITY: usize = 16;
+
+pub(crate) enum ReplayRecord {
+    Event(StandardEvent),
+    Reset,
+}
+
+pub(crate) type ReplayRecordStream =
+    Pin<Box<dyn Stream<Item = Result<ReplayRecord, PolarisError>> + Send>>;
+
+pub(crate) fn replay_record_stream(
+    paths: Vec<PathBuf>,
     from_us: i64,
     to_us: i64,
-    source: String,
-    market: String,
-    materialize_orderbooks: bool,
     mut gaps: Vec<(i64, i64)>,
-) -> ReplayStream {
+) -> ReplayRecordStream {
     Box::pin(try_stream! {
-        let mut orderbooks = OrderbookBuilder::new();
         gaps.sort_unstable();
         let mut gaps = gaps.into_iter().peekable();
         for path in paths {
-            let events = tokio::task::spawn_blocking({
-                let path = path.clone();
-                let source = source.clone();
-                let market = market.clone();
-                move || read_snapshot_events(&path, from_us, to_us, &source, &market)
-            })
-            .await
-            .map_err(|err| PolarisError::Request(format!("snapshot reader join failed: {err}")))??;
+            let (sender, mut receiver) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
+            let reader_path = path.clone();
+            let reader = tokio::task::spawn_blocking(move || {
+                read_snapshot_events(&reader_path, from_us, to_us, |event| {
+                    sender.blocking_send(event).is_ok()
+                })
+            });
 
-            for event in events {
+            while let Some(event) = receiver.recv().await {
                 while gaps
                     .peek()
                     .is_some_and(|(_, end_us)| event.timestamp.saturating_mul(1_000) >= *end_us)
                 {
-                    orderbooks.clear();
+                    yield ReplayRecord::Reset;
                     gaps.next();
                 }
-                if materialize_orderbooks {
+                yield ReplayRecord::Event(event);
+            }
+
+            reader
+                .await
+                .map_err(|err| PolarisError::Request(format!("snapshot reader join failed: {err}")))??;
+        }
+    })
+}
+
+pub(crate) fn replay_stream(
+    records: ReplayRecordStream,
+    materialize_orderbooks: bool,
+) -> ReplayStream {
+    Box::pin(try_stream! {
+        let mut records = records;
+        let mut orderbooks = OrderbookBuilder::new();
+        while let Some(record) = records.next().await {
+            match record? {
+                ReplayRecord::Reset => orderbooks.clear(),
+                ReplayRecord::Event(event) if materialize_orderbooks => {
                     if let Some(event) = orderbooks.apply(event)? {
                         yield event;
                     }
-                } else {
-                    yield event;
                 }
+                ReplayRecord::Event(event) => yield event,
             }
         }
     })
 }
 
-pub(crate) fn read_snapshot_events(
+fn read_snapshot_events(
     path: &Path,
     from_us: i64,
     to_us: i64,
-    _source: &str,
-    _market: &str,
-) -> Result<Vec<StandardEvent>, PolarisError> {
+    emit: impl FnMut(StandardEvent) -> bool,
+) -> Result<(), PolarisError> {
     let file = File::open(path)?;
-    let mut events = Vec::new();
 
     if path.extension().and_then(|value| value.to_str()) == Some("zst") {
         let decoder = zstd::stream::read::Decoder::new(file).map_err(|err| {
             PolarisError::Decode(format!("invalid zstd stream in {}: {err}", path.display()))
         })?;
-        read_lines(BufReader::new(decoder), from_us, to_us, &mut events).map_err(
-            |err| match err {
-                PolarisError::Io(io) => {
-                    PolarisError::Decode(format!("invalid zstd stream in {}: {io}", path.display()))
-                }
-                other => other,
-            },
-        )?;
+        read_lines(BufReader::new(decoder), from_us, to_us, emit).map_err(|err| match err {
+            PolarisError::Io(io) => {
+                PolarisError::Decode(format!("invalid zstd stream in {}: {io}", path.display()))
+            }
+            other => other,
+        })
     } else {
-        read_lines(BufReader::new(file), from_us, to_us, &mut events)?;
+        read_lines(BufReader::new(file), from_us, to_us, emit)
     }
-
-    Ok(events)
 }
 
 fn read_lines<R: Read>(
     reader: BufReader<R>,
     from_us: i64,
     to_us: i64,
-    out: &mut Vec<StandardEvent>,
+    mut emit: impl FnMut(StandardEvent) -> bool,
 ) -> Result<(), PolarisError> {
     let from_ms = from_us / 1_000;
     let to_ms = to_us / 1_000;
@@ -108,7 +130,9 @@ fn read_lines<R: Read>(
         if event.timestamp < from_ms {
             continue;
         }
-        out.push(event);
+        if !emit(event) {
+            break;
+        }
     }
     Ok(())
 }
@@ -145,24 +169,46 @@ mod tests {
         )
         .unwrap();
 
-        let rows = replay_stream(
+        let records = replay_record_stream(
             vec![first, second],
             0,
             10_000_000,
-            "s".to_owned(),
-            "m".to_owned(),
-            true,
             vec![(2_000_000, 3_000_000)],
-        )
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+        );
+        let rows = replay_stream(records, true)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
 
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].event_type, "orderbook");
         assert_eq!(rows[1].event_type, "trade");
         assert_eq!(rows[2].data["bids"], json!([{"price":90.0,"quantity":2.0}]));
+    }
+
+    #[tokio::test]
+    async fn decoding_is_lazy_across_lines() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("lazy.jsonl");
+        std::fs::write(
+            &path,
+            format!(
+                "{}\nnot json\n",
+                json!({"timestamp":1000,"source":"s","market":"m","type":"trade","data":{"price":1,"quantity":1}})
+            ),
+        )
+        .unwrap();
+
+        let mut records = replay_record_stream(vec![path], 0, 10_000_000, vec![]);
+        assert!(matches!(
+            records.next().await.unwrap().unwrap(),
+            ReplayRecord::Event(_)
+        ));
+        assert!(matches!(
+            records.next().await.unwrap(),
+            Err(PolarisError::Decode(_))
+        ));
     }
 }

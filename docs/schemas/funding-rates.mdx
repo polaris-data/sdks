@@ -16,7 +16,7 @@ Use `client.funding_rates()` when you need historical funding rate data for perp
 ## Method signature
 
 ```python
-funding_rates(source, market, from_, to, limit=1000)
+funding_rates(source, market, from_=None, to=None, allow_gaps=False)
 ```
 
 ## Parameters
@@ -25,15 +25,15 @@ funding_rates(source, market, from_, to, limit=1000)
 | --- | --- | --- | --- |
 | source | str | Yes | Source ID |
 | market | str | Yes | Normalized market or instrument ID |
-| from_ | str/datetime/date/int | Yes | Inclusive start time (ISO 8601, datetime, date, or epoch microseconds) |
-| to | str/datetime/date/int | Yes | Exclusive end time (same formats as from_) |
-| limit | int | No | Page size (default: 1000) |
+| from_ | str/datetime/date/int | No | Inclusive start time (ISO 8601, datetime, date, or epoch microseconds) |
+| to | str/datetime/date/int | No | Exclusive end time (same formats as from_) |
+| allow_gaps | bool | No | Return covered rows and warn instead of failing on coverage gaps |
 
 **Note:** API key required for historical ranges. Set `POLARIS_API_KEY` environment variable or pass `api_key` to `PolarisClient()`.
 
 ## Return value
 
-List of funding rate point series rows.
+A single-pass iterator of funding-rate point-series rows.
 
 ## Example response
 
@@ -63,6 +63,7 @@ Funding rate records include:
 
 ```python
 from datetime import datetime, timedelta, timezone
+from itertools import islice
 from polaris_data import PolarisClient
 
 end = datetime.now(timezone.utc)
@@ -75,8 +76,7 @@ with PolarisClient() as client:
         from_=start,
         to=end,
     )
-
-print(rates[:2])
+    print(list(islice(rates, 2)))
 ```
 
 ## How it works

@@ -236,7 +236,11 @@ class PolarisClient:
         finally:
             self._emit_diagnostics()
 
-    def _iterate(self, iterator: Iterator[JSONDict]) -> Iterator[JSONDict]:
+    def _iterate(
+        self,
+        iterator: Iterator[JSONDict],
+        operation: str | None = None,
+    ) -> Iterator[JSONDict]:
         try:
             while True:
                 try:
@@ -244,8 +248,11 @@ class PolarisClient:
                 except StopIteration:
                     return
                 except _native.NativeError as error:
-                    raise self._translate_native_error(error) from None
+                    raise self._translate_native_error(error, operation) from None
         finally:
+            close = getattr(iterator, "close", None)
+            if close is not None:
+                close()
             self._emit_diagnostics()
 
     def health(self) -> JSONDict:
@@ -378,8 +385,10 @@ class PolarisClient:
                 self.replay_cache_dir,
             )
         else:
-            iterator = self._call("raw_replay", source, market, from_text, to_text, 1000)
-        return self._iterate(iterator)
+            iterator = self._call(
+                "raw_replay", source, market, from_text, to_text, 1000
+            )
+        return self._iterate(iterator, "replay")
 
     def events(
         self,
@@ -390,8 +399,8 @@ class PolarisClient:
         to: TimeInput | None = None,
         allow_gaps: bool = False,
         materialize_orderbooks: bool = True,
-    ) -> list[JSONDict]:
-        return self._call(
+    ) -> Iterator[JSONDict]:
+        iterator = self._call(
             "events",
             source,
             market,
@@ -400,6 +409,7 @@ class PolarisClient:
             allow_gaps,
             materialize_orderbooks,
         )
+        return self._iterate(iterator, "events")
 
     def trades(
         self,
@@ -409,8 +419,8 @@ class PolarisClient:
         from_: TimeInput | None = None,
         to: TimeInput | None = None,
         allow_gaps: bool = False,
-    ) -> list[JSONDict]:
-        return self._call(
+    ) -> Iterator[JSONDict]:
+        iterator = self._call(
             "trades",
             source,
             market,
@@ -418,6 +428,7 @@ class PolarisClient:
             self._time(to),
             allow_gaps,
         )
+        return self._iterate(iterator, "trades")
 
     def raw(
         self,
@@ -448,8 +459,8 @@ class PolarisClient:
         to: TimeInput | None = None,
         allow_gaps: bool = False,
         materialize_orderbooks: bool = True,
-    ) -> list[JSONDict]:
-        return self._call(
+    ) -> Iterator[JSONDict]:
+        iterator = self._call(
             "l2_snapshots",
             source,
             market,
@@ -458,6 +469,7 @@ class PolarisClient:
             allow_gaps,
             materialize_orderbooks,
         )
+        return self._iterate(iterator, "l2_snapshots")
 
     def funding_rates(
         self,
@@ -467,10 +479,8 @@ class PolarisClient:
         from_: TimeInput | None = None,
         to: TimeInput | None = None,
         allow_gaps: bool = False,
-    ) -> list[JSONDict]:
-        return self._historical(
-            "funding_rates", source, market, from_, to, allow_gaps
-        )
+    ) -> Iterator[JSONDict]:
+        return self._historical("funding_rates", source, market, from_, to, allow_gaps)
 
     def mark_prices(
         self,
@@ -480,10 +490,8 @@ class PolarisClient:
         from_: TimeInput | None = None,
         to: TimeInput | None = None,
         allow_gaps: bool = False,
-    ) -> list[JSONDict]:
-        return self._historical(
-            "mark_prices", source, market, from_, to, allow_gaps
-        )
+    ) -> Iterator[JSONDict]:
+        return self._historical("mark_prices", source, market, from_, to, allow_gaps)
 
     def bbo(
         self,
@@ -492,9 +500,19 @@ class PolarisClient:
         market: str,
         from_: TimeInput | None = None,
         to: TimeInput | None = None,
+        interval: str | None = None,
         allow_gaps: bool = False,
-    ) -> list[JSONDict]:
-        return self._historical("bbo", source, market, from_, to, allow_gaps)
+    ) -> Iterator[JSONDict]:
+        iterator = self._call(
+            "bbo",
+            source,
+            market,
+            self._time(from_),
+            self._time(to),
+            interval,
+            allow_gaps,
+        )
+        return self._iterate(iterator, "bbo")
 
     def _historical(
         self,
@@ -504,8 +522,8 @@ class PolarisClient:
         from_: TimeInput | None,
         to: TimeInput | None,
         allow_gaps: bool,
-    ) -> list[JSONDict]:
-        return self._call(
+    ) -> Iterator[JSONDict]:
+        iterator = self._call(
             method,
             source,
             market,
@@ -513,6 +531,7 @@ class PolarisClient:
             self._time(to),
             allow_gaps,
         )
+        return self._iterate(iterator, method)
 
     def ohlcv(
         self,
@@ -560,9 +579,7 @@ class PolarisClient:
         interval: str,
         allow_gaps: bool = False,
     ) -> list[JSONDict]:
-        return self._aggregate(
-            "vwap", source, market, from_, to, interval, allow_gaps
-        )
+        return self._aggregate("vwap", source, market, from_, to, interval, allow_gaps)
 
     def volatility(
         self,
@@ -611,12 +628,12 @@ class PolarisClient:
         depth_pct: float = 0.01,
         slippage_notional: float = 10_000.0,
         allow_gaps: bool = False,
-    ) -> list[JSONDict]:
+    ) -> Iterator[JSONDict]:
         if depth_pct <= 0:
             raise ValueError("depth_pct must be greater than 0")
         if slippage_notional <= 0:
             raise ValueError("slippage_notional must be greater than 0")
-        return self._call(
+        iterator = self._call(
             "depth_metrics",
             source,
             market,
@@ -626,3 +643,4 @@ class PolarisClient:
             slippage_notional,
             allow_gaps,
         )
+        return self._iterate(iterator, "depth_metrics")

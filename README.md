@@ -191,20 +191,41 @@ Use it to inspect available data, query historical market data, and open realtim
 
 | Method | Returns | Use case |
 | --- | --- | --- |
-| `events(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)` | List of standardized historical events | General-purpose historical analysis when you want the normalized event stream in memory |
-| `trades(source=..., market=..., from_=None, to=None, allow_gaps=False)` | List of standardized trade events | Trade-level analytics, execution studies, and derived bar calculations |
-| `l2_snapshots(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)` | List of complete orderbook rows | Order book reconstruction and microstructure analysis |
-| `funding_rates(source=..., market=..., from_=None, to=None, allow_gaps=False)` | List of funding-rate point series rows | Perpetual funding studies and carry modeling |
-| `mark_prices(source=..., market=..., from_=None, to=None, allow_gaps=False)` | List of mark-price point series rows | Basis analysis, mark tracking, and liquidation-related research |
+| `events(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)` | Iterator of standardized historical events | General-purpose historical analysis without retaining every row |
+| `trades(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of standardized trade events | Trade-level analytics, execution studies, and derived bar calculations |
+| `l2_snapshots(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)` | Iterator of complete orderbook rows | Order book reconstruction and microstructure analysis |
+| `funding_rates(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of funding-rate point series rows | Perpetual funding studies and carry modeling |
+| `mark_prices(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of mark-price point series rows | Basis analysis, mark tracking, and liquidation-related research |
 | `ohlcv(source=..., market=..., from_=None, to=None, interval=..., format=None, allow_gaps=False)` | Aggregated OHLCV bars | Charting, bar-based strategies, and downstream TA workflows |
 | `volume(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False)` | Bucketed trade volume series | Volume profiling and participation analysis |
 | `vwap(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False)` | Bucketed VWAP series | Execution benchmarking and price smoothing |
 | `volatility(source=..., market=..., from_=None, to=None, interval=..., method="log_returns", allow_gaps=False)` | Bucketed realized volatility series | Risk modeling and intraperiod volatility analysis |
-| `bbo(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Best bid/offer quote series | Spread tracking, quote analytics, and top-of-book monitoring |
-| `depth_metrics(source=..., market=..., from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0, allow_gaps=False)` | Derived depth, spread, imbalance, and slippage metrics | Liquidity analysis and market impact estimation |
+| `bbo(source=..., market=..., from_=None, to=None, interval=None, allow_gaps=False)` | Iterator of best bid/offer quotes | Spread tracking, quote analytics, and top-of-book monitoring |
+| `depth_metrics(source=..., market=..., from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0, allow_gaps=False)` | Iterator of derived liquidity metrics | Liquidity analysis and market impact estimation |
+
+Historical row methods are single-pass iterators. Iterate them directly for bounded memory, or call `list(...)` when you intentionally want an eager result. Setup and coverage errors occur when the method is called; decode errors can occur later while iterating. If you stop early, call the generator's `close()` method to promptly release its native reader. `bbo(interval="1s")` emits the last quote from each non-empty, UTC-aligned interval.
 
 For parameter details, response shapes, and end-to-end examples, see the
 [Python SDK docs](https://docs.polaris.supply/sdks/python).
+
+### Streaming benchmark
+
+Run the opt-in end-to-end benchmark after building the Python extension:
+
+```bash
+uv run python benchmarks/streaming_memory.py
+```
+
+It generates a 3,000-level local book with one million deltas, consumes raw standardized events, direct BBO, and materialized L2 streams in isolated processes, and reports end-to-end wall time, rows per second, and peak RSS. The command fails when peak RSS from 100,000 to one million deltas grows by more than the larger of 20% or 64 MiB, or when long-run throughput falls below 75% of short-run throughput.
+
+Use three isolated runs to compare median speed reliably, and optionally set machine-specific throughput floors:
+
+```bash
+uv run python benchmarks/streaming_memory.py --runs 3 \
+  --min-rps events=50000 --min-rps bbo=100000 --min-rps l2=50
+```
+
+Use `--modes events bbo` for a faster run that skips full-book materialization. Absolute throughput floors are intentionally opt-in because results vary by hardware and build profile.
 
 ## Local dataset storage
 

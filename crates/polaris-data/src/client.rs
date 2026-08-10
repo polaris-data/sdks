@@ -5,23 +5,28 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use async_stream::try_stream;
 use chrono::{Duration, NaiveDate, TimeZone, Utc};
 use futures_util::StreamExt;
 use serde_json::Value;
 
 use crate::{
+    OrderbookBuilder,
     builder::PolarisClientBuilder,
     errors::PolarisError,
     http::{AuthMode, HttpClient},
     models::{
-        BboQuote, CatalogAccess, CatalogInstrument, CatalogMarket, CatalogQuery, CatalogResponse,
-        DepthMetricsRow, Diagnostic, DownloadManifestQuery, DownloadManifestResponse,
-        HistoricalQuery, ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OrderbookData,
-        OrderbookEvent, OrderbookLevel, PointSeriesData, PointSeriesEvent, RawQuery,
-        RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, ReplayStream, SnapshotEntry,
-        StandardEvent, StreamQuery, TradeData, TradeEvent, VolatilityBar, VolumeBar, VwapBar,
+        BboQuery, BboQuote, CatalogAccess, CatalogInstrument, CatalogMarket, CatalogQuery,
+        CatalogResponse, DepthMetricsRow, Diagnostic, DownloadManifestQuery,
+        DownloadManifestResponse, HistoricalQuery, HistoricalStream, ListSnapshotsQuery,
+        OhlcvOutput, OhlcvQuery, OrderbookData, OrderbookEvent, OrderbookLevel, PointSeriesData,
+        PointSeriesEvent, RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery,
+        ReplayStream, SnapshotEntry, StandardEvent, StreamQuery, TradeData, TradeEvent,
+        VolatilityBar, VolumeBar, VwapBar,
     },
-    ohlcv, realtime, replay,
+    ohlcv,
+    orderbook::{BookUpdate, BookView},
+    realtime, replay,
     storage::{
         LocalSnapshotFile, StorageLayout, acquire_sync_lock, data_file_path,
         list_local_snapshot_entries, parse_snapshot_key, temp_file_path,
@@ -193,18 +198,19 @@ impl PolarisClient {
         Ok(entries.into_values().collect())
     }
 
-    pub async fn events(&self, query: HistoricalQuery) -> Result<Vec<StandardEvent>, PolarisError> {
-        let replay = self
-            .replay(ReplayQuery {
-                source: query.source,
-                market: query.market,
-                from: query.from,
-                to: query.to,
-                allow_gaps: query.allow_gaps,
-                materialize_orderbooks: query.materialize_orderbooks,
-            })
-            .await?;
-        replay.collect::<Vec<_>>().await.into_iter().collect()
+    pub async fn events(
+        &self,
+        query: HistoricalQuery,
+    ) -> Result<HistoricalStream<StandardEvent>, PolarisError> {
+        self.replay(ReplayQuery {
+            source: query.source,
+            market: query.market,
+            from: query.from,
+            to: query.to,
+            allow_gaps: query.allow_gaps,
+            materialize_orderbooks: query.materialize_orderbooks,
+        })
+        .await
     }
 
     pub async fn raw(&self, query: RawQuery) -> Result<Vec<Value>, PolarisError> {
@@ -293,26 +299,41 @@ impl PolarisClient {
         )))
     }
 
-    pub async fn trades(&self, query: HistoricalQuery) -> Result<Vec<TradeEvent>, PolarisError> {
-        let events = self.events(query).await?;
-        events
-            .into_iter()
-            .filter(|event| event.event_type == "trade")
-            .map(|event| {
-                let data: TradeData = serde_json::from_value(event.data.clone())
+    pub async fn trades(
+        &self,
+        mut query: HistoricalQuery,
+    ) -> Result<HistoricalStream<TradeEvent>, PolarisError> {
+        query.materialize_orderbooks = false;
+        let mut events = self.events(query).await?;
+        Ok(Box::pin(try_stream! {
+            while let Some(event) = events.next().await {
+                let event = event?;
+                if event.event_type != "trade" {
+                    continue;
+                }
+                let data: TradeData = serde_json::from_value(event.data)
                     .map_err(|err| PolarisError::Decode(format!("invalid trade payload: {err}")))?;
-                Ok(TradeEvent {
+                yield TradeEvent {
                     timestamp: event.timestamp,
                     source: event.source,
                     market: event.market,
                     event_type: event.event_type,
                     data,
-                })
-            })
-            .collect()
+                };
+            }
+        }))
     }
 
     pub async fn replay(&self, query: ReplayQuery) -> Result<ReplayStream, PolarisError> {
+        let materialize_orderbooks = query.materialize_orderbooks;
+        let records = self.replay_records(query).await?;
+        Ok(replay::replay_stream(records, materialize_orderbooks))
+    }
+
+    async fn replay_records(
+        &self,
+        query: ReplayQuery,
+    ) -> Result<replay::ReplayRecordStream, PolarisError> {
         let (from_us, to_us) = self
             .resolve_historical_range(
                 &query.source,
@@ -330,19 +351,11 @@ impl PolarisClient {
                 query.allow_gaps,
             )
             .await?;
-        Ok(replay::replay_stream(
-            paths,
-            from_us,
-            to_us,
-            query.source,
-            query.market,
-            query.materialize_orderbooks,
-            gaps,
-        ))
+        Ok(replay::replay_record_stream(paths, from_us, to_us, gaps))
     }
 
     pub async fn ohlcv(&self, query: OhlcvQuery) -> Result<OhlcvOutput, PolarisError> {
-        let trades = self
+        let mut trades = self
             .trades(HistoricalQuery {
                 source: query.source,
                 market: query.market,
@@ -352,7 +365,11 @@ impl PolarisClient {
                 materialize_orderbooks: true,
             })
             .await?;
-        Ok(ohlcv::aggregate(&trades, query.interval, query.format))
+        let mut aggregator = ohlcv::OhlcvAggregator::new(query.interval);
+        while let Some(trade) = trades.next().await {
+            aggregator.add(&trade?);
+        }
+        Ok(aggregator.finish(query.format))
     }
 
     async fn resolve_historical_range(
@@ -829,58 +846,112 @@ impl PolarisClient {
     pub async fn l2_snapshots(
         &self,
         query: HistoricalQuery,
-    ) -> Result<Vec<OrderbookEvent>, PolarisError> {
-        let events = self.events(query).await?;
-        Ok(events
-            .into_iter()
-            .filter(|event| {
-                matches!(
+    ) -> Result<HistoricalStream<OrderbookEvent>, PolarisError> {
+        let mut events = self.events(query).await?;
+        Ok(Box::pin(try_stream! {
+            while let Some(event) = events.next().await {
+                let event = event?;
+                if !matches!(
                     event.event_type.as_str(),
                     "orderbook" | "orderbook_delta" | "orderbook_snapshot" | "l2_snapshot"
-                )
-            })
-            .filter_map(|event| self.try_parse_orderbook(event))
-            .collect())
+                ) {
+                    continue;
+                }
+                if let Some(orderbook) = Self::try_parse_orderbook(event) {
+                    yield orderbook;
+                }
+            }
+        }))
     }
 
-    /// Derive best bid / offer quotes from standardized orderbook snapshots.
-    pub async fn bbo(&self, query: HistoricalQuery) -> Result<Vec<BboQuote>, PolarisError> {
-        let orderbooks = self
-            .l2_snapshots(HistoricalQuery {
-                materialize_orderbooks: true,
-                ..query
+    /// Derive best bid / offer quotes directly from standardized orderbook updates.
+    pub async fn bbo(&self, query: BboQuery) -> Result<HistoricalStream<BboQuote>, PolarisError> {
+        let interval_ms = query.interval.map(ohlcv::interval_to_millis);
+        let mut records = self
+            .replay_records(ReplayQuery {
+                source: query.source,
+                market: query.market,
+                from: query.from,
+                to: query.to,
+                allow_gaps: query.allow_gaps,
+                materialize_orderbooks: false,
             })
             .await?;
-        Ok(orderbooks
-            .into_iter()
-            .filter_map(|orderbook| self.derive_bbo(&orderbook))
-            .collect())
+        Ok(Box::pin(try_stream! {
+            let mut orderbooks = OrderbookBuilder::new();
+            let mut pending: Option<(i64, BboQuote)> = None;
+            while let Some(record) = records.next().await {
+                let event = match record? {
+                    replay::ReplayRecord::Reset => {
+                        orderbooks.clear();
+                        continue;
+                    }
+                    replay::ReplayRecord::Event(event) => event,
+                };
+                if orderbooks.update(&event)? != BookUpdate::Applied {
+                    continue;
+                }
+                let Some(mut quote) = orderbooks.best_bid_offer(
+                    &event.source,
+                    &event.market,
+                    event.timestamp,
+                ) else {
+                    continue;
+                };
+                let Some(width) = interval_ms else {
+                    yield quote;
+                    continue;
+                };
+                let bucket = quote.timestamp.div_euclid(width) * width;
+                quote.timestamp = bucket;
+                match pending.take() {
+                    Some((previous_bucket, previous)) if previous_bucket != bucket => {
+                        yield previous;
+                        pending = Some((bucket, quote));
+                    }
+                    _ => pending = Some((bucket, quote)),
+                }
+            }
+            if let Some((_, quote)) = pending {
+                yield quote;
+            }
+        }))
     }
 
     /// Return standardized funding-rate point-series events for a time range.
     pub async fn funding_rates(
         &self,
-        query: HistoricalQuery,
-    ) -> Result<Vec<PointSeriesEvent>, PolarisError> {
-        let events = self.events(query).await?;
-        Ok(events
-            .into_iter()
-            .filter(|event| event.event_type == "point")
-            .filter_map(|event| self.try_parse_point_series(event, "funding_rate"))
-            .collect())
+        mut query: HistoricalQuery,
+    ) -> Result<HistoricalStream<PointSeriesEvent>, PolarisError> {
+        query.materialize_orderbooks = false;
+        self.point_series(query, "funding_rate").await
     }
 
     /// Return standardized mark-price point-series events for a time range.
     pub async fn mark_prices(
         &self,
+        mut query: HistoricalQuery,
+    ) -> Result<HistoricalStream<PointSeriesEvent>, PolarisError> {
+        query.materialize_orderbooks = false;
+        self.point_series(query, "mark_price").await
+    }
+
+    async fn point_series(
+        &self,
         query: HistoricalQuery,
-    ) -> Result<Vec<PointSeriesEvent>, PolarisError> {
-        let events = self.events(query).await?;
-        Ok(events
-            .into_iter()
-            .filter(|event| event.event_type == "point")
-            .filter_map(|event| self.try_parse_point_series(event, "mark_price"))
-            .collect())
+        expected_series: &'static str,
+    ) -> Result<HistoricalStream<PointSeriesEvent>, PolarisError> {
+        let mut events = self.events(query).await?;
+        Ok(Box::pin(try_stream! {
+            while let Some(event) = events.next().await {
+                let event = event?;
+                if event.event_type == "point" {
+                    if let Some(point) = Self::try_parse_point_series(event, expected_series) {
+                        yield point;
+                    }
+                }
+            }
+        }))
     }
 
     /// Aggregate per-bucket trade volume from standardized trade data.
@@ -907,7 +978,7 @@ impl PolarisClient {
 
     /// Aggregate per-bucket VWAP from standardized trade data.
     pub async fn vwap(&self, query: OhlcvQuery) -> Result<Vec<VwapBar>, PolarisError> {
-        let trades = self
+        let mut trades = self
             .trades(HistoricalQuery {
                 source: query.source,
                 market: query.market,
@@ -921,7 +992,8 @@ impl PolarisClient {
         let interval_ms = interval_to_ms(query.interval.as_str())?;
         let mut aggregator = VwapAggregator::new(interval_ms);
 
-        for trade in trades {
+        while let Some(trade) = trades.next().await {
+            let trade = trade?;
             aggregator.add(trade.timestamp, trade.data.price, trade.data.quantity);
         }
 
@@ -930,7 +1002,7 @@ impl PolarisClient {
 
     /// Aggregate realized volatility from standardized trade data.
     pub async fn volatility(&self, query: OhlcvQuery) -> Result<Vec<VolatilityBar>, PolarisError> {
-        let trades = self
+        let mut trades = self
             .trades(HistoricalQuery {
                 source: query.source,
                 market: query.market,
@@ -944,7 +1016,8 @@ impl PolarisClient {
         let interval_ms = interval_to_ms(query.interval.as_str())?;
         let mut aggregator = VolatilityAggregator::new(interval_ms);
 
-        for trade in trades {
+        while let Some(trade) = trades.next().await {
+            let trade = trade?;
             aggregator.add(trade.timestamp, trade.data.price);
         }
 
@@ -957,7 +1030,7 @@ impl PolarisClient {
         query: HistoricalQuery,
         depth_pct: Option<f64>,
         slippage_notional: Option<f64>,
-    ) -> Result<Vec<DepthMetricsRow>, PolarisError> {
+    ) -> Result<HistoricalStream<DepthMetricsRow>, PolarisError> {
         let depth_pct = depth_pct.unwrap_or(0.01);
         let slippage_notional = slippage_notional.unwrap_or(10_000.0);
 
@@ -972,30 +1045,48 @@ impl PolarisClient {
             ));
         }
 
-        let orderbooks = self
-            .l2_snapshots(HistoricalQuery {
-                materialize_orderbooks: true,
-                ..query
+        let mut records = self
+            .replay_records(ReplayQuery {
+                source: query.source,
+                market: query.market,
+                from: query.from,
+                to: query.to,
+                allow_gaps: query.allow_gaps,
+                materialize_orderbooks: false,
             })
             .await?;
-        let mut result = Vec::new();
-
-        for orderbook in orderbooks {
-            if let Some(metrics) =
-                self.derive_depth_metrics(&orderbook, depth_pct, slippage_notional)
-            {
-                result.push(metrics);
+        Ok(Box::pin(try_stream! {
+            let mut orderbooks = OrderbookBuilder::new();
+            while let Some(record) = records.next().await {
+                let event = match record? {
+                    replay::ReplayRecord::Reset => {
+                        orderbooks.clear();
+                        continue;
+                    }
+                    replay::ReplayRecord::Event(event) => event,
+                };
+                if orderbooks.update(&event)? != BookUpdate::Applied {
+                    continue;
+                }
+                if let Some(view) = orderbooks.view(&event.source, &event.market) {
+                    if let Some(metrics) = Self::derive_depth_metrics(
+                        event.timestamp,
+                        view,
+                        depth_pct,
+                        slippage_notional,
+                    ) {
+                        yield metrics;
+                    }
+                }
             }
-        }
-
-        Ok(result)
+        }))
     }
 
     // -----------------------------------------------------------------------
     // Helper methods for data derivation
     // -----------------------------------------------------------------------
 
-    fn try_parse_orderbook(&self, event: StandardEvent) -> Option<OrderbookEvent> {
+    fn try_parse_orderbook(event: StandardEvent) -> Option<OrderbookEvent> {
         let mut payload = event.data;
         if !payload.is_object() {
             payload = Value::Object(Default::default());
@@ -1034,53 +1125,7 @@ impl PolarisClient {
         })
     }
 
-    fn derive_bbo(&self, orderbook: &OrderbookEvent) -> Option<BboQuote> {
-        let bid = self.best_orderbook_level(&orderbook.data.bids, "bid")?;
-        let ask = self.best_orderbook_level(&orderbook.data.asks, "ask")?;
-
-        Some(BboQuote {
-            timestamp: orderbook.timestamp,
-            bid_price: bid.0,
-            bid_quantity: bid.1,
-            ask_price: ask.0,
-            ask_quantity: ask.1,
-        })
-    }
-
-    fn best_orderbook_level(&self, levels: &[OrderbookLevel], side: &str) -> Option<(f64, f64)> {
-        let mut best_price: Option<f64> = None;
-        let mut best_quantity: Option<f64> = None;
-
-        for level in levels {
-            if level.price <= 0.0 || level.quantity <= 0.0 {
-                continue;
-            }
-
-            match (best_price, side) {
-                (None, _) => {
-                    best_price = Some(level.price);
-                    best_quantity = Some(level.quantity);
-                }
-                (Some(bp), "bid") if level.price > bp => {
-                    best_price = Some(level.price);
-                    best_quantity = Some(level.quantity);
-                }
-                (Some(bp), "ask") if level.price < bp => {
-                    best_price = Some(level.price);
-                    best_quantity = Some(level.quantity);
-                }
-                _ => {}
-            }
-        }
-
-        match (best_price, best_quantity) {
-            (Some(p), Some(q)) => Some((p, q)),
-            _ => None,
-        }
-    }
-
     fn try_parse_point_series(
-        &self,
         event: StandardEvent,
         expected_series: &str,
     ) -> Option<PointSeriesEvent> {
@@ -1098,20 +1143,13 @@ impl PolarisClient {
     }
 
     fn derive_depth_metrics(
-        &self,
-        orderbook: &OrderbookEvent,
+        timestamp: i64,
+        orderbook: BookView<'_>,
         depth_pct: f64,
         slippage_notional: f64,
     ) -> Option<DepthMetricsRow> {
-        let bids = self.sorted_orderbook_levels(&orderbook.data.bids, "bid");
-        let asks = self.sorted_orderbook_levels(&orderbook.data.asks, "ask");
-
-        if bids.is_empty() || asks.is_empty() {
-            return None;
-        }
-
-        let (bid_price, _bid_quantity) = bids[0];
-        let (ask_price, _ask_quantity) = asks[0];
+        let (bid_price, _bid_quantity) = orderbook.bids().next()?;
+        let (ask_price, _ask_quantity) = orderbook.asks().next()?;
 
         if ask_price < bid_price {
             return None;
@@ -1125,8 +1163,10 @@ impl PolarisClient {
             None
         };
 
-        let bid_depth_notional = self.depth_notional_within_pct(&bids, "bid", mid_price, depth_pct);
-        let ask_depth_notional = self.depth_notional_within_pct(&asks, "ask", mid_price, depth_pct);
+        let bid_depth_notional =
+            Self::depth_notional_within_pct(orderbook.bids(), true, mid_price, depth_pct);
+        let ask_depth_notional =
+            Self::depth_notional_within_pct(orderbook.asks(), false, mid_price, depth_pct);
         let total_depth_notional = bid_depth_notional + ask_depth_notional;
         let depth_imbalance = if total_depth_notional > 0.0 {
             Some((bid_depth_notional - ask_depth_notional) / total_depth_notional)
@@ -1140,13 +1180,21 @@ impl PolarisClient {
             None
         };
 
-        let (buy_avg_price, buy_slippage, buy_slippage_bps) =
-            self.calculate_slippage(&asks, target_base_quantity?, slippage_notional, mid_price);
-        let (sell_avg_price, sell_slippage, sell_slippage_bps) =
-            self.calculate_slippage(&bids, target_base_quantity?, slippage_notional, mid_price);
+        let (buy_avg_price, buy_slippage, buy_slippage_bps) = Self::calculate_slippage(
+            orderbook.asks(),
+            target_base_quantity?,
+            slippage_notional,
+            mid_price,
+        );
+        let (sell_avg_price, sell_slippage, sell_slippage_bps) = Self::calculate_slippage(
+            orderbook.bids(),
+            target_base_quantity?,
+            slippage_notional,
+            mid_price,
+        );
 
         Some(DepthMetricsRow {
-            timestamp: orderbook.timestamp,
+            timestamp,
             bid_price,
             ask_price,
             mid_price,
@@ -1167,53 +1215,32 @@ impl PolarisClient {
         })
     }
 
-    fn sorted_orderbook_levels(&self, levels: &[OrderbookLevel], side: &str) -> Vec<(f64, f64)> {
-        let mut parsed: Vec<(f64, f64)> = levels
-            .iter()
-            .filter(|level| level.price > 0.0 && level.quantity > 0.0)
-            .map(|level| (level.price, level.quantity))
-            .collect();
-
-        match side {
-            "bid" => {
-                parsed.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal))
-            }
-            "ask" => {
-                parsed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
-            }
-            _ => {}
-        }
-
-        parsed
-    }
-
     fn depth_notional_within_pct(
-        &self,
-        levels: &[(f64, f64)],
-        side: &str,
+        levels: impl Iterator<Item = (f64, f64)>,
+        is_bid: bool,
         mid_price: f64,
         depth_pct: f64,
     ) -> f64 {
-        let cutoff = match side {
-            "bid" => mid_price * (1.0 - depth_pct),
-            "ask" => mid_price * (1.0 + depth_pct),
-            _ => return 0.0,
+        let cutoff = if is_bid {
+            mid_price * (1.0 - depth_pct)
+        } else {
+            mid_price * (1.0 + depth_pct)
         };
 
         levels
-            .iter()
-            .filter(|(price, _)| match side {
-                "bid" => *price >= cutoff,
-                "ask" => *price <= cutoff,
-                _ => true,
+            .filter(|(price, _)| {
+                if is_bid {
+                    *price >= cutoff
+                } else {
+                    *price <= cutoff
+                }
             })
             .map(|(price, quantity)| price * quantity)
             .sum()
     }
 
     fn calculate_slippage(
-        &self,
-        levels: &[(f64, f64)],
+        levels: impl Iterator<Item = (f64, f64)>,
         target_quantity: f64,
         slippage_notional: f64,
         mid_price: f64,
