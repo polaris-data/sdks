@@ -51,7 +51,7 @@ with PolarisClient() as client:
 
 markets_df = pd.DataFrame(catalog_result["markets"])
 bars_df = pd.DataFrame(bars)
-bars_df["time"] = pd.to_datetime(bars_df["timestamp"], unit="us", utc=True)
+bars_df["time"] = pd.to_datetime(bars_df["timestamp"], unit="ms", utc=True)
 
 display(markets_df[["market", "start", "end"]])
 display(bars_df.head())
@@ -80,8 +80,8 @@ This notebook shows how to:
 Short excerpt:
 
 ```python
-from polaris_data import PolarisClient
 import pandas as pd
+from polaris_data import PolarisClient
 
 source = "hyperliquid"
 market = "BTC"
@@ -92,15 +92,13 @@ with PolarisClient() as client:
         market=market,
         interval="1m",
     )
-    trades = list(
-        client.trades(
-            source=source,
-            market=market,
-        )
+    trades_df = client.trades(
+        source=source,
+        market=market,
+        output="dataframe",
     )
 
 bars_df = pd.DataFrame(bars)
-trades_df = pd.json_normalize(trades)
 ```
 
 Use this notebook when you want to understand the core `polaris-data` workflow quickly without adding multi-market logic.

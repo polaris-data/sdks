@@ -156,6 +156,8 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
             ("from_", keyword_only, None),
             ("to", keyword_only, None),
             ("allow_gaps", keyword_only, False),
+            ("output", keyword_only, "iterator"),
+            ("batch_size", keyword_only, 65_536),
         ]
 
     assert _parameters(PolarisClient.bbo) == [
@@ -166,6 +168,8 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("to", keyword_only, None),
         ("interval", keyword_only, None),
         ("allow_gaps", keyword_only, False),
+        ("output", keyword_only, "iterator"),
+        ("batch_size", keyword_only, 65_536),
     ]
 
     assert _parameters(PolarisClient.raw) == [
@@ -217,6 +221,8 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("depth_pct", keyword_only, 0.01),
         ("slippage_notional", keyword_only, 10_000.0),
         ("allow_gaps", keyword_only, False),
+        ("output", keyword_only, "iterator"),
+        ("batch_size", keyword_only, 65_536),
     ]
 
 
@@ -244,15 +250,20 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
     )
     for method in [
         PolarisClient.events,
-        PolarisClient.trades,
         PolarisClient.l2_snapshots,
         PolarisClient.l2_updates,
+    ]:
+        assert inspect.signature(method).return_annotation == "Iterator[JSONDict]"
+    for method in [
+        PolarisClient.trades,
         PolarisClient.funding_rates,
         PolarisClient.mark_prices,
         PolarisClient.bbo,
         PolarisClient.depth_metrics,
     ]:
-        assert inspect.signature(method).return_annotation == "Iterator[JSONDict]"
+        assert inspect.signature(method).return_annotation == (
+            "Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
+        )
     assert inspect.signature(PolarisClient.stream).return_annotation == "RealtimeStream"
     assert (
         inspect.signature(PolarisClient.ohlcv).return_annotation
@@ -369,6 +380,38 @@ def test_historical_generator_closes_its_native_iterator() -> None:
     assert inspect.isgenerator(rows)
     assert next(rows) == {"timestamp": 1}
     rows.close()
+    assert native.closed
+    assert owner.diagnostics == 1
+
+
+def test_record_batch_generator_closes_its_native_iterator() -> None:
+    class NativeIterator:
+        def __init__(self) -> None:
+            self.closed = False
+            self.rows = iter([object(), object()])
+
+        def __next__(self):
+            return next(self.rows)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class Owner:
+        def __init__(self) -> None:
+            self.diagnostics = 0
+
+        def _emit_diagnostics(self) -> None:
+            self.diagnostics += 1
+
+    owner = Owner()
+    native = NativeIterator()
+    batches = PolarisClient._iterate_batches(  # type: ignore[arg-type]
+        owner,
+        native,
+        "trades",
+    )
+    next(batches)
+    batches.close()
     assert native.closed
     assert owner.diagnostics == 1
 

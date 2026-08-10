@@ -636,6 +636,65 @@ def test_trades_use_snapshot_download_flow_by_default(tmp_path) -> None:
         client.close()
 
 
+def test_trade_columnar_two_pass_downloads_and_resolves_once(tmp_path) -> None:
+    calls: list[str] = []
+    snapshot_rows = [
+        {
+            "timestamp": _ts("2024-01-01T00:00:00Z"),
+            "type": "trade",
+            "data": {"price": 100.0, "quantity": 0.5, "trade_id": 1},
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:00:01Z"),
+            "type": "trade",
+            "data": {"price": 101.0, "quantity": 0.25, "trade_id": 2},
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
+            )
+        if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                json=_bulk_download_manifest(
+                    source="binance",
+                    market="BTC-USDT",
+                    day="2024-01-01",
+                    keys=[SNAPSHOT_KEY_DAY_1],
+                ),
+            )
+        if _is_download_request(request):
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(snapshot_rows),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        batches = list(
+            client.trades(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+                output="batches",
+                batch_size=1,
+            )
+        )
+    finally:
+        client.close()
+
+    assert [batch.num_rows for batch in batches] == [1, 1]
+    assert calls == ["/snapshots", "/download", f"/{SNAPSHOT_KEY_DAY_1}.jsonl.zst"]
+
+
 def test_trades_download_404_raises_not_found_for_streaming_response(tmp_path) -> None:
     calls: list[str] = []
 

@@ -33,6 +33,13 @@ Or install it into the active environment with:
 uv pip install polaris-data
 ```
 
+For Pandas DataFrames or PyArrow record batches, install an optional extra:
+
+```bash
+pip install "polaris-data[dataframe]"  # Pandas + PyArrow
+pip install "polaris-data[arrow]"      # PyArrow only
+```
+
 ## Quickstart
 
 Use `replay(...)` when you want to stream historical rows in a notebook, script, or backfill job. You can run this without an API key set, and `from_` and `to` are optional. If you omit them, the SDK uses the most recent available window up to the last 7 days of data, or the public cutoff date for preview datasets.
@@ -81,20 +88,55 @@ Use `PolarisClient` for discovery, historical replay, and direct query workflows
 | `list_snapshots(source, market, from_, to, limit=1000)` | List of snapshot entries | Find snapshot files for a range |
 | `replay(source, market, from_=None, to=None, standard=True, materialize_orderbooks=True)` | Iterator of rows | Stream historical data for replay or backfills |
 | `events(source, market, from_=None, to=None, materialize_orderbooks=True)` | Iterator of normalized events | Process mixed event types with bounded memory |
-| `trades(source, market, from_=None, to=None)` | Iterator of normalized trades | Analyze executions |
+| `trades(source, market, from_=None, to=None, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or DataFrame | Analyze executions |
 | `raw(source, market, from_=None, to=None, limit=1000)` | List of raw payloads | Inspect venue-native messages |
 | `ohlcv(source, market, interval, from_=None, to=None, format=None)` | List of bars or TradingView-style JSON | Plot fast market charts |
 | `l2_snapshots(source, market, from_=None, to=None, materialize_orderbooks=True)` | Iterator of complete orderbook rows | Order book reconstruction and microstructure analysis |
 | `l2_updates(source, market, from_=None, to=None)` | Iterator of raw orderbook snapshots and deltas | High-throughput application-managed books |
-| `funding_rates(source, market, from_=None, to=None)` | Iterator of funding-rate point series rows | Perpetual funding studies and carry modeling |
-| `mark_prices(source, market, from_=None, to=None)` | Iterator of mark-price point series rows | Basis analysis, mark tracking, and liquidation-related research |
+| `funding_rates(source, market, from_=None, to=None, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or DataFrame | Perpetual funding studies and carry modeling |
+| `mark_prices(source, market, from_=None, to=None, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or DataFrame | Basis analysis, mark tracking, and liquidation-related research |
 | `volume(source, market, interval, from_=None, to=None)` | Bucketed trade volume series | Volume profiling and participation analysis |
 | `vwap(source, market, interval, from_=None, to=None)` | Bucketed VWAP series | Execution benchmarking and price smoothing |
 | `volatility(source, market, interval, from_=None, to=None, method="log_returns")` | Bucketed realized volatility series | Risk modeling and intraperiod volatility analysis |
-| `bbo(source, market, from_=None, to=None, interval=None)` | Iterator of best bid/offer quotes | Spread tracking, quote analytics, and top-of-book monitoring |
-| `depth_metrics(source, market, from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0)` | Iterator of derived liquidity metrics | Liquidity analysis and market impact estimation |
+| `bbo(source, market, from_=None, to=None, interval=None, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or DataFrame | Spread tracking, quote analytics, and top-of-book monitoring |
+| `depth_metrics(source, market, from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or DataFrame | Liquidity analysis and market impact estimation |
 
 Historical row methods return single-pass generators. Iterate directly for bounded memory, or wrap a call in `list(...)` when you need indexing or repeated access. Close a partially consumed generator with `rows.close()`. BBO also accepts `interval="100ms"`, `"1s"`, `"10s"`, `"1m"`, `"5m"`, `"15m"`, or `"1h"` to emit the last quote from each non-empty UTC-aligned bucket.
+
+### Arrow batches and DataFrames
+
+`trades`, `funding_rates`, `mark_prices`, `bbo`, and `depth_metrics` accept
+three output modes. The default `"iterator"` preserves the existing row
+dictionaries. `"batches"` yields bounded `pyarrow.RecordBatch` objects, while
+`"dataframe"` eagerly returns one Pandas DataFrame.
+
+```python
+with PolarisClient() as client:
+    trades_df = client.trades(
+        source="binance",
+        market="BTC-USDT",
+        from_=start,
+        to=end,
+        output="dataframe",
+    )
+
+    for batch in client.bbo(
+        source="binance",
+        market="BTC-USDT",
+        from_=start,
+        to=end,
+        output="batches",
+        batch_size=100_000,
+    ):
+        process(batch)
+```
+
+Columnar schemas are flat. Timestamps are timezone-aware UTC milliseconds;
+source, market, and trade side are categorical/dictionary columns. Additional
+venue-specific trade and point fields are sorted under `extra.<name>`. Because
+those keys are dynamic, trade and point queries scan the resolved local files
+once to infer a stable schema and reopen the same files for batch emission.
+BBO and depth metrics have fixed schemas and remain single-pass.
 
 `from_` and `to` accept ISO 8601 strings, `datetime`, `date`, or Unix epoch microseconds. They are optional on `replay(...)`, `events(...)`, `trades(...)`, `raw(...)`, and `ohlcv(...)`. If you omit either boundary, the SDK fills the request from the most recent available window up to the last 7 days of data, or the public cutoff date for preview datasets.
 
