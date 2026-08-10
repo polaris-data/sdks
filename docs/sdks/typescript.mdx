@@ -224,10 +224,16 @@ for (const update of await client.l2Updates({
   source: "binance",
   market: "BTC-USDT",
 })) {
-  const completeBook = books.apply(update);
-  if (completeBook) process(completeBook);
+  books.update(update);
 }
+
+const completeBook = books.snapshot("binance", "BTC-USDT");
+if (completeBook) process(completeBook);
 ```
+
+`update()` changes state without constructing a complete object. `snapshot()`
+creates sorted levels only when requested. Use `apply()` when you need the
+previous update-and-materialize behavior.
 
 ## Query funding rates
 

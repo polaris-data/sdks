@@ -994,7 +994,7 @@ impl PolarisClient {
                     }
                     replay::ReplayRecord::Event(event) => event,
                 };
-                if orderbooks.update(&event)? != BookUpdate::Applied {
+                if orderbooks.update_state(&event)? != BookUpdate::Applied {
                     continue;
                 }
                 let Some(mut quote) = orderbooks.best_bid_offer(
@@ -1171,7 +1171,7 @@ impl PolarisClient {
                     }
                     replay::ReplayRecord::Event(event) => event,
                 };
-                if orderbooks.update(&event)? != BookUpdate::Applied {
+                if orderbooks.update_state(&event)? != BookUpdate::Applied {
                     continue;
                 }
                 if let Some(view) = orderbooks.view(&event.source, &event.market) {

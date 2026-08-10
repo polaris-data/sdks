@@ -154,10 +154,15 @@ materialize those updates when needed:
 from polaris_data import OrderbookBuilder
 
 books = OrderbookBuilder()
-complete = books.apply(snapshot)
-complete = books.apply(delta)  # None until a snapshot; otherwise a full book
+books.update(snapshot)
+books.update(delta)  # False until a snapshot initializes this book
+complete = books.snapshot("lighter", "BTC-USD")
 books.clear_book("lighter", "BTC-USD")
 ```
+
+`update()` mutates book state without constructing a full result. Call
+`snapshot()` only when you need sorted levels. The existing `apply()` method
+remains available as a compatibility shortcut that performs both operations.
 
 ## PolarisClient API
 
@@ -222,13 +227,14 @@ Run the opt-in end-to-end benchmark after building the Python extension:
 uv run python benchmarks/streaming_memory.py
 ```
 
-It generates a 3,000-level local book with one million deltas, consumes raw standardized events, direct BBO, and raw L2 update streams in isolated processes, and reports end-to-end wall time, rows per second, and peak RSS. The command fails when peak RSS from 100,000 to one million deltas grows by more than the larger of 20% or 64 MiB, or when long-run throughput falls below 75% of short-run throughput.
+It generates a 3,000-level local book with one million deltas, consumes raw standardized events, direct BBO, raw L2 updates, and lazy application-managed books in isolated processes, and reports end-to-end wall time, rows per second, and peak RSS. The command fails when peak RSS from 100,000 to one million deltas grows by more than the larger of 20% or 64 MiB, or when long-run throughput falls below 75% of short-run throughput.
 
 Optionally set machine-specific throughput floors:
 
 ```bash
 uv run python benchmarks/streaming_memory.py \
-  --min-rps events=50000 --min-rps bbo=100000 --min-rps l2_updates=500000
+  --min-rps events=50000 --min-rps bbo=100000 \
+  --min-rps l2_updates=500000 --min-rps l2_builder=250000
 ```
 
 Full-book materialization remains available as an explicitly scaled benchmark:
@@ -266,9 +272,10 @@ the synthetic 788,383-event UNI-sized trade fixture.
 
 | Benchmark | Path | Scale | Construction | First event | Throughput | Memory result |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Streaming and memory | Raw events | 1,000,001 rows | — | — | 1.09M rows/s | 30.4 MiB peak RSS |
-| Streaming and memory | Direct BBO | 1,000,001 quotes | — | — | 774k rows/s | 30.3 MiB peak RSS |
-| Streaming and memory | Raw L2 updates | 1,000,001 updates | — | — | 1.11M rows/s | 30.5 MiB peak RSS |
+| Streaming and memory | Raw events | 1,000,001 rows | — | — | 1.10M rows/s | 30.7 MiB peak RSS |
+| Streaming and memory | Direct BBO | 1,000,001 quotes | — | — | 866k rows/s | 30.4 MiB peak RSS |
+| Streaming and memory | Raw L2 updates | 1,000,001 updates | — | — | 1.15M rows/s | 30.8 MiB peak RSS |
+| Streaming and memory | Lazy 3,000-level builder | 1,000,001 updates | — | — | 443k rows/s | 36.3 MiB peak RSS |
 | Streaming and memory | Materialized 3,000-level L2 | 1,001 books | — | — | 646 books/s | 36.9 MiB peak RSS |
 | Local replay | Direct zstd+orjson | 788,383 events | <0.01 ms | 0.09 ms | 2.21M events/s | +0.3 MiB peak RSS |
 | Local replay | SDK `events()` | 788,383 events | 1.07 ms | 0.11 ms | 1.16M events/s | +2.4 MiB peak RSS |

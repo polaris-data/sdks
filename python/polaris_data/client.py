@@ -41,6 +41,17 @@ class OrderbookBuilder:
         except _native.NativeError as error:
             raise PolarisClient._translate_native_error(error, "orderbook") from None
 
+    def update(self, event: JSONDict) -> bool:
+        """Update book state without constructing a complete orderbook."""
+        try:
+            return self._native.update(event)
+        except _native.NativeError as error:
+            raise PolarisClient._translate_native_error(error, "orderbook") from None
+
+    def snapshot(self, source: str, market: str) -> JSONDict | None:
+        """Return the current complete book for a source and market."""
+        return self._native.snapshot(source, market)
+
     def clear(self) -> None:
         self._native.clear()
 

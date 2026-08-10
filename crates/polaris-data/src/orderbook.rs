@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use ordered_float::OrderedFloat;
 use serde_json::{Map, Value, json};
 
-use crate::{BboQuote, OrderbookLevel, PolarisError, StandardEvent};
+use crate::{BboQuote, OrderbookData, OrderbookLevel, PolarisError, StandardEvent};
 
 const SNAPSHOT_TYPES: [&str; 3] = ["orderbook", "orderbook_snapshot", "l2_snapshot"];
 const DELTA_TYPE: &str = "orderbook_delta";
@@ -73,7 +73,7 @@ impl OrderbookBuilder {
         &mut self,
         mut event: StandardEvent,
     ) -> Result<Option<StandardEvent>, PolarisError> {
-        match self.update(&event)? {
+        match self.update_state(&event)? {
             BookUpdate::Ignored => return Ok(Some(event)),
             BookUpdate::Suppressed => return Ok(None),
             BookUpdate::Applied => {}
@@ -97,7 +97,29 @@ impl OrderbookBuilder {
         Ok(Some(event))
     }
 
-    pub(crate) fn update(&mut self, event: &StandardEvent) -> Result<BookUpdate, PolarisError> {
+    /// Update book state without constructing a complete orderbook.
+    ///
+    /// Returns `true` when an orderbook snapshot or delta was applied. Deltas
+    /// received before their first snapshot and non-orderbook events return
+    /// `false`.
+    pub fn update(&mut self, event: &StandardEvent) -> Result<bool, PolarisError> {
+        Ok(matches!(self.update_state(event)?, BookUpdate::Applied))
+    }
+
+    /// Materialize the current complete book for a source and market.
+    pub fn snapshot(&self, source: &str, market: &str) -> Option<OrderbookData> {
+        let state = self.books.get(source)?.get(market)?;
+        Some(OrderbookData {
+            bids: typed_levels(state.bids.iter().rev()),
+            asks: typed_levels(state.asks.iter()),
+            extra: Default::default(),
+        })
+    }
+
+    pub(crate) fn update_state(
+        &mut self,
+        event: &StandardEvent,
+    ) -> Result<BookUpdate, PolarisError> {
         let is_snapshot = SNAPSHOT_TYPES.contains(&event.event_type.as_str());
         let is_delta = event.event_type == DELTA_TYPE;
         if !is_snapshot && !is_delta {
@@ -254,11 +276,18 @@ fn apply_levels(book: &mut BTreeMap<OrderedFloat<f64>, f64>, updates: Vec<Orderb
 }
 
 fn canonical_levels<'a>(levels: impl Iterator<Item = (&'a OrderedFloat<f64>, &'a f64)>) -> Value {
-    Value::Array(
-        levels
-            .map(|(price, quantity)| json!({"price": price.0, "quantity": quantity}))
-            .collect(),
-    )
+    json!(typed_levels(levels))
+}
+
+fn typed_levels<'a>(
+    levels: impl Iterator<Item = (&'a OrderedFloat<f64>, &'a f64)>,
+) -> Vec<OrderbookLevel> {
+    levels
+        .map(|(price, quantity)| OrderbookLevel {
+            price: price.0,
+            quantity: *quantity,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -395,5 +424,47 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(result.data["bids"][0]["price"], 1.0);
+    }
+
+    #[test]
+    fn lazy_update_materializes_only_on_snapshot_request() {
+        let mut builder = OrderbookBuilder::new();
+        assert!(
+            !builder
+                .update(&event(
+                    "orderbook_delta",
+                    "s",
+                    "m",
+                    json!({"bids": [[1, 2]]}),
+                ))
+                .unwrap()
+        );
+        assert!(builder.snapshot("s", "m").is_none());
+
+        assert!(
+            builder
+                .update(&event(
+                    "orderbook",
+                    "s",
+                    "m",
+                    json!({"bids": [[1, 2]], "asks": [[2, 3]]}),
+                ))
+                .unwrap()
+        );
+        assert!(
+            builder
+                .update(&event(
+                    "orderbook_delta",
+                    "s",
+                    "m",
+                    json!({"bids": [[1, 4]]}),
+                ))
+                .unwrap()
+        );
+
+        let snapshot = builder.snapshot("s", "m").expect("book");
+        assert_eq!(snapshot.bids[0].price, 1.0);
+        assert_eq!(snapshot.bids[0].quantity, 4.0);
+        assert_eq!(snapshot.asks[0].price, 2.0);
     }
 }

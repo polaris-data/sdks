@@ -279,8 +279,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Use `l2_updates(...)` when you want to manage reconstruction in your
 application. It returns raw `StandardEvent` snapshots and deltas that can be
-passed directly to `OrderbookBuilder::apply`, regardless of the query's
-`materialize_orderbooks` field.
+passed directly to `OrderbookBuilder::update`, regardless of the query's
+`materialize_orderbooks` field. Call `OrderbookBuilder::snapshot` only when you
+need a complete sorted book; `apply` retains the previous combined behavior.
 
 ## Query funding rates
 

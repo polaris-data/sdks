@@ -224,6 +224,11 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
     assert (
         inspect.signature(OrderbookBuilder.apply).return_annotation == "JSONDict | None"
     )
+    assert inspect.signature(OrderbookBuilder.update).return_annotation == "bool"
+    assert (
+        inspect.signature(OrderbookBuilder.snapshot).return_annotation
+        == "JSONDict | None"
+    )
     assert inspect.signature(PolarisClient.health).return_annotation == "JSONDict"
     assert (
         inspect.signature(PolarisClient.catalog).return_annotation

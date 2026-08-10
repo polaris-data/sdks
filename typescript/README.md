@@ -145,7 +145,9 @@ Standardized orderbooks are materialized by default for `stream`, `replay`,
 `events`, and `l2Snapshots`. Snapshots replace the book, deltas update listed
 prices, and zero quantities delete prices. Use `l2Updates` to receive raw
 snapshots and deltas. `OrderbookBuilder` exposes the same state machine for
-application-managed event flows.
+application-managed event flows. Its `update` method mutates state without
+constructing a complete book; call `snapshot` only when sorted levels are
+needed. The existing `apply` method retains its combined behavior.
 
 ## Examples
 

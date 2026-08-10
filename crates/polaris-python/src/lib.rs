@@ -978,6 +978,25 @@ impl NativeOrderbookBuilder {
             .transpose()
     }
 
+    fn update(&mut self, event: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let event: StandardEvent = pythonize::depythonize(event).map_err(|error| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid standardized event: {error}"))
+        })?;
+        self.inner.update(&event).map_err(native_error)
+    }
+
+    fn snapshot<'py>(
+        &self,
+        py: Python<'py>,
+        source: &str,
+        market: &str,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        self.inner
+            .snapshot(source, market)
+            .map(|book| to_python(py, &book))
+            .transpose()
+    }
+
     fn clear(&mut self) {
         self.inner.clear();
     }

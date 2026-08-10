@@ -219,10 +219,16 @@ from polaris_data import OrderbookBuilder, PolarisClient
 books = OrderbookBuilder()
 with PolarisClient() as client:
     for update in client.l2_updates(source="binance", market="BTC-USDT"):
-        complete_book = books.apply(update)
-        if complete_book is not None:
-            process(complete_book)
+        books.update(update)
+
+complete_book = books.snapshot("binance", "BTC-USDT")
+if complete_book is not None:
+    process(complete_book)
 ```
+
+`update()` changes native state without constructing a complete Python
+dictionary. `snapshot()` creates sorted levels only when requested. Use
+`apply()` when you need the previous update-and-materialize behavior.
 
 ## Query funding rates
 
