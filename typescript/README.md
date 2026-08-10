@@ -136,7 +136,15 @@ try {
 The browser build uses the native browser WebSocket implementation; Node uses
 the bundled Node transport. Streams reconnect automatically after transport
 failures. Because the live protocol has no resume cursor, reconnects can contain
-gaps or duplicate events. Authentication and protocol errors are terminal.
+gaps or duplicate events. Reconstructed books are cleared on reconnect, and
+deltas are suppressed until a new snapshot arrives. Authentication and protocol
+errors are terminal.
+
+Standardized orderbooks are materialized by default for `stream`, `replay`,
+`events`, and `l2Snapshots`. Snapshots replace the book, deltas update listed
+prices, and zero quantities delete prices. Set `materializeOrderbooks: false`
+to receive raw `orderbook_delta` events. `OrderbookBuilder` exposes the same
+state machine for application-managed event flows.
 
 ## Examples
 

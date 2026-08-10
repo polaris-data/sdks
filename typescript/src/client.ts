@@ -17,6 +17,7 @@ import type {
   OhlcvBar,
   OhlcvOptions,
   OrderbookEvent,
+  StandardEvent,
   PaginatedResponse,
   PolarisClientOptions,
   RawQueryOptions,
@@ -55,6 +56,7 @@ import { OhlcvAggregator } from "./aggregator";
 import type { IStorage } from "./storage/interface";
 import type { PolarisRuntime } from "./runtime/types";
 import { RealtimeStream } from "./realtime";
+import { OrderbookBuilder } from "./orderbook";
 
 // ---------------------------------------------------------------------------
 // SDK version – bumped manually during releases
@@ -260,11 +262,10 @@ export class BasePolarisClient {
   async events(options: HistoricalQueryOptions): Promise<Json[]> {
     const { fromMs, toMs } = await this._resolveHistoricalRange(options);
     const result: Json[] = [];
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
+    const events = this._readSnapshotEvents(options.source, options.market, fromMs, toMs);
+    for await (const event of materializeEvents(
+      events,
+      options.materializeOrderbooks ?? true,
     )) {
       result.push(event);
     }
@@ -295,22 +296,26 @@ export class BasePolarisClient {
   /**
    * Return standardised orderbook snapshot events for a time range.
    *
-   * Reads from locally-cached standard snapshot files, filtering to rows that
-   * contain both bid and ask orderbook sides.
+   * Reads snapshots and deltas from locally-cached standard snapshot files.
+   * By default every returned row contains a complete reconstructed book.
    */
   async l2Snapshots(
     options: HistoricalQueryOptions,
   ): Promise<OrderbookEvent[]> {
     const { fromMs, toMs } = await this._resolveHistoricalRange(options);
     const result: OrderbookEvent[] = [];
-    for await (const event of this._readSnapshotEvents(
+    const events = this._readSnapshotEvents(
       options.source,
       options.market,
       fromMs,
       toMs,
-      hasOrderbookSides,
+      isOrderbookEvent,
+    );
+    for await (const event of materializeEvents(
+      events,
+      options.materializeOrderbooks ?? true,
     )) {
-      result.push(event);
+      result.push(event as OrderbookEvent);
     }
     return result;
   }
@@ -319,16 +324,11 @@ export class BasePolarisClient {
    * Derive best bid / offer quotes from standardised orderbook snapshots.
    */
   async bbo(options: HistoricalQueryOptions): Promise<BboQuote[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
     const result: BboQuote[] = [];
-
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      hasOrderbookSides,
-    )) {
+    for (const event of await this.l2Snapshots({
+      ...options,
+      materializeOrderbooks: true,
+    })) {
       const quote = deriveBbo(event);
       if (quote) result.push(quote);
     }
@@ -458,16 +458,11 @@ export class BasePolarisClient {
       throw new PolarisError("slippageNotional must be greater than 0");
     }
 
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
     const result: DepthMetricsRow[] = [];
-
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      hasOrderbookSides,
-    )) {
+    for (const event of await this.l2Snapshots({
+      ...options,
+      materializeOrderbooks: true,
+    })) {
       const row = deriveDepthMetrics(event, depthPct, slippageNotional);
       if (row) result.push(row);
     }
@@ -547,12 +542,13 @@ export class BasePolarisClient {
   async *replay(options: ReplayOptions): AsyncGenerator<Json> {
     if (options.standard !== false) {
       const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-      yield* this._readSnapshotEvents(
+      const events = this._readSnapshotEvents(
         options.source,
         options.market,
         fromMs,
         toMs,
       );
+      yield* materializeEvents(events, options.materializeOrderbooks ?? true);
     } else {
       throw new PolarisError(
         "replay({ standard: false }) is not supported by the TypeScript SDK. Use snapshot-backed replay instead.",
@@ -1762,8 +1758,27 @@ function isMarkPriceEvent(event: Json): event is MarkPriceEvent {
   return pointSeriesName(event) === "mark_price";
 }
 
-function hasOrderbookSides(event: Json): event is OrderbookEvent {
-  return extractOrderbookSides(event) !== undefined;
+function isOrderbookEvent(event: Json): event is OrderbookEvent {
+  return (
+    ["orderbook", "orderbook_delta", "orderbook_snapshot", "l2_snapshot"].includes(
+      String(event.type),
+    ) && (isRecord(event.data) || (Array.isArray(event.bids) && Array.isArray(event.asks)))
+  );
+}
+
+async function* materializeEvents(
+  events: AsyncIterable<Json>,
+  enabled: boolean,
+): AsyncGenerator<Json> {
+  if (!enabled) {
+    yield* events;
+    return;
+  }
+  const orderbooks = new OrderbookBuilder();
+  for await (const event of events) {
+    const output = orderbooks.apply(event as StandardEvent);
+    if (output) yield output;
+  }
 }
 
 function coerceNumeric(value: unknown): number | undefined {

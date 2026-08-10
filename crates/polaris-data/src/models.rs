@@ -73,6 +73,20 @@ pub struct HistoricalQuery {
     pub from: Option<TimeInput>,
     pub to: Option<TimeInput>,
     pub allow_gaps: bool,
+    pub materialize_orderbooks: bool,
+}
+
+impl Default for HistoricalQuery {
+    fn default() -> Self {
+        Self {
+            source: String::new(),
+            market: String::new(),
+            from: None,
+            to: None,
+            allow_gaps: false,
+            materialize_orderbooks: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,6 +96,20 @@ pub struct ReplayQuery {
     pub from: Option<TimeInput>,
     pub to: Option<TimeInput>,
     pub allow_gaps: bool,
+    pub materialize_orderbooks: bool,
+}
+
+impl Default for ReplayQuery {
+    fn default() -> Self {
+        Self {
+            source: String::new(),
+            market: String::new(),
+            from: None,
+            to: None,
+            allow_gaps: false,
+            materialize_orderbooks: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,6 +117,18 @@ pub struct StreamQuery {
     pub source: String,
     pub markets: Vec<String>,
     pub include_buffer: bool,
+    pub materialize_orderbooks: bool,
+}
+
+impl Default for StreamQuery {
+    fn default() -> Self {
+        Self {
+            source: String::new(),
+            markets: Vec::new(),
+            include_buffer: false,
+            materialize_orderbooks: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -1963,9 +1963,108 @@ def test_l2_snapshots_use_snapshot_download_flow_by_default(tmp_path) -> None:
             market="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-01T01:00:00Z",
-        ) == [snapshot_rows[0], snapshot_rows[2]]
+        ) == [
+            {
+                "timestamp": _ts("2024-01-01T00:00:00Z"),
+                "type": "orderbook",
+                "data": {
+                    "bids": [
+                        {"price": 100.0, "quantity": 1.25},
+                        {"price": 99.5, "quantity": 2.0},
+                    ],
+                    "asks": [
+                        {"price": 100.5, "quantity": 0.75},
+                        {"price": 101.0, "quantity": 1.0},
+                    ],
+                },
+            },
+            {
+                "timestamp": _ts("2024-01-01T00:00:02Z"),
+                "type": "orderbook",
+                "data": {
+                    "bids": [{"price": 100.1, "quantity": 1.0}],
+                    "asks": [{"price": 100.6, "quantity": 1.5}],
+                },
+            },
+        ]
     finally:
         client.close()
+
+
+def test_l2_snapshots_materialize_deltas_and_support_raw_opt_out(tmp_path) -> None:
+    snapshot_key = "standard-lighter-BTC-USD-2024-01-01"
+    snapshot_rows = [
+        {
+            "timestamp": _ts("2024-01-01T00:00:00Z"),
+            "type": "orderbook_delta",
+            "source": "lighter",
+            "market": "BTC-USD",
+            "data": {"bids": [[999.0, 1.0]]},
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:00:01Z"),
+            "type": "orderbook",
+            "source": "lighter",
+            "market": "BTC-USD",
+            "data": {"bids": [[100.0, 2.0]], "asks": [[101.0, 3.0]]},
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:00:02Z"),
+            "type": "orderbook_delta",
+            "source": "lighter",
+            "market": "BTC-USD",
+            "data": {"bids": [[100.0, 0.0], [99.0, 4.0]]},
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshots":
+            return httpx.Response(
+                200,
+                json={"snapshots": [{"key": snapshot_key, "date": "2024-01-01"}]},
+            )
+        if request.url.path == "/download":
+            return httpx.Response(
+                200,
+                json=_bulk_download_manifest(
+                    source="lighter",
+                    market="BTC-USD",
+                    day="2024-01-01",
+                    keys=[snapshot_key],
+                ),
+            )
+        if _is_download_request(request):
+            return httpx.Response(
+                200,
+                content=_zstd_ndjson(snapshot_rows),
+                headers={"content-type": "application/zstd"},
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        materialized = client.l2_snapshots(
+            source="lighter",
+            market="BTC-USD",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T01:00:00Z",
+        )
+        raw = client.l2_snapshots(
+            source="lighter",
+            market="BTC-USD",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T01:00:00Z",
+            materialize_orderbooks=False,
+        )
+    finally:
+        client.close()
+
+    assert [row["type"] for row in materialized] == ["orderbook", "orderbook"]
+    assert materialized[-1]["data"] == {
+        "bids": [{"price": 99.0, "quantity": 4.0}],
+        "asks": [{"price": 101.0, "quantity": 3.0}],
+    }
+    assert raw == snapshot_rows
 
 
 def test_funding_rates_filter_point_series_from_standardized_snapshots(tmp_path) -> None:

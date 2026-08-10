@@ -40,7 +40,14 @@ The `/events` endpoint returns mixed event types:
 - `trade`: executed transactions
 - `bar`: OHLCV candles
 - `datapoint`: market state updates such as funding rates or liquidations
-- `orderbook`: order book snapshots or updates
+- `orderbook`: a complete order book snapshot
+- `orderbook_delta`: changed price levels; zero quantity removes a level
+
+The SDKs materialize orderbooks by default: deltas become complete `orderbook`
+events after a snapshot has initialized the book. Deltas at the beginning of a
+range, after a coverage gap, or after a reconnect are suppressed until the next
+snapshot. Disable `materialize_orderbooks`/`materializeOrderbooks` to receive the
+two event types unchanged.
 
 ## Common datapoint labels
 

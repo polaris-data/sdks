@@ -21,6 +21,7 @@ from polaris_data import (
     DownloadNotAllowedError,
     LocalSnapshotEntry,
     NotFoundError,
+    OrderbookBuilder,
     PolarisClient,
     PolarisError,
     RateLimitedError,
@@ -51,6 +52,7 @@ def test_top_level_exports_are_stable() -> None:
         "CatalogMarketEntry",
         "CatalogResponse",
         "NotFoundError",
+        "OrderbookBuilder",
         "DownloadNotAllowedError",
         "LocalSnapshotEntry",
         "PolarisClient",
@@ -110,18 +112,30 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("chunk_size", keyword_only, None),
         ("timeout", keyword_only, None),
         ("parallel", keyword_only, False),
+        ("materialize_orderbooks", keyword_only, True),
     ]
     assert _parameters(PolarisClient.stream) == [
         ("self", positional, required),
         ("source", keyword_only, required),
         ("markets", keyword_only, required),
         ("include_buffer", keyword_only, False),
+        ("materialize_orderbooks", keyword_only, True),
     ]
 
+    event_methods = [PolarisClient.events, PolarisClient.l2_snapshots]
+    for method in event_methods:
+        assert _parameters(method) == [
+            ("self", positional, required),
+            ("source", keyword_only, required),
+            ("market", keyword_only, required),
+            ("from_", keyword_only, None),
+            ("to", keyword_only, None),
+            ("allow_gaps", keyword_only, False),
+            ("materialize_orderbooks", keyword_only, True),
+        ]
+
     historical_methods = [
-        PolarisClient.events,
         PolarisClient.trades,
-        PolarisClient.l2_snapshots,
         PolarisClient.funding_rates,
         PolarisClient.mark_prices,
         PolarisClient.bbo,
@@ -189,6 +203,7 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
 
 
 def test_documented_result_annotations_and_models_are_stable() -> None:
+    assert inspect.signature(OrderbookBuilder.apply).return_annotation == "JSONDict | None"
     assert inspect.signature(PolarisClient.health).return_annotation == "JSONDict"
     assert inspect.signature(PolarisClient.catalog).return_annotation == "CatalogResponse | JSONDict"
     assert inspect.signature(PolarisClient.list_snapshots).return_annotation == "list[SnapshotEntry]"

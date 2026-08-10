@@ -201,6 +201,7 @@ impl PolarisClient {
                 from: query.from,
                 to: query.to,
                 allow_gaps: query.allow_gaps,
+                materialize_orderbooks: query.materialize_orderbooks,
             })
             .await?;
         replay.collect::<Vec<_>>().await.into_iter().collect()
@@ -320,7 +321,7 @@ impl PolarisClient {
                 query.to.as_ref(),
             )
             .await?;
-        let paths = self
+        let (paths, gaps) = self
             .resolve_snapshot_paths(
                 &query.source,
                 &query.market,
@@ -335,6 +336,8 @@ impl PolarisClient {
             to_us,
             query.source,
             query.market,
+            query.materialize_orderbooks,
+            gaps,
         ))
     }
 
@@ -346,6 +349,7 @@ impl PolarisClient {
                 from: query.from,
                 to: query.to,
                 allow_gaps: query.allow_gaps,
+                materialize_orderbooks: true,
             })
             .await?;
         Ok(ohlcv::aggregate(&trades, query.interval, query.format))
@@ -513,7 +517,7 @@ impl PolarisClient {
         from_us: i64,
         to_us: i64,
         allow_gaps: bool,
-    ) -> Result<Vec<PathBuf>, PolarisError> {
+    ) -> Result<(Vec<PathBuf>, Vec<(i64, i64)>), PolarisError> {
         let start = Utc
             .timestamp_micros(from_us)
             .single()
@@ -543,7 +547,7 @@ impl PolarisClient {
             })
             .collect();
         if direct_daily.iter().all(|path| path.exists()) {
-            return Ok(direct_daily);
+            return Ok((direct_daily, Vec::new()));
         }
 
         let local_entries =
@@ -565,7 +569,10 @@ impl PolarisClient {
             local_gaps.extend(gaps);
         }
         if !local_selected.is_empty() && local_gaps.is_empty() {
-            return Ok(local_selected.into_iter().map(|entry| entry.path).collect());
+            return Ok((
+                local_selected.into_iter().map(|entry| entry.path).collect(),
+                Vec::new(),
+            ));
         }
 
         let first_day = *required_dates
@@ -708,7 +715,7 @@ impl PolarisClient {
         }
         selected_paths.sort();
         selected_paths.dedup();
-        Ok(selected_paths)
+        Ok((selected_paths, gaps))
     }
 
     async fn download_snapshot(&self, snapshot: &LocalSnapshotFile) -> Result<(), PolarisError> {
@@ -827,7 +834,10 @@ impl PolarisClient {
         Ok(events
             .into_iter()
             .filter(|event| {
-                event.event_type == "orderbook_snapshot" || event.event_type == "l2_snapshot"
+                matches!(
+                    event.event_type.as_str(),
+                    "orderbook" | "orderbook_delta" | "orderbook_snapshot" | "l2_snapshot"
+                )
             })
             .filter_map(|event| self.try_parse_orderbook(event))
             .collect())
@@ -835,7 +845,12 @@ impl PolarisClient {
 
     /// Derive best bid / offer quotes from standardized orderbook snapshots.
     pub async fn bbo(&self, query: HistoricalQuery) -> Result<Vec<BboQuote>, PolarisError> {
-        let orderbooks = self.l2_snapshots(query).await?;
+        let orderbooks = self
+            .l2_snapshots(HistoricalQuery {
+                materialize_orderbooks: true,
+                ..query
+            })
+            .await?;
         Ok(orderbooks
             .into_iter()
             .filter_map(|orderbook| self.derive_bbo(&orderbook))
@@ -899,6 +914,7 @@ impl PolarisClient {
                 from: query.from,
                 to: query.to,
                 allow_gaps: query.allow_gaps,
+                materialize_orderbooks: true,
             })
             .await?;
 
@@ -921,6 +937,7 @@ impl PolarisClient {
                 from: query.from,
                 to: query.to,
                 allow_gaps: query.allow_gaps,
+                materialize_orderbooks: true,
             })
             .await?;
 
@@ -955,7 +972,12 @@ impl PolarisClient {
             ));
         }
 
-        let orderbooks = self.l2_snapshots(query).await?;
+        let orderbooks = self
+            .l2_snapshots(HistoricalQuery {
+                materialize_orderbooks: true,
+                ..query
+            })
+            .await?;
         let mut result = Vec::new();
 
         for orderbook in orderbooks {
@@ -986,8 +1008,17 @@ impl PolarisClient {
                 }
             }
         }
-        let bids = parse_orderbook_levels(object.get("bids")?)?;
-        let asks = parse_orderbook_levels(object.get("asks")?)?;
+        let is_delta = event.event_type == "orderbook_delta";
+        let bids = match object.get("bids") {
+            Some(value) => parse_orderbook_levels(value)?,
+            None if is_delta => Vec::new(),
+            None => return None,
+        };
+        let asks = match object.get("asks") {
+            Some(value) => parse_orderbook_levels(value)?,
+            None if is_delta => Vec::new(),
+            None => return None,
+        };
         let extra = object
             .iter()
             .filter(|(key, _)| key.as_str() != "bids" && key.as_str() != "asks")

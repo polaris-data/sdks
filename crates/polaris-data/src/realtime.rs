@@ -10,7 +10,7 @@ use tokio_tungstenite::{
 };
 use url::Url;
 
-use crate::{PolarisError, RealtimeStream, StandardEvent, StreamQuery};
+use crate::{OrderbookBuilder, PolarisError, RealtimeStream, StandardEvent, StreamQuery};
 
 const MAX_SUBSCRIPTIONS: usize = 1_000;
 const PING_INTERVAL: Duration = Duration::from_secs(30);
@@ -107,6 +107,7 @@ pub(crate) async fn open_stream(
         let mut socket = first_socket;
         let mut backoff = INITIAL_BACKOFF;
         let mut ping_counter = 0_u64;
+        let mut orderbooks = OrderbookBuilder::new();
 
         'connections: loop {
             let connected_at = Instant::now();
@@ -121,7 +122,20 @@ pub(crate) async fn open_stream(
                     incoming = socket.next() => {
                         match incoming {
                             Some(Ok(Message::Text(text))) => match parse_server_message(text.as_ref()) {
-                                Ok(ServerMessage::Data(event)) => yield Ok(event),
+                                Ok(ServerMessage::Data(event)) => {
+                                    if query.materialize_orderbooks {
+                                        match orderbooks.apply(event) {
+                                            Ok(Some(event)) => yield Ok(event),
+                                            Ok(None) => {}
+                                            Err(error) => {
+                                                yield Err(error);
+                                                break 'connections;
+                                            }
+                                        }
+                                    } else {
+                                        yield Ok(event);
+                                    }
+                                }
                                 Ok(ServerMessage::Pong(request_id)) => {
                                     if awaiting_pong.as_ref().is_some_and(|(expected, _)| request_id.as_deref() == Some(expected)) {
                                         awaiting_pong = None;
@@ -177,6 +191,7 @@ pub(crate) async fn open_stream(
             if connected_at.elapsed() >= HEALTHY_CONNECTION {
                 backoff = INITIAL_BACKOFF;
             }
+            orderbooks.clear();
             log::warn!("{reconnect_reason}; reconnecting realtime stream");
 
             loop {
@@ -488,6 +503,7 @@ mod tests {
                     "ETH-USDT".to_owned(),
                 ],
                 include_buffer: true,
+                materialize_orderbooks: true,
             },
         )
         .await
@@ -500,7 +516,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconnects_and_resubscribes_after_abnormal_close() {
+    async fn clears_materialized_orderbooks_after_abnormal_close() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = Url::parse(&format!("ws://{}/stream", listener.local_addr().unwrap())).unwrap();
         let server = tokio::spawn(async move {
@@ -521,6 +537,20 @@ mod tests {
                     .unwrap();
                 if attempt == 0 {
                     socket
+                        .send(Message::Text(
+                            json!({
+                                "source":"afx","market":"AAPLUSDC",
+                                "kind":{"type":"data","stream":"standard","event":{
+                                    "timestamp":1786017600000_i64,"type":"orderbook",
+                                    "data":{"bids":[[100.0,1.0]],"asks":[[101.0,1.0]]}
+                                }}
+                            })
+                            .to_string()
+                            .into(),
+                        ))
+                        .await
+                        .unwrap();
+                    socket
                         .send(Message::Close(Some(CloseFrame {
                             code: CloseCode::Again,
                             reason: "retry".into(),
@@ -528,13 +558,22 @@ mod tests {
                         .await
                         .unwrap();
                 } else {
-                    socket.send(Message::Text(json!({
-                        "source":"afx","market":"AAPLUSDC","timestamp":"2026-08-06T12:00:01Z",
-                        "kind":{"type":"data","stream":"standard","event":{
-                            "timestamp":1786017601000_i64,"source":"afx","market":"AAPLUSDC",
-                            "type":"point","data":{"series":"mark_price","value":"1.0"}
-                        }}
-                    }).to_string().into())).await.unwrap();
+                    for event in [
+                        json!({"timestamp":1786017601000_i64,"type":"orderbook_delta","data":{"bids":[[100.0,9.0]]}}),
+                        json!({"timestamp":1786017602000_i64,"type":"orderbook","data":{"bids":[[90.0,2.0]],"asks":[[91.0,3.0]]}}),
+                    ] {
+                        socket
+                            .send(Message::Text(
+                                json!({
+                                    "source":"afx","market":"AAPLUSDC",
+                                    "kind":{"type":"data","stream":"standard","event":event}
+                                })
+                                .to_string()
+                                .into(),
+                            ))
+                            .await
+                            .unwrap();
+                    }
                 }
             }
         });
@@ -546,16 +585,26 @@ mod tests {
                 source: "afx".to_owned(),
                 markets: vec!["AAPLUSDC".to_owned()],
                 include_buffer: false,
+                materialize_orderbooks: true,
             },
         )
         .await
         .unwrap();
-        let event = tokio::time::timeout(Duration::from_secs(3), events.next())
+        let first = tokio::time::timeout(Duration::from_secs(3), events.next())
             .await
             .unwrap()
             .unwrap()
             .unwrap();
-        assert_eq!(event.event_type, "point");
+        let second = tokio::time::timeout(Duration::from_secs(3), events.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.event_type, "orderbook");
+        assert_eq!(
+            second.data["bids"],
+            json!([{"price": 90.0, "quantity": 2.0}])
+        );
         server.await.unwrap();
     }
 
@@ -585,6 +634,7 @@ mod tests {
                 source: "afx".to_owned(),
                 markets: vec!["AAPLUSDC".to_owned()],
                 include_buffer: false,
+                materialize_orderbooks: true,
             },
         )
         .await
@@ -607,6 +657,7 @@ mod tests {
                 source: " ".to_owned(),
                 markets: vec!["BTC-USDT".to_owned()],
                 include_buffer: false,
+                materialize_orderbooks: true,
             },
         )
         .await

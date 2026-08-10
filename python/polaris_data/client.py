@@ -28,6 +28,26 @@ DEFAULT_TIMEOUT = 30.0
 DEFAULT_NETWORK_CHUNK_SIZE = 8 * 1024 * 1024
 
 
+class OrderbookBuilder:
+    """Reconstruct complete books from standardized orderbook events."""
+
+    def __init__(self) -> None:
+        self._native = _native.NativeOrderbookBuilder()
+
+    def apply(self, event: JSONDict) -> JSONDict | None:
+        """Apply an event, suppressing deltas until their book has a snapshot."""
+        try:
+            return self._native.apply(event)
+        except _native.NativeError as error:
+            raise PolarisClient._translate_native_error(error, "orderbook") from None
+
+    def clear(self) -> None:
+        self._native.clear()
+
+    def clear_book(self, source: str, market: str) -> None:
+        self._native.clear_book(source, market)
+
+
 class RealtimeStream(Iterator[JSONDict]):
     """Closeable iterator of normalized realtime market events."""
 
@@ -237,9 +257,16 @@ class PolarisClient:
         source: str,
         markets: Sequence[str],
         include_buffer: bool = False,
+        materialize_orderbooks: bool = True,
     ) -> RealtimeStream:
         """Open a reconnecting realtime stream of normalized market events."""
-        iterator = self._call("stream", source, list(markets), include_buffer)
+        iterator = self._call(
+            "stream",
+            source,
+            list(markets),
+            include_buffer,
+            materialize_orderbooks,
+        )
         stream = RealtimeStream(self, iterator)
         self._streams.add(stream)
         return stream
@@ -304,6 +331,7 @@ class PolarisClient:
         chunk_size: int | None = None,
         timeout: float | None = None,
         parallel: bool | int = False,
+        materialize_orderbooks: bool = True,
     ) -> Iterator[JSONDict]:
         del timeout
         effective_chunk_size = (
@@ -319,10 +347,24 @@ class PolarisClient:
         if standard:
             if parallel:
                 iterator = self._call(
-                    "replay_chunked", source, market, from_text, to_text, allow_gaps
+                    "replay_chunked",
+                    source,
+                    market,
+                    from_text,
+                    to_text,
+                    allow_gaps,
+                    materialize_orderbooks,
                 )
             else:
-                iterator = self._call("replay", source, market, from_text, to_text, allow_gaps)
+                iterator = self._call(
+                    "replay",
+                    source,
+                    market,
+                    from_text,
+                    to_text,
+                    allow_gaps,
+                    materialize_orderbooks,
+                )
         elif from_text is not None and to_text is not None:
             method = "raw_replay_chunked" if parallel else "raw_replay_cached"
             iterator = self._call(
@@ -347,6 +389,7 @@ class PolarisClient:
         from_: TimeInput | None = None,
         to: TimeInput | None = None,
         allow_gaps: bool = False,
+        materialize_orderbooks: bool = True,
     ) -> list[JSONDict]:
         return self._call(
             "events",
@@ -355,6 +398,7 @@ class PolarisClient:
             self._time(from_),
             self._time(to),
             allow_gaps,
+            materialize_orderbooks,
         )
 
     def trades(
@@ -403,9 +447,16 @@ class PolarisClient:
         from_: TimeInput | None = None,
         to: TimeInput | None = None,
         allow_gaps: bool = False,
+        materialize_orderbooks: bool = True,
     ) -> list[JSONDict]:
-        return self._historical(
-            "l2_snapshots", source, market, from_, to, allow_gaps
+        return self._call(
+            "l2_snapshots",
+            source,
+            market,
+            self._time(from_),
+            self._time(to),
+            allow_gaps,
+            materialize_orderbooks,
         )
 
     def funding_rates(

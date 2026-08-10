@@ -78,6 +78,7 @@ async fn main() -> Result<(), polaris_data::PolarisError> {
             from: Some("2024-01-01T00:00:00Z".into()),
             to: Some("2024-01-01T01:00:00Z".into()),
             allow_gaps: false,
+            materialize_orderbooks: true,
         })
         .await?;
 
@@ -122,6 +123,7 @@ async fn main() -> Result<(), polaris_data::PolarisError> {
         source: "binance".into(),
         markets: vec!["BTC-USDT".into(), "ETH-USDT".into()],
         include_buffer: false,
+        materialize_orderbooks: true,
     }).await?;
 
     while let Some(event) = events.next().await {
@@ -131,9 +133,28 @@ async fn main() -> Result<(), polaris_data::PolarisError> {
 }
 ```
 
-Reconnection is best-effort: the current live protocol has no resume cursor,
-so a reconnect can introduce a gap or duplicate event. Protocol and
-authentication errors are terminal and are not retried.
+Orderbooks are materialized by default. A standardized `orderbook` event replaces
+the complete book; each `orderbook_delta` updates only its listed prices, and a
+zero quantity deletes that price. Materialized output is relabeled `orderbook`
+and uses sorted `{price, quantity}` levels. Set `materialize_orderbooks=False`
+(Python), `materialize_orderbooks: false` (Rust), or
+`materializeOrderbooks: false` (TypeScript) to receive raw deltas.
+
+Reconnection is best-effort: the current live protocol has no resume cursor, so
+a reconnect can introduce a gap or duplicate event. The SDK clears reconstructed
+books on reconnect and suppresses later deltas until a new snapshot arrives.
+Protocol and authentication errors are terminal and are not retried.
+
+Reusable `OrderbookBuilder` exports in all three SDKs provide the same behavior:
+
+```python
+from polaris_data import OrderbookBuilder
+
+books = OrderbookBuilder()
+complete = books.apply(snapshot)
+complete = books.apply(delta)  # None until a snapshot; otherwise a full book
+books.clear_book("lighter", "BTC-USD")
+```
 
 ## PolarisClient API
 
@@ -162,17 +183,17 @@ Use it to inspect available data, query historical market data, and open realtim
 
 | Method | Returns | Use case |
 | --- | --- | --- |
-| `replay(source=..., market=..., from_=None, to=None, standard=True, allow_gaps=False, parallel=False)` | Iterator of historical events | Backfills, notebooks, and replay-style processing without materializing everything up front |
-| `stream(source=..., markets=[...], include_buffer=False)` | Closeable iterator of realtime events | Open-ended normalized market data with automatic reconnection |
+| `replay(source=..., market=..., from_=None, to=None, standard=True, allow_gaps=False, parallel=False, materialize_orderbooks=True)` | Iterator of historical events | Backfills, notebooks, and replay-style processing without materializing everything up front |
+| `stream(source=..., markets=[...], include_buffer=False, materialize_orderbooks=True)` | Closeable iterator of realtime events | Open-ended normalized market data with automatic reconnection |
 | `raw(source=..., market=..., from_=None, to=None, limit=1000)` | List of raw source payloads | Inspect exchange-native payloads and compare raw vs standardized schemas |
 
 ### Standardized Data Schemas
 
 | Method | Returns | Use case |
 | --- | --- | --- |
-| `events(source=..., market=..., from_=None, to=None, allow_gaps=False)` | List of standardized historical events | General-purpose historical analysis when you want the normalized event stream in memory |
+| `events(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)` | List of standardized historical events | General-purpose historical analysis when you want the normalized event stream in memory |
 | `trades(source=..., market=..., from_=None, to=None, allow_gaps=False)` | List of standardized trade events | Trade-level analytics, execution studies, and derived bar calculations |
-| `l2_snapshots(source=..., market=..., from_=None, to=None, allow_gaps=False)` | List of standardized orderbook snapshot rows | Order book reconstruction and microstructure analysis |
+| `l2_snapshots(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)` | List of complete orderbook rows | Order book reconstruction and microstructure analysis |
 | `funding_rates(source=..., market=..., from_=None, to=None, allow_gaps=False)` | List of funding-rate point series rows | Perpetual funding studies and carry modeling |
 | `mark_prices(source=..., market=..., from_=None, to=None, allow_gaps=False)` | List of mark-price point series rows | Basis analysis, mark tracking, and liquidation-related research |
 | `ohlcv(source=..., market=..., from_=None, to=None, interval=..., format=None, allow_gaps=False)` | Aggregated OHLCV bars | Charting, bar-based strategies, and downstream TA workflows |

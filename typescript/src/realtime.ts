@@ -3,6 +3,7 @@ import {
   StreamProtocolError,
 } from "./errors";
 import type { StandardEvent, StreamOptions } from "./types";
+import { OrderbookBuilder } from "./orderbook";
 import type {
   PolarisRuntime,
   WebSocketLike,
@@ -55,6 +56,7 @@ export class RealtimeStream implements AsyncIterable<StandardEvent> {
   private readonly source: string;
   private readonly markets: string[];
   private readonly includeBuffer: boolean;
+  private readonly materializeOrderbooks: boolean;
   private readonly streamUrl: string;
   private readonly apiKey: string | undefined;
   private readonly runtime: PolarisRuntime;
@@ -87,6 +89,7 @@ export class RealtimeStream implements AsyncIterable<StandardEvent> {
       throw new StreamProtocolError(`stream markets must contain at most ${MAX_SUBSCRIPTIONS} unique markets`);
     }
     this.includeBuffer = options.includeBuffer ?? false;
+    this.materializeOrderbooks = options.materializeOrderbooks ?? true;
     this.streamUrl = config.streamUrl;
     this.apiKey = config.apiKey;
     this.runtime = config.runtime;
@@ -115,6 +118,7 @@ export class RealtimeStream implements AsyncIterable<StandardEvent> {
     this.started = true;
     let connectedOnce = false;
     let backoffMs = INITIAL_BACKOFF_MS;
+    const orderbooks = new OrderbookBuilder();
 
     try {
       while (!this.closed) {
@@ -153,7 +157,12 @@ export class RealtimeStream implements AsyncIterable<StandardEvent> {
             }
             if (event.type === "message") {
               const parsed = parseServerMessage(event.data);
-              if (parsed.type === "data") yield parsed.event;
+              if (parsed.type === "data") {
+                const output = this.materializeOrderbooks
+                  ? orderbooks.apply(parsed.event)
+                  : parsed.event;
+                if (output) yield output;
+              }
               if (
                 parsed.type === "pong" &&
                 awaitingPong &&
@@ -191,6 +200,7 @@ export class RealtimeStream implements AsyncIterable<StandardEvent> {
           // The transport is already gone.
         }
         if (!reconnect || this.closed) return;
+        orderbooks.clear();
         if (Date.now() - connectedAt >= HEALTHY_CONNECTION_MS) {
           backoffMs = INITIAL_BACKOFF_MS;
         }

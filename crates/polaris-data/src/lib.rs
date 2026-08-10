@@ -5,6 +5,7 @@ mod errors;
 mod http;
 mod models;
 mod ohlcv;
+mod orderbook;
 mod realtime;
 mod replay;
 mod storage;
@@ -23,3 +24,4 @@ pub use models::{
     TradeEvent, TradingViewCandle, TradingViewOhlcv, TradingViewVolume, VolatilityBar, VolumeBar,
     VwapBar,
 };
+pub use orderbook::OrderbookBuilder;
