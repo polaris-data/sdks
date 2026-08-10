@@ -327,6 +327,9 @@ export interface HistoricalQueryOptions {
   materializeOrderbooks?: boolean;
 }
 
+/** Options for raw snapshot-and-delta orderbook reads. */
+export type L2UpdatesOptions = Omit<HistoricalQueryOptions, "materializeOrderbooks">;
+
 export interface ListSnapshotsOptions {
   source: string;
   market: string;

@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 import zstandard
-from polaris_data import PolarisClient
+from polaris_data import OrderbookBuilder, PolarisClient
 
 SOURCE = "benchmark"
 MARKET = "BTC-USD"
@@ -66,30 +66,49 @@ def run_worker(root: Path, mode: str, deltas: int) -> None:
     to_us = (START_MS + deltas + 1) * 1_000
     started = time.perf_counter()
     with PolarisClient(dataset_root=root) as client:
-        if mode == "events":
-            rows = client.events(
-                source=SOURCE,
-                market=MARKET,
-                from_=from_us,
-                to=to_us,
-                materialize_orderbooks=False,
-            )
-        elif mode == "bbo":
-            rows = client.bbo(
+        if mode == "l2_builder":
+            builder = OrderbookBuilder()
+            updates = client.l2_updates(
                 source=SOURCE,
                 market=MARKET,
                 from_=from_us,
                 to=to_us,
             )
+            count = sum(1 for update in updates if builder.update(update))
+            if builder.snapshot(SOURCE, MARKET) is None:
+                raise RuntimeError("lazy orderbook builder did not initialize")
         else:
-            rows = client.l2_snapshots(
-                source=SOURCE,
-                market=MARKET,
-                from_=from_us,
-                to=to_us,
-                materialize_orderbooks=True,
-            )
-        count = sum(1 for _ in rows)
+            if mode == "events":
+                rows = client.events(
+                    source=SOURCE,
+                    market=MARKET,
+                    from_=from_us,
+                    to=to_us,
+                    materialize_orderbooks=False,
+                )
+            elif mode == "bbo":
+                rows = client.bbo(
+                    source=SOURCE,
+                    market=MARKET,
+                    from_=from_us,
+                    to=to_us,
+                )
+            elif mode == "l2_updates":
+                rows = client.l2_updates(
+                    source=SOURCE,
+                    market=MARKET,
+                    from_=from_us,
+                    to=to_us,
+                )
+            else:
+                rows = client.l2_snapshots(
+                    source=SOURCE,
+                    market=MARKET,
+                    from_=from_us,
+                    to=to_us,
+                    materialize_orderbooks=True,
+                )
+            count = sum(1 for _ in rows)
     elapsed = time.perf_counter() - started
     print(
         json.dumps(
@@ -157,7 +176,7 @@ def parse_minimum_throughput(values: list[str]) -> dict[str, float]:
             raise argparse.ArgumentTypeError(
                 f"expected MODE=ROWS_PER_SECOND, got {value!r}"
             ) from error
-        if mode not in {"events", "bbo", "l2"}:
+        if mode not in {"events", "bbo", "l2_updates", "l2_builder", "l2"}:
             raise argparse.ArgumentTypeError(f"unknown benchmark mode {mode!r}")
         if rate <= 0:
             raise argparse.ArgumentTypeError("minimum throughput must be positive")
@@ -192,13 +211,15 @@ def main() -> int:
     parser.add_argument(
         "--modes",
         nargs="+",
-        choices=["events", "bbo", "l2"],
-        default=["events", "bbo", "l2"],
+        choices=["events", "bbo", "l2_updates", "l2_builder", "l2"],
+        default=["events", "bbo", "l2_updates", "l2_builder"],
     )
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--root", type=Path, help=argparse.SUPPRESS)
     parser.add_argument(
-        "--mode", choices=["events", "bbo", "l2"], help=argparse.SUPPRESS
+        "--mode",
+        choices=["events", "bbo", "l2_updates", "l2_builder", "l2"],
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--deltas", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args()

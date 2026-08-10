@@ -11,7 +11,7 @@ import httpx
 import pytest
 import zstandard as zstd
 
-from polaris_data import PolarisClient
+from polaris_data import OrderbookBuilder, PolarisClient
 from polaris_data.errors import (
     AccessDeniedError,
     NotFoundError,
@@ -1754,6 +1754,100 @@ def test_replay_materializes_local_snapshot_data_files_before_network(tmp_path) 
         client.close()
 
 
+def test_local_events_and_replay_convert_standard_events_without_intermediate_tree(
+    tmp_path,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("exact local coverage must not use the network")
+
+    key = "standard-binance-BTC-USDT-2024-01-01-000000"
+    snapshot_path = (
+        tmp_path
+        / "data"
+        / "standard"
+        / "binance"
+        / "BTC-USDT"
+        / "2024-01-01"
+        / f"{key}.jsonl.zst"
+    )
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {
+            "timestamp": 1_704_067_200_000,
+            "nested": {"timestamp": 1, "type": "", "source": ""},
+            "large": 2**63 + 7,
+        },
+        {
+            "timestamp": 1_704_067_200_001,
+            "source": "binance",
+            "market": "BTC-USDT",
+            "type": "trade",
+            "data": {
+                "price": 100.5,
+                "quantity": 2,
+                "side": "",
+                "nested": {"side": ""},
+            },
+            "sequence": 9,
+        },
+        {
+            "timestamp": 1_704_067_200_002,
+            "source": "binance",
+            "market": "BTC-USDT",
+            "type": "orderbook",
+            "data": {
+                "bids": [{"price": 100.0, "quantity": 3.0}],
+                "asks": [{"price": 101.0, "quantity": 4.0}],
+            },
+        },
+    ]
+    snapshot_path.write_bytes(_zstd_ndjson(rows))
+    snapshot_path.with_name(snapshot_path.name + ".coverage.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "key": key,
+                "start_us": 1_704_067_200_000_000,
+                "end_us": 1_704_070_800_000_000,
+            }
+        )
+    )
+
+    expected = [
+        {
+            "timestamp": 1_704_067_200_000,
+            "nested": {"timestamp": 1, "type": "", "source": ""},
+            "large": 2**63 + 7,
+        },
+        {
+            "timestamp": 1_704_067_200_001,
+            "source": "binance",
+            "market": "BTC-USDT",
+            "type": "trade",
+            "data": {
+                "price": 100.5,
+                "quantity": 2,
+                "nested": {"side": ""},
+            },
+            "sequence": 9,
+        },
+        rows[2],
+    ]
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        kwargs = {
+            "source": "binance",
+            "market": "BTC-USDT",
+            "from_": "2024-01-01T00:00:00Z",
+            "to": "2024-01-01T01:00:00Z",
+            "materialize_orderbooks": False,
+        }
+        assert list(client.events(**kwargs)) == expected
+        assert list(client.replay(**kwargs)) == expected
+    finally:
+        client.close()
+
+
 def test_replay_ignores_legacy_flat_snapshot_data_files(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/snapshots":
@@ -2164,6 +2258,14 @@ def test_l2_snapshots_materialize_deltas_and_support_raw_opt_out(tmp_path) -> No
                 materialize_orderbooks=False,
             )
         )
+        updates = list(
+            client.l2_updates(
+                source="lighter",
+                market="BTC-USD",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+            )
+        )
     finally:
         client.close()
 
@@ -2173,6 +2275,11 @@ def test_l2_snapshots_materialize_deltas_and_support_raw_opt_out(tmp_path) -> No
         "asks": [{"price": 101.0, "quantity": 3.0}],
     }
     assert raw == snapshot_rows
+    assert updates == snapshot_rows
+
+    builder = OrderbookBuilder()
+    rebuilt = [book for update in updates if (book := builder.apply(update)) is not None]
+    assert rebuilt == materialized
 
 
 def test_funding_rates_filter_point_series_from_standardized_snapshots(

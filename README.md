@@ -145,16 +145,24 @@ a reconnect can introduce a gap or duplicate event. The SDK clears reconstructed
 books on reconnect and suppresses later deltas until a new snapshot arrives.
 Protocol and authentication errors are terminal and are not retried.
 
-Reusable `OrderbookBuilder` exports in all three SDKs provide the same behavior:
+Use `l2_updates()` in Python and Rust or `l2Updates()` in TypeScript to read the
+initial snapshots and sparse deltas without reconstructing every intermediate
+book. Reusable `OrderbookBuilder` exports in all three SDKs let applications
+materialize those updates when needed:
 
 ```python
 from polaris_data import OrderbookBuilder
 
 books = OrderbookBuilder()
-complete = books.apply(snapshot)
-complete = books.apply(delta)  # None until a snapshot; otherwise a full book
+books.update(snapshot)
+books.update(delta)  # False until a snapshot initializes this book
+complete = books.snapshot("lighter", "BTC-USD")
 books.clear_book("lighter", "BTC-USD")
 ```
+
+`update()` mutates book state without constructing a full result. Call
+`snapshot()` only when you need sorted levels. The existing `apply()` method
+remains available as a compatibility shortcut that performs both operations.
 
 ## PolarisClient API
 
@@ -194,6 +202,7 @@ Use it to inspect available data, query historical market data, and open realtim
 | `events(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)` | Iterator of standardized historical events | General-purpose historical analysis without retaining every row |
 | `trades(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of standardized trade events | Trade-level analytics, execution studies, and derived bar calculations |
 | `l2_snapshots(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)` | Iterator of complete orderbook rows | Order book reconstruction and microstructure analysis |
+| `l2_updates(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of raw orderbook snapshots and deltas | High-throughput application-managed books |
 | `funding_rates(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of funding-rate point series rows | Perpetual funding studies and carry modeling |
 | `mark_prices(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of mark-price point series rows | Basis analysis, mark tracking, and liquidation-related research |
 | `ohlcv(source=..., market=..., from_=None, to=None, interval=..., format=None, allow_gaps=False)` | Aggregated OHLCV bars | Charting, bar-based strategies, and downstream TA workflows |
@@ -208,7 +217,9 @@ Historical row methods are single-pass iterators. Iterate them directly for boun
 For parameter details, response shapes, and end-to-end examples, see the
 [Python SDK docs](https://docs.polaris.supply/sdks/python).
 
-### Streaming benchmark
+## Benchmarks
+
+### Streaming and memory
 
 Run the opt-in end-to-end benchmark after building the Python extension:
 
@@ -216,24 +227,63 @@ Run the opt-in end-to-end benchmark after building the Python extension:
 uv run python benchmarks/streaming_memory.py
 ```
 
-It generates a 3,000-level local book with one million deltas, consumes raw standardized events, direct BBO, and materialized L2 streams in isolated processes, and reports end-to-end wall time, rows per second, and peak RSS. The command fails when peak RSS from 100,000 to one million deltas grows by more than the larger of 20% or 64 MiB, or when long-run throughput falls below 75% of short-run throughput.
+It generates a 3,000-level local book with one million deltas, consumes raw standardized events, direct BBO, raw L2 updates, and lazy application-managed books in isolated processes, and reports end-to-end wall time, rows per second, and peak RSS. The command fails when peak RSS from 100,000 to one million deltas grows by more than the larger of 20% or 64 MiB, or when long-run throughput falls below 75% of short-run throughput.
 
-Reference results from a local development build:
-
-| Mode | Scale | Throughput | Peak RSS |
-| --- | ---: | ---: | ---: |
-| Raw events | 1,000,001 rows | ~83k rows/s | ~36 MiB |
-| Direct BBO | 1,000,001 quotes | ~173k rows/s | ~35 MiB |
-| Materialized 3,000-level L2 | 1,001 books | ~73 books/s | ~65 MiB |
-
-Use three isolated runs to compare median speed reliably, and optionally set machine-specific throughput floors:
+Optionally set machine-specific throughput floors:
 
 ```bash
-uv run python benchmarks/streaming_memory.py --runs 3 \
-  --min-rps events=50000 --min-rps bbo=100000 --min-rps l2=50
+uv run python benchmarks/streaming_memory.py \
+  --min-rps events=50000 --min-rps bbo=100000 \
+  --min-rps l2_updates=500000 --min-rps l2_builder=250000
 ```
 
-Use `--modes events bbo` for a faster run that skips full-book materialization. Absolute throughput floors are intentionally opt-in because results vary by hardware and build profile.
+Full-book materialization remains available as an explicitly scaled benchmark:
+
+```bash
+uv run python benchmarks/streaming_memory.py --modes l2 \
+  --short-deltas 100 --long-deltas 1000
+```
+
+Absolute throughput floors are intentionally opt-in because results vary by hardware and build profile.
+
+### Local event replay
+
+Use the focused local replay benchmark to compare direct zstd+orjson decoding
+with `events()` and `replay()`:
+
+```bash
+uv run python benchmarks/local_replay.py \
+  --fixture trade --events 788383
+```
+
+The benchmark warms the filesystem cache, runs each path in an isolated
+process, and reports iterator construction time, time to first event,
+steady-state throughput, and peak RSS growth. Pass `--enforce-targets` to require
+the SDK to deliver the first event in under 10 ms, process at least 500,000
+events/s, and stay within 2× of direct zstd+orjson.
+
+### Reference results
+
+The streaming and memory results below came from a local development build.
+The raw modes used the default million-update scale; materialized L2 used the
+explicit 1,000-update scale shown above.
+The local replay results came from one Apple Silicon macOS release run using
+the synthetic 788,383-event UNI-sized trade fixture.
+
+| Benchmark | Path | Scale | Construction | First event | Throughput | Memory result |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Streaming and memory | Raw events | 1,000,001 rows | — | — | 1.10M rows/s | 30.7 MiB peak RSS |
+| Streaming and memory | Direct BBO | 1,000,001 quotes | — | — | 866k rows/s | 30.4 MiB peak RSS |
+| Streaming and memory | Raw L2 updates | 1,000,001 updates | — | — | 1.15M rows/s | 30.8 MiB peak RSS |
+| Streaming and memory | Lazy 3,000-level builder | 1,000,001 updates | — | — | 443k rows/s | 36.3 MiB peak RSS |
+| Streaming and memory | Materialized 3,000-level L2 | 1,001 books | — | — | 646 books/s | 36.9 MiB peak RSS |
+| Local replay | Direct zstd+orjson | 788,383 events | <0.01 ms | 0.09 ms | 2.21M events/s | +0.3 MiB peak RSS |
+| Local replay | SDK `events()` | 788,383 events | 1.07 ms | 0.11 ms | 1.16M events/s | +2.4 MiB peak RSS |
+| Local replay | SDK `replay()` | 788,383 events | 0.70 ms | 0.14 ms | 1.18M events/s | +3.1 MiB peak RSS |
+
+In this run, `events()` was 1.91× the direct decoder time while exceeding the
+500,000 events/s target by more than 2×. Construction and first-event latency
+were reported separately; together they remained under 1.2 ms for `events()`.
 
 ## Local dataset storage
 
@@ -262,6 +312,12 @@ Standardized snapshot downloads are stored under:
 <root>/data/<tier>/<source>/<market>/<YYYY-MM-DD>/<opaque-key>.jsonl.zst
 ```
 
+When the snapshot service provides authoritative bounds, the SDK stores them in
+an atomic `<opaque-key>.jsonl.zst.coverage.json` sidecar. Explicitly bounded
+replays whose local files cover the requested interval do not perform a remote
+coverage lookup. Older caches without sidecars remain readable using estimated
+filename coverage and emit a warning until exact metadata is available.
+
 The opaque key is the flat upstream snapshot identifier, for example:
 
 ```text
@@ -286,7 +342,7 @@ Pass `dataset_root=...` to `PolarisClient(...)` to override the root explicitly.
 
 ## Snapshot-first replay
 
-For standardized historical data, `replay(...)`, `events(...)`, `trades(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, `volume(...)`, and default/tradingview `ohlcv(...)` now prefer `/snapshots` plus daily bulk `/download?source=...&market=...&date=...&mode=json` manifests, and reuse local snapshot files when they already exist:
+For standardized historical data, `replay(...)`, `events(...)`, `trades(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, `l2_updates(...)`, `volume(...)`, and default/tradingview `ohlcv(...)` now prefer `/snapshots` plus daily bulk `/download?source=...&market=...&date=...&mode=json` manifests, and reuse local snapshot files when they already exist:
 
 ```python
 from polaris_data import PolarisClient
@@ -301,7 +357,7 @@ with PolarisClient(api_key="polaris_key_your_key") as client:
         print(row)
 ```
 
-If the requested standardized range cannot be satisfied from available standardized snapshots, `replay(...)`, `events(...)`, `trades(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, `volume(...)`, and `ohlcv(...)` raise by default instead of falling back. Pass `allow_gaps=True` on standardized methods to return only covered data and receive a warning with the missing intervals.
+If the requested standardized range cannot be satisfied from available standardized snapshots, `replay(...)`, `events(...)`, `trades(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, `l2_updates(...)`, `volume(...)`, and `ohlcv(...)` raise by default instead of falling back. Pass `allow_gaps=True` on standardized methods to return only covered data and receive a warning with the missing intervals.
 
 ## Error handling
 

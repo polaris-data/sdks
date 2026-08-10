@@ -52,6 +52,7 @@ export type {
   PolarisClientOptions,
   CatalogOptions,
   HistoricalQueryOptions,
+  L2UpdatesOptions,
   RawQueryOptions,
   OhlcvOptions,
   VolumeOptions,

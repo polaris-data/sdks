@@ -83,3 +83,26 @@ def test_orderbook_builder_passes_non_orderbook_events_through() -> None:
     builder = OrderbookBuilder()
     trade = _event("trade", "BTC-USD", {"price": 100, "quantity": 1})
     assert builder.apply(trade) == trade
+
+
+def test_orderbook_builder_updates_without_materializing_until_requested() -> None:
+    builder = OrderbookBuilder()
+    assert not builder.update(
+        _event("orderbook_delta", "BTC-USD", {"bids": [[100, 1]]})
+    )
+    assert builder.snapshot("lighter", "BTC-USD") is None
+
+    assert builder.update(
+        _event(
+            "orderbook",
+            "BTC-USD",
+            {"bids": [[100, 2]], "asks": [[101, 3]]},
+        )
+    )
+    assert builder.update(
+        _event("orderbook_delta", "BTC-USD", {"bids": [[100, 4]]})
+    )
+    assert builder.snapshot("lighter", "BTC-USD") == {
+        "bids": [{"price": 100.0, "quantity": 4.0}],
+        "asks": [{"price": 101.0, "quantity": 3.0}],
+    }

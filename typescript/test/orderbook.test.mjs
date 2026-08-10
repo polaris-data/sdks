@@ -45,3 +45,27 @@ test("OrderbookBuilder handles snapshots, deltas, deletion, and per-book clearin
   builder.clear();
   assert.equal(builder.apply(event("orderbook_delta", "ETH-USD", { bids: [[10, 3]] })), undefined);
 });
+
+test("OrderbookBuilder updates state without materializing until requested", async () => {
+  const { OrderbookBuilder } = await import("../dist/node/index.js");
+  const builder = new OrderbookBuilder();
+  const event = (type, data) => ({
+    timestamp: 1,
+    source: "lighter",
+    market: "BTC-USD",
+    type,
+    data,
+  });
+
+  assert.equal(builder.update(event("orderbook_delta", { bids: [[100, 1]] })), false);
+  assert.equal(builder.snapshot("lighter", "BTC-USD"), undefined);
+  assert.equal(builder.update(event("orderbook", {
+    bids: [[100, 2]],
+    asks: [[101, 3]],
+  })), true);
+  assert.equal(builder.update(event("orderbook_delta", { bids: [[100, 4]] })), true);
+  assert.deepEqual(builder.snapshot("lighter", "BTC-USD"), {
+    bids: [{ price: 100, quantity: 4 }],
+    asks: [{ price: 101, quantity: 3 }],
+  });
+});

@@ -34,6 +34,7 @@ Start with `Trades`, `Events`, or `OHLCV` when you already know the market and n
 - [Events](https://docs.polaris.supply/schemas/events.md): Query mixed normalized event streams with `client.events()`.
 - [Trades](https://docs.polaris.supply/schemas/trades.md): Query normalized trade events with `client.trades()`.
 - [OHLCV](https://docs.polaris.supply/schemas/ohlcv.md): Query interval-aligned OHLCV bars with `client.ohlcv()`.
+- [L2 Updates](https://docs.polaris.supply/schemas/l2-updates.md): Read raw order book snapshots and deltas with `l2_updates()` and manage state with `OrderbookBuilder`.
 - [L2 Snapshots](https://docs.polaris.supply/schemas/l2-snapshots.md): Query order book depth data with `client.l2_snapshots()`.
 - [Funding Rates](https://docs.polaris.supply/schemas/funding-rates.md): Query perpetual funding rates with `client.funding_rates()`.
 - [Mark Prices](https://docs.polaris.supply/schemas/mark-prices.md): Query mark prices for basis analysis with `client.mark_prices()`.

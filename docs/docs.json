@@ -60,6 +60,7 @@
           "schemas/events",
           "schemas/trades",
           "schemas/ohlcv",
+          "schemas/l2-updates",
           "schemas/l2-snapshots",
           "schemas/bbo",
           "schemas/funding-rates",

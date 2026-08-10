@@ -99,6 +99,7 @@ Use it to inspect available data, query historical market data, and open realtim
 | `events(opts)` | Array of standardised historical events | General-purpose historical analysis when you want the normalized event stream in memory |
 | `trades(opts)` | Array of standardised trade events | Trade-level analytics, execution studies, and derived bar calculations |
 | `l2Snapshots(opts)` | Array of standardised orderbook snapshot rows | Order book reconstruction and microstructure analysis |
+| `l2Updates(opts)` | Array of raw orderbook snapshots and deltas | High-throughput application-managed books |
 | `fundingRates(opts)` | Array of funding-rate point series rows | Perpetual funding studies and carry modeling |
 | `markPrices(opts)` | Array of mark-price point series rows | Basis analysis, mark tracking, and liquidation-related research |
 | `ohlcv(opts)` | Aggregated OHLCV bars | Charting, bar-based strategies, and downstream TA workflows |
@@ -142,9 +143,11 @@ errors are terminal.
 
 Standardized orderbooks are materialized by default for `stream`, `replay`,
 `events`, and `l2Snapshots`. Snapshots replace the book, deltas update listed
-prices, and zero quantities delete prices. Set `materializeOrderbooks: false`
-to receive raw `orderbook_delta` events. `OrderbookBuilder` exposes the same
-state machine for application-managed event flows.
+prices, and zero quantities delete prices. Use `l2Updates` to receive raw
+snapshots and deltas. `OrderbookBuilder` exposes the same state machine for
+application-managed event flows. Its `update` method mutates state without
+constructing a complete book; call `snapshot` only when sorted levels are
+needed. The existing `apply` method retains its combined behavior.
 
 ## Examples
 
@@ -408,7 +411,7 @@ import type {
 
 ## Snapshot-first architecture
 
-Standardised historical data (`events`, `trades`, `l2Snapshots`, `fundingRates`, `markPrices`, `bbo`, `depthMetrics`, `ohlcv`, `volume`, `vwap`, `volatility`, and `replay`) uses a **snapshot-first** approach:
+Standardised historical data (`events`, `trades`, `l2Snapshots`, `l2Updates`, `fundingRates`, `markPrices`, `bbo`, `depthMetrics`, `ohlcv`, `volume`, `vwap`, `volatility`, and `replay`) uses a **snapshot-first** approach:
 
 1. Hourly `.jsonl.zst` snapshot files are discovered via `GET /snapshots` and downloaded via `GET /download` on first access.
 2. Subsequent calls for the same date range read from the local cache — no network round-trips.

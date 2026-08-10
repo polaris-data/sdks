@@ -85,6 +85,7 @@ Use `PolarisClient` for discovery, historical replay, and direct query workflows
 | `raw(source, market, from_=None, to=None, limit=1000)` | List of raw payloads | Inspect venue-native messages |
 | `ohlcv(source, market, interval, from_=None, to=None, format=None)` | List of bars or TradingView-style JSON | Plot fast market charts |
 | `l2_snapshots(source, market, from_=None, to=None, materialize_orderbooks=True)` | Iterator of complete orderbook rows | Order book reconstruction and microstructure analysis |
+| `l2_updates(source, market, from_=None, to=None)` | Iterator of raw orderbook snapshots and deltas | High-throughput application-managed books |
 | `funding_rates(source, market, from_=None, to=None)` | Iterator of funding-rate point series rows | Perpetual funding studies and carry modeling |
 | `mark_prices(source, market, from_=None, to=None)` | Iterator of mark-price point series rows | Basis analysis, mark tracking, and liquidation-related research |
 | `volume(source, market, interval, from_=None, to=None)` | Bucketed trade volume series | Volume profiling and participation analysis |
@@ -102,9 +103,9 @@ For historical event queries, `standard=True` is the default on `replay(...)`. P
 Orderbooks are reconstructed by default across `stream`, `replay`, `events`, and
 `l2_snapshots`. `orderbook` replaces the complete state, `orderbook_delta`
 updates listed prices, and quantity zero deletes a price. State is cleared after
-gaps and reconnects; deltas are skipped until another snapshot arrives. Pass
-`materialize_orderbooks=False` for raw deltas, or use the exported
-`OrderbookBuilder` directly for application-managed flows.
+gaps and reconnects; deltas are skipped until another snapshot arrives. Use
+`l2_updates(...)` for raw snapshots and deltas, then feed selected updates into
+the exported `OrderbookBuilder` for application-managed flows.
 
 ## Discover a market before you query it
 
@@ -208,6 +209,26 @@ with PolarisClient() as client:
     )
     print(next(snapshots, None))
 ```
+
+For a sparse update stream, use `l2_updates(...)` and materialize books only
+when your application needs them:
+
+```python
+from polaris_data import OrderbookBuilder, PolarisClient
+
+books = OrderbookBuilder()
+with PolarisClient() as client:
+    for update in client.l2_updates(source="binance", market="BTC-USDT"):
+        books.update(update)
+
+complete_book = books.snapshot("binance", "BTC-USDT")
+if complete_book is not None:
+    process(complete_book)
+```
+
+`update()` changes native state without constructing a complete Python
+dictionary. `snapshot()` creates sorted levels only when requested. Use
+`apply()` when you need the previous update-and-materialize behavior.
 
 ## Query funding rates
 

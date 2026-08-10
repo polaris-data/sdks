@@ -12,6 +12,7 @@ import type {
   FetchLike,
   FundingRateEvent,
   HistoricalQueryOptions,
+  L2UpdatesOptions,
   ListSnapshotsOptions,
   MarkPriceEvent,
   OhlcvBar,
@@ -316,6 +317,27 @@ export class BasePolarisClient {
       options.materializeOrderbooks ?? true,
     )) {
       result.push(event as OrderbookEvent);
+    }
+    return result;
+  }
+
+  /**
+   * Return raw standardized orderbook snapshots and deltas for a time range.
+   *
+   * No complete-book reconstruction is performed. Feed the returned rows into
+   * `OrderbookBuilder` when application-managed book state is needed.
+   */
+  async l2Updates(options: L2UpdatesOptions): Promise<OrderbookEvent[]> {
+    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
+    const result: OrderbookEvent[] = [];
+    for await (const event of this._readSnapshotEvents(
+      options.source,
+      options.market,
+      fromMs,
+      toMs,
+      isOrderbookEvent,
+    )) {
+      result.push(event);
     }
     return result;
   }

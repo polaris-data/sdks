@@ -250,8 +250,14 @@ async fn events_download_snapshots_and_reuse_local_cache() {
     Mock::given(method("GET"))
         .and(path("/snapshots"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "snapshots": [{"key": key, "date": "2024-01-01"}]
+            "snapshots": [{
+                "key": key,
+                "date": "2024-01-01",
+                "start": "2024-01-01T00:00:00Z",
+                "end": "2024-01-01T01:00:00Z"
+            }]
         })))
+        .expect(1)
         .mount(&server)
         .await;
 
@@ -302,6 +308,144 @@ async fn events_download_snapshots_and_reuse_local_cache() {
     assert_eq!(first.len(), 1);
     assert_eq!(second.len(), 1);
     assert_eq!(first[0].event_type, "trade");
+    let sidecar = root
+        .path()
+        .join("data/standard/binance/BTC-USDT/2024-01-01")
+        .join(format!("{key}.jsonl.zst.coverage.json"));
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(sidecar).expect("coverage sidecar"))
+            .expect("valid sidecar");
+    assert_eq!(metadata["start_us"], 1_704_067_200_000_000_i64);
+    assert_eq!(metadata["end_us"], 1_704_070_800_000_000_i64);
+}
+
+#[tokio::test]
+async fn legacy_midnight_shard_replays_without_remote_coverage_lookup() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().expect("tempdir");
+    let client = build_client(&server, &root);
+    let key = "standard-binance-BTC-USDT-2024-01-01-000003";
+    let path = root
+        .path()
+        .join("data/standard/binance/BTC-USDT/2024-01-01")
+        .join(format!("{key}.jsonl.zst"));
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("data directory");
+    std::fs::write(
+        &path,
+        zstd_ndjson(&[json!({
+            "timestamp": 1_704_067_200_012_i64,
+            "source": "binance",
+            "market": "BTC-USDT",
+            "type": "trade",
+            "data": {"price": 100.0, "quantity": 1.0}
+        })]),
+    )
+    .expect("snapshot");
+
+    let rows = collect_stream(
+        client
+            .events(HistoricalQuery {
+                source: "binance".to_owned(),
+                market: "BTC-USDT".to_owned(),
+                from: Some("2024-01-01T00:00:00Z".into()),
+                to: Some("2024-01-01T01:00:00Z".into()),
+                allow_gaps: false,
+                materialize_orderbooks: false,
+            })
+            .await
+            .expect("local stream"),
+    )
+    .await
+    .expect("local rows");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].timestamp, 1_704_067_200_012_i64);
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty()
+    );
+    let diagnostics = client.take_diagnostics();
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, "estimated_snapshot_coverage");
+}
+
+#[tokio::test]
+async fn l2_updates_returns_raw_snapshots_and_deltas() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().expect("tempdir");
+    let client = build_client(&server, &root);
+    let path = root
+        .path()
+        .join("daily/binance/BTC-USDT/2024-01-01.jsonl.zst");
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("data directory");
+    std::fs::write(
+        &path,
+        zstd_ndjson(&[
+            json!({
+                "timestamp": 1_704_067_200_000_i64,
+                "source": "binance",
+                "market": "BTC-USDT",
+                "type": "orderbook",
+                "data": {"bids": [[100.0, 2.0]], "asks": [[101.0, 3.0]]}
+            }),
+            json!({
+                "timestamp": 1_704_067_201_000_i64,
+                "source": "binance",
+                "market": "BTC-USDT",
+                "type": "orderbook_delta",
+                "data": {"bids": [[100.0, 4.0]]}
+            }),
+        ]),
+    )
+    .expect("snapshot");
+
+    let query = HistoricalQuery {
+        source: "binance".to_owned(),
+        market: "BTC-USDT".to_owned(),
+        from: Some("2024-01-01T00:00:00Z".into()),
+        to: Some("2024-01-01T01:00:00Z".into()),
+        allow_gaps: false,
+        materialize_orderbooks: true,
+    };
+    let rows = collect_stream(client.l2_updates(query).await.expect("l2 updates"))
+        .await
+        .expect("rows");
+
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].event_type, "orderbook");
+    assert_eq!(rows[0].data["bids"], json!([[100.0, 2.0]]));
+    assert_eq!(rows[0].data["asks"], json!([[101.0, 3.0]]));
+    assert_eq!(rows[1].event_type, "orderbook_delta");
+    assert_eq!(rows[1].data["bids"], json!([[100.0, 4.0]]));
+    assert!(rows[1].data.get("asks").is_none());
+
+    let mut books = polaris_data::OrderbookBuilder::new();
+    assert_eq!(
+        books
+            .apply(rows[0].clone())
+            .expect("snapshot")
+            .expect("complete snapshot")
+            .event_type,
+        "orderbook"
+    );
+    assert_eq!(
+        books
+            .apply(rows[1].clone())
+            .expect("delta")
+            .expect("complete update")
+            .event_type,
+        "orderbook"
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty()
+    );
 }
 
 #[tokio::test]

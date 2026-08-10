@@ -28,8 +28,8 @@ use crate::{
     orderbook::{BookUpdate, BookView},
     realtime, replay,
     storage::{
-        LocalSnapshotFile, StorageLayout, acquire_sync_lock, data_file_path,
-        list_local_snapshot_entries, parse_snapshot_key, temp_file_path,
+        LocalSnapshotFile, SnapshotCoverage, StorageLayout, acquire_sync_lock, data_file_path,
+        list_local_snapshot_entries, parse_snapshot_key, temp_file_path, write_coverage_sidecar,
     },
     time::{
         DEFAULT_INFERRED_LOOKBACK, end_of_public_cutoff_day, to_datetime, to_epoch_micros,
@@ -44,6 +44,14 @@ pub struct PolarisClient {
     http: HttpClient,
     diagnostics: Arc<Mutex<Vec<Diagnostic>>>,
     stream_url: url::Url,
+}
+
+pub(crate) struct PreparedReplay {
+    pub(crate) paths: Vec<PathBuf>,
+    pub(crate) from_us: i64,
+    pub(crate) to_us: i64,
+    pub(crate) gaps: Vec<(i64, i64)>,
+    pub(crate) materialize_orderbooks: bool,
 }
 
 impl PolarisClient {
@@ -334,6 +342,19 @@ impl PolarisClient {
         &self,
         query: ReplayQuery,
     ) -> Result<replay::ReplayRecordStream, PolarisError> {
+        let prepared = self.prepare_replay(query).await?;
+        Ok(replay::replay_record_stream(
+            prepared.paths,
+            prepared.from_us,
+            prepared.to_us,
+            prepared.gaps,
+        ))
+    }
+
+    pub(crate) async fn prepare_replay(
+        &self,
+        query: ReplayQuery,
+    ) -> Result<PreparedReplay, PolarisError> {
         let (from_us, to_us) = self
             .resolve_historical_range(
                 &query.source,
@@ -351,7 +372,13 @@ impl PolarisClient {
                 query.allow_gaps,
             )
             .await?;
-        Ok(replay::replay_record_stream(paths, from_us, to_us, gaps))
+        Ok(PreparedReplay {
+            paths,
+            from_us,
+            to_us,
+            gaps,
+            materialize_orderbooks: query.materialize_orderbooks,
+        })
     }
 
     pub async fn ohlcv(&self, query: OhlcvQuery) -> Result<OhlcvOutput, PolarisError> {
@@ -564,6 +591,7 @@ impl PolarisClient {
             })
             .collect();
         if direct_daily.iter().all(|path| path.exists()) {
+            self.push_estimated_coverage_diagnostic(source, market, direct_daily.len());
             return Ok((direct_daily, Vec::new()));
         }
 
@@ -586,6 +614,13 @@ impl PolarisClient {
             local_gaps.extend(gaps);
         }
         if !local_selected.is_empty() && local_gaps.is_empty() {
+            let estimated = local_selected
+                .iter()
+                .filter(|entry| entry.coverage.is_estimated())
+                .count();
+            if estimated > 0 {
+                self.push_estimated_coverage_diagnostic(source, market, estimated);
+            }
             return Ok((
                 local_selected.into_iter().map(|entry| entry.path).collect(),
                 Vec::new(),
@@ -628,6 +663,7 @@ impl PolarisClient {
                 continue;
             }
             let path = data_file_path(&self.layout.data_dir, &entry.key)?;
+            let coverage = snapshot_coverage(&entry)?;
             remote_by_day
                 .entry(day)
                 .or_default()
@@ -635,6 +671,7 @@ impl PolarisClient {
                     entry,
                     path,
                     download_url: None,
+                    coverage,
                 });
         }
 
@@ -698,6 +735,7 @@ impl PolarisClient {
 
         let selected_dates: BTreeSet<NaiveDate> = selected_entries
             .iter()
+            .filter(|entry| !entry.path.exists())
             .filter_map(|entry| {
                 entry
                     .entry
@@ -727,18 +765,56 @@ impl PolarisClient {
             }
             if !candidate.path.exists() {
                 self.download_snapshot(&candidate).await?;
+            } else {
+                self.persist_snapshot_coverage(&candidate).await?;
             }
-            selected_paths.push(candidate.path);
+            selected_paths.push((coverage_sort_key(&candidate, from_us)?, candidate.path));
         }
-        selected_paths.sort();
-        selected_paths.dedup();
-        Ok((selected_paths, gaps))
+        selected_paths
+            .sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+        selected_paths.dedup_by(|left, right| left.1 == right.1);
+        Ok((
+            selected_paths.into_iter().map(|(_, path)| path).collect(),
+            gaps,
+        ))
+    }
+
+    fn push_estimated_coverage_diagnostic(&self, source: &str, market: &str, files: usize) {
+        let message = format!(
+            "Local snapshot coverage for '{source}/{market}' was inferred from {files} legacy file(s); completeness is estimated until exact coverage metadata is available"
+        );
+        log::warn!("{message}");
+        self.diagnostics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Diagnostic {
+                code: "estimated_snapshot_coverage".to_owned(),
+                message,
+            });
+    }
+
+    async fn persist_snapshot_coverage(
+        &self,
+        snapshot: &LocalSnapshotFile,
+    ) -> Result<(), PolarisError> {
+        let SnapshotCoverage::Exact { start_us, end_us } = snapshot.coverage else {
+            return Ok(());
+        };
+        let locks_dir = self.layout.locks_dir.clone();
+        let path = snapshot.path.clone();
+        let key = snapshot.entry.key.clone();
+        tokio::task::spawn_blocking(move || {
+            let _lock = acquire_sync_lock(&locks_dir)?;
+            write_coverage_sidecar(&path, &key, start_us, end_us)
+        })
+        .await
+        .map_err(|err| PolarisError::Request(format!("coverage writer join failed: {err}")))?
     }
 
     async fn download_snapshot(&self, snapshot: &LocalSnapshotFile) -> Result<(), PolarisError> {
         let final_path = snapshot.path.as_path();
         if final_path.exists() {
-            return Ok(());
+            return self.persist_snapshot_coverage(snapshot).await;
         }
 
         let locks_dir = self.layout.locks_dir.clone();
@@ -746,6 +822,9 @@ impl PolarisClient {
             .await
             .map_err(|err| PolarisError::Request(format!("lock task failed: {err}")))??;
         if final_path.exists() {
+            if let SnapshotCoverage::Exact { start_us, end_us } = snapshot.coverage {
+                write_coverage_sidecar(final_path, &snapshot.entry.key, start_us, end_us)?;
+            }
             return Ok(());
         }
 
@@ -770,6 +849,9 @@ impl PolarisClient {
         if let Err(err) = tokio::fs::rename(&temp_path, final_path).await {
             let _ = tokio::fs::remove_file(&temp_path).await;
             return Err(err.into());
+        }
+        if let SnapshotCoverage::Exact { start_us, end_us } = snapshot.coverage {
+            write_coverage_sidecar(final_path, &snapshot.entry.key, start_us, end_us)?;
         }
         if snapshot.entry.start.is_none()
             && snapshot.entry.end.is_none()
@@ -864,6 +946,30 @@ impl PolarisClient {
         }))
     }
 
+    /// Return raw standardized orderbook snapshots and deltas for a time range.
+    ///
+    /// Unlike [`Self::l2_snapshots`], this method never reconstructs complete
+    /// books. Feed the updates into [`OrderbookBuilder`] when application-managed
+    /// book state is needed.
+    pub async fn l2_updates(
+        &self,
+        mut query: HistoricalQuery,
+    ) -> Result<HistoricalStream<StandardEvent>, PolarisError> {
+        query.materialize_orderbooks = false;
+        let mut events = self.events(query).await?;
+        Ok(Box::pin(try_stream! {
+            while let Some(event) = events.next().await {
+                let event = event?;
+                if matches!(
+                    event.event_type.as_str(),
+                    "orderbook" | "orderbook_delta" | "orderbook_snapshot" | "l2_snapshot"
+                ) {
+                    yield event;
+                }
+            }
+        }))
+    }
+
     /// Derive best bid / offer quotes directly from standardized orderbook updates.
     pub async fn bbo(&self, query: BboQuery) -> Result<HistoricalStream<BboQuote>, PolarisError> {
         let interval_ms = query.interval.map(ohlcv::interval_to_millis);
@@ -888,7 +994,7 @@ impl PolarisClient {
                     }
                     replay::ReplayRecord::Event(event) => event,
                 };
-                if orderbooks.update(&event)? != BookUpdate::Applied {
+                if orderbooks.update_state(&event)? != BookUpdate::Applied {
                     continue;
                 }
                 let Some(mut quote) = orderbooks.best_bid_offer(
@@ -1065,7 +1171,7 @@ impl PolarisClient {
                     }
                     replay::ReplayRecord::Event(event) => event,
                 };
-                if orderbooks.update(&event)? != BookUpdate::Applied {
+                if orderbooks.update_state(&event)? != BookUpdate::Applied {
                     continue;
                 }
                 if let Some(view) = orderbooks.view(&event.source, &event.market) {
@@ -1324,6 +1430,34 @@ fn snapshot_end_us(entry: &SnapshotEntry) -> Result<Option<i64>, PolarisError> {
         .transpose()
 }
 
+fn snapshot_coverage(entry: &SnapshotEntry) -> Result<SnapshotCoverage, PolarisError> {
+    let (Some(start), Some(end)) = (entry.start.as_ref(), entry.end.as_ref()) else {
+        return Ok(SnapshotCoverage::Estimated);
+    };
+    let start_us = to_datetime(&start.clone().into())?.timestamp_micros();
+    let end_us = to_datetime(&end.clone().into())?.timestamp_micros();
+    if start_us >= end_us {
+        return Ok(SnapshotCoverage::Estimated);
+    }
+    Ok(SnapshotCoverage::Exact { start_us, end_us })
+}
+
+fn coverage_sort_key(entry: &LocalSnapshotFile, fallback: i64) -> Result<i64, PolarisError> {
+    match entry.coverage {
+        SnapshotCoverage::Exact { start_us, .. } => Ok(start_us),
+        SnapshotCoverage::Estimated => {
+            let day = entry
+                .entry
+                .date
+                .as_deref()
+                .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok());
+            day.map(|day| snapshot_start_us(&entry.entry, day))
+                .transpose()
+                .map(|value| value.flatten().unwrap_or(fallback))
+        }
+    }
+}
+
 type SnapshotCoverageSelection = (Vec<LocalSnapshotFile>, Vec<(i64, i64)>);
 
 fn select_snapshot_coverage(
@@ -1335,7 +1469,8 @@ fn select_snapshot_coverage(
     if let Some(daily) = entries
         .iter()
         .filter(|entry| {
-            entry.entry.start.is_none()
+            entry.coverage.is_estimated()
+                && entry.entry.start.is_none()
                 && entry.entry.end.is_none()
                 && entry.entry.hour.is_none()
                 && entry.entry.timestamp.is_none()
@@ -1356,7 +1491,11 @@ fn select_snapshot_coverage(
     let mut ordered = entries
         .iter()
         .filter_map(|entry| {
-            snapshot_start_us(&entry.entry, day)
+            let start = match entry.coverage {
+                SnapshotCoverage::Exact { start_us, .. } => Ok(Some(start_us)),
+                SnapshotCoverage::Estimated => snapshot_start_us(&entry.entry, day),
+            };
+            start
                 .transpose()
                 .map(|result| result.map(|start| (start, entry.clone())))
         })
@@ -1366,22 +1505,33 @@ fn select_snapshot_coverage(
             .cmp(&right.0)
             .then_with(|| left.1.entry.key.cmp(&right.1.entry.key))
     });
+    if let Some((first_start, first_entry)) = ordered.first_mut()
+        && first_entry.coverage.is_estimated()
+        && first_entry.entry.hour == Some(0)
+    {
+        *first_start = Utc
+            .from_utc_datetime(&day.and_hms_opt(0, 0, 0).expect("midnight"))
+            .timestamp_micros();
+    }
 
     let mut selected = Vec::new();
     let mut covered = Vec::new();
     for (index, (entry_start, entry)) in ordered.iter().enumerate() {
-        let entry_end = snapshot_end_us(&entry.entry)?
-            .or_else(|| {
-                (entry.entry.hour.is_some() && entry.entry.timestamp.is_none())
-                    .then_some(*entry_start + Duration::hours(1).num_microseconds().unwrap())
-            })
-            .or_else(|| {
-                ordered[index + 1..]
-                    .iter()
-                    .map(|item| item.0)
-                    .find(|next| next > entry_start)
-            })
-            .unwrap_or(day_end);
+        let entry_end = match entry.coverage {
+            SnapshotCoverage::Exact { end_us, .. } => end_us,
+            SnapshotCoverage::Estimated => snapshot_end_us(&entry.entry)?
+                .or_else(|| {
+                    (entry.entry.hour.is_some() && entry.entry.timestamp.is_none())
+                        .then_some(*entry_start + Duration::hours(1).num_microseconds().unwrap())
+                })
+                .or_else(|| {
+                    ordered[index + 1..]
+                        .iter()
+                        .map(|item| item.0)
+                        .find(|next| next > entry_start)
+                })
+                .unwrap_or(day_end),
+        };
         let overlap_start = range_start.max(*entry_start);
         let overlap_end = range_end.min(entry_end);
         if overlap_start < overlap_end {

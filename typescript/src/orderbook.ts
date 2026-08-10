@@ -1,7 +1,8 @@
 import { PolarisError } from "./errors";
-import type { StandardEvent } from "./types";
+import type { OrderbookData, StandardEvent } from "./types";
 
 interface CanonicalLevel {
+  [key: string]: unknown;
   price: number;
   quantity: number;
 }
@@ -29,6 +30,26 @@ export class OrderbookBuilder {
     const isSnapshot = SNAPSHOT_TYPES.has(event.type);
     const isDelta = event.type === "orderbook_delta";
     if (!isSnapshot && !isDelta) return event;
+    if (!this.update(event)) return undefined;
+
+    const data: Record<string, unknown> = isObject(event.data) ? { ...event.data } : {};
+    const snapshot = this.snapshot(event.source, event.market)!;
+    const { bids: _topLevelBids, asks: _topLevelAsks, ...envelope } = event;
+    return {
+      ...envelope,
+      type: "orderbook",
+      data: {
+        ...data,
+        ...snapshot,
+      },
+    } as StandardEvent;
+  }
+
+  /** Update book state without constructing a complete orderbook. */
+  update(event: StandardEvent): boolean {
+    const isSnapshot = SNAPSHOT_TYPES.has(event.type);
+    const isDelta = event.type === "orderbook_delta";
+    if (!isSnapshot && !isDelta) return false;
     if (!isObject(event.data) && !Array.isArray(event.bids) && !Array.isArray(event.asks)) {
       throw new PolarisError("Invalid orderbook payload: data must be an object");
     }
@@ -47,22 +68,22 @@ export class OrderbookBuilder {
       this.books.set(key, state);
     } else {
       const state = this.books.get(key);
-      if (!state) return undefined;
+      if (!state) return false;
       if (bids) applyLevels(state.bids, bids);
       if (asks) applyLevels(state.asks, asks);
     }
 
-    const state = this.books.get(key)!;
-    const { bids: _topLevelBids, asks: _topLevelAsks, ...envelope } = event;
+    return true;
+  }
+
+  /** Materialize the current complete book for a source and market. */
+  snapshot(source: string, market: string): OrderbookData | undefined {
+    const state = this.books.get(bookKey(source, market));
+    if (!state) return undefined;
     return {
-      ...envelope,
-      type: "orderbook",
-      data: {
-        ...data,
-        bids: canonicalLevels(state.bids, "bid"),
-        asks: canonicalLevels(state.asks, "ask"),
-      },
-    } as StandardEvent;
+      bids: canonicalLevels(state.bids, "bid"),
+      asks: canonicalLevels(state.asks, "ask"),
+    };
   }
 }
 
