@@ -115,6 +115,7 @@ Use `PolarisClient` for discovery and snapshot-backed historical queries.
 | `trades(HistoricalQuery)` | `HistoricalStream<TradeEvent>` | Analyze executions |
 | `ohlcv(OhlcvQuery)` | `OhlcvOutput` | Build bars or TradingView-style output |
 | `l2_snapshots(HistoricalQuery)` | `HistoricalStream<OrderbookEvent>` | Order book reconstruction and microstructure analysis |
+| `l2_updates(HistoricalQuery)` | `HistoricalStream<StandardEvent>` | High-throughput application-managed books |
 | `funding_rates(HistoricalQuery)` | `HistoricalStream<PointSeriesEvent>` | Perpetual funding studies and carry modeling |
 | `mark_prices(HistoricalQuery)` | `HistoricalStream<PointSeriesEvent>` | Basis analysis, mark tracking, and liquidation-related research |
 | `volume(OhlcvQuery)` | `Vec<VolumeBar>` | Bucketed trade volume series for volume profiling and participation analysis |
@@ -129,8 +130,8 @@ Set `materialize_orderbooks: true` on `HistoricalQuery`, `ReplayQuery`, and
 `StreamQuery` for the default reconstruction behavior. Snapshots replace the
 complete state, deltas update listed prices, and zero quantity deletes a price.
 Books clear across gaps and reconnects, with deltas skipped until a new snapshot.
-Set the field to `false` for raw deltas, or use the exported `OrderbookBuilder`
-directly.
+Use `l2_updates(...)` for raw snapshots and deltas, then feed selected updates
+into the exported `OrderbookBuilder` for application-managed books.
 
 ## Discover a market before you query it
 
@@ -275,6 +276,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+Use `l2_updates(...)` when you want to manage reconstruction in your
+application. It returns raw `StandardEvent` snapshots and deltas that can be
+passed directly to `OrderbookBuilder::apply`, regardless of the query's
+`materialize_orderbooks` field.
 
 ## Query funding rates
 

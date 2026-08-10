@@ -1,17 +1,21 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
 use chrono::NaiveDate;
 use directories::BaseDirs;
 use fs2::FileExt;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{errors::PolarisError, models::SnapshotEntry};
 
 const SNAPSHOT_EXT: &str = ".jsonl.zst";
+const COVERAGE_SIDECAR_SUFFIX: &str = ".coverage.json";
+const COVERAGE_SIDECAR_VERSION: u8 = 1;
 
 #[derive(Clone, Debug)]
 pub struct StorageLayout {
@@ -38,6 +42,27 @@ pub(crate) struct LocalSnapshotFile {
     pub entry: SnapshotEntry,
     pub path: PathBuf,
     pub download_url: Option<String>,
+    pub coverage: SnapshotCoverage,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SnapshotCoverage {
+    Exact { start_us: i64, end_us: i64 },
+    Estimated,
+}
+
+impl SnapshotCoverage {
+    pub(crate) fn is_estimated(self) -> bool {
+        matches!(self, Self::Estimated)
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct CoverageSidecar {
+    version: u8,
+    key: String,
+    start_us: i64,
+    end_us: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -192,6 +217,93 @@ pub(crate) fn temp_file_path(tmp_dir: &Path, key: &str) -> Result<PathBuf, Polar
     Ok(tmp_dir.join(format!("{digest:x}.part")))
 }
 
+pub(crate) fn coverage_sidecar_path(data_path: &Path) -> Result<PathBuf, PolarisError> {
+    let filename = data_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| PolarisError::InvalidResponse("invalid snapshot filename".to_owned()))?;
+    Ok(data_path.with_file_name(format!("{filename}{COVERAGE_SIDECAR_SUFFIX}")))
+}
+
+pub(crate) fn write_coverage_sidecar(
+    data_path: &Path,
+    key: &str,
+    start_us: i64,
+    end_us: i64,
+) -> Result<(), PolarisError> {
+    if start_us >= end_us {
+        return Err(PolarisError::InvalidResponse(format!(
+            "invalid exact coverage for snapshot '{key}'"
+        )));
+    }
+    let final_path = coverage_sidecar_path(data_path)?;
+    if read_coverage_sidecar(data_path, key).is_some() {
+        return Ok(());
+    }
+    let parent = final_path.parent().ok_or_else(|| {
+        PolarisError::InvalidResponse("coverage sidecar has no parent directory".to_owned())
+    })?;
+    fs::create_dir_all(parent)?;
+    let filename = final_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| PolarisError::InvalidResponse("invalid sidecar filename".to_owned()))?;
+    let temp_path = parent.join(format!(".{filename}.{}.part", std::process::id()));
+    let payload = CoverageSidecar {
+        version: COVERAGE_SIDECAR_VERSION,
+        key: key.to_owned(),
+        start_us,
+        end_us,
+    };
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temp_path)?;
+    serde_json::to_writer(&mut file, &payload).map_err(|error| {
+        PolarisError::InvalidResponse(format!("failed to encode coverage sidecar: {error}"))
+    })?;
+    file.write_all(b"\n")?;
+    file.flush()?;
+    file.sync_all()?;
+    drop(file);
+
+    if final_path.exists() {
+        fs::remove_file(&final_path)?;
+    }
+    if let Err(error) = fs::rename(&temp_path, &final_path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+fn read_coverage_sidecar(data_path: &Path, key: &str) -> Option<SnapshotCoverage> {
+    let path = coverage_sidecar_path(data_path).ok()?;
+    let payload = fs::read(&path).ok()?;
+    let sidecar: CoverageSidecar = match serde_json::from_slice(&payload) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!(
+                "ignoring invalid coverage sidecar {}: {error}",
+                path.display()
+            );
+            return None;
+        }
+    };
+    if sidecar.version != COVERAGE_SIDECAR_VERSION
+        || sidecar.key != key
+        || sidecar.start_us >= sidecar.end_us
+    {
+        log::warn!("ignoring invalid coverage sidecar {}", path.display());
+        return None;
+    }
+    Some(SnapshotCoverage::Exact {
+        start_us: sidecar.start_us,
+        end_us: sidecar.end_us,
+    })
+}
+
 pub(crate) fn acquire_sync_lock(locks_dir: &Path) -> Result<SyncLockGuard, PolarisError> {
     fs::create_dir_all(locks_dir)?;
     let path = locks_dir.join("sync.lock");
@@ -249,9 +361,11 @@ pub(crate) fn list_local_snapshot_entries(
                 }
                 let key = name.trim_end_matches(SNAPSHOT_EXT).to_owned();
                 let parsed = parse_snapshot_key(&key)?;
+                let coverage =
+                    read_coverage_sidecar(&path, &key).unwrap_or(SnapshotCoverage::Estimated);
                 matches.push(LocalSnapshotFile {
                     entry: SnapshotEntry {
-                        key,
+                        key: key.clone(),
                         source: Some(parsed.source),
                         market: Some(parsed.market),
                         date: Some(parsed.date),
@@ -263,6 +377,7 @@ pub(crate) fn list_local_snapshot_entries(
                     },
                     path,
                     download_url: None,
+                    coverage,
                 });
             }
         }
@@ -271,4 +386,38 @@ pub(crate) fn list_local_snapshot_entries(
     }
 
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn exact_coverage_sidecar_round_trips_and_replaces_invalid_metadata() {
+        let root = TempDir::new().expect("tempdir");
+        let data = root.path().join("snapshot.jsonl.zst");
+        fs::write(&data, b"snapshot").expect("snapshot");
+        let key = "standard-source-market-2024-01-01-000000";
+        let sidecar = coverage_sidecar_path(&data).expect("sidecar path");
+        fs::write(&sidecar, b"not json").expect("corrupt sidecar");
+
+        write_coverage_sidecar(&data, key, 100, 200).expect("write sidecar");
+
+        assert_eq!(
+            read_coverage_sidecar(&data, key),
+            Some(SnapshotCoverage::Exact {
+                start_us: 100,
+                end_us: 200,
+            })
+        );
+        assert!(root.path().read_dir().expect("directory").all(|entry| {
+            !entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".part")
+        }));
+    }
 }

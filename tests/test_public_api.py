@@ -134,6 +134,15 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
             ("materialize_orderbooks", keyword_only, True),
         ]
 
+    assert _parameters(PolarisClient.l2_updates) == [
+        ("self", positional, required),
+        ("source", keyword_only, required),
+        ("market", keyword_only, required),
+        ("from_", keyword_only, None),
+        ("to", keyword_only, None),
+        ("allow_gaps", keyword_only, False),
+    ]
+
     historical_methods = [
         PolarisClient.trades,
         PolarisClient.funding_rates,
@@ -232,6 +241,7 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
         PolarisClient.events,
         PolarisClient.trades,
         PolarisClient.l2_snapshots,
+        PolarisClient.l2_updates,
         PolarisClient.funding_rates,
         PolarisClient.mark_prices,
         PolarisClient.bbo,

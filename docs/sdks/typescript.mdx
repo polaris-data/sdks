@@ -85,6 +85,7 @@ Use `PolarisClient` for discovery, historical replay, and direct query workflows
 | `raw(params)` | List of raw payloads | Inspect venue-native messages |
 | `ohlcv(params)` | List of bars or TradingView-style JSON | Plot fast market charts |
 | `l2Snapshots(params)` | List of orderbook snapshot rows | Order book reconstruction and microstructure analysis |
+| `l2Updates(params)` | List of raw orderbook snapshots and deltas | High-throughput application-managed books |
 | `fundingRates(params)` | List of funding-rate point series rows | Perpetual funding studies and carry modeling |
 | `markPrices(params)` | List of mark-price point series rows | Basis analysis, mark tracking, and liquidation-related research |
 | `ohlcvTradingView(params)` | TradingView-shaped OHLCV payload | Feeding TradingView-compatible chart consumers directly |
@@ -99,9 +100,9 @@ Use `PolarisClient` for discovery, historical replay, and direct query workflows
 `stream`, `replay`, `events`, and `l2Snapshots` reconstruct standardized
 orderbooks by default. Snapshots replace the complete state, deltas update
 listed prices, and zero quantity deletes a price. Books clear across gaps and
-reconnects, with deltas skipped until a new snapshot. Set
-`materializeOrderbooks: false` for raw deltas, or use the exported
-`OrderbookBuilder` directly.
+reconnects, with deltas skipped until a new snapshot. Use `l2Updates(...)` for
+raw snapshots and deltas, then feed selected updates into the exported
+`OrderbookBuilder` for application-managed books.
 
 ## Discover a market before you query it
 
@@ -208,6 +209,24 @@ const snapshots = await client.l2Snapshots({
 });
 
 console.log(snapshots[0]);
+```
+
+Use `l2Updates(...)` when you want to manage reconstruction in your
+application:
+
+```typescript
+import { OrderbookBuilder, PolarisClient } from "polaris-data";
+
+await using client = new PolarisClient();
+const books = new OrderbookBuilder();
+
+for (const update of await client.l2Updates({
+  source: "binance",
+  market: "BTC-USDT",
+})) {
+  const completeBook = books.apply(update);
+  if (completeBook) process(completeBook);
+}
 ```
 
 ## Query funding rates

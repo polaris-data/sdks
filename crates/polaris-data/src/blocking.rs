@@ -21,6 +21,7 @@ use crate::{
     ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OrderbookEvent, PointSeriesEvent, PolarisError,
     RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, SnapshotEntry,
     StandardEvent, StreamQuery, TimeInput, TradeEvent, VolatilityBar, VolumeBar, VwapBar,
+    replay::LocalReplayIterator,
 };
 
 const DEFAULT_REPLAY_CHUNK_HOURS: i64 = 24;
@@ -179,13 +180,21 @@ impl PolarisClient {
         &self,
         query: HistoricalQuery,
     ) -> Result<HistoricalIterator<StandardEvent>, PolarisError> {
-        let capacity = if query.materialize_orderbooks {
-            MATERIALIZED_BOOK_CHANNEL_CAPACITY
-        } else {
-            HISTORICAL_CHANNEL_CAPACITY
-        };
-        let stream = self.run(self.inner.events(query))?;
-        Ok(self.historical_iterator(stream, capacity))
+        let prepared = self.run(self.inner.prepare_replay(ReplayQuery {
+            source: query.source,
+            market: query.market,
+            from: query.from,
+            to: query.to,
+            allow_gaps: query.allow_gaps,
+            materialize_orderbooks: query.materialize_orderbooks,
+        }))?;
+        Ok(HistoricalIterator::direct(LocalReplayIterator::new(
+            prepared.paths,
+            prepared.from_us,
+            prepared.to_us,
+            prepared.gaps,
+            prepared.materialize_orderbooks,
+        )))
     }
 
     pub fn trades(
@@ -206,13 +215,14 @@ impl PolarisClient {
     }
 
     pub fn replay(&self, query: ReplayQuery) -> Result<ReplayIterator, PolarisError> {
-        let capacity = if query.materialize_orderbooks {
-            MATERIALIZED_BOOK_CHANNEL_CAPACITY
-        } else {
-            HISTORICAL_CHANNEL_CAPACITY
-        };
-        let stream = self.run(self.inner.replay(query))?;
-        Ok(self.historical_iterator(stream, capacity))
+        let prepared = self.run(self.inner.prepare_replay(query))?;
+        Ok(HistoricalIterator::direct(LocalReplayIterator::new(
+            prepared.paths,
+            prepared.from_us,
+            prepared.to_us,
+            prepared.gaps,
+            prepared.materialize_orderbooks,
+        )))
     }
 
     pub fn raw(&self, query: RawQuery) -> Result<Vec<Value>, PolarisError> {
@@ -296,6 +306,28 @@ impl PolarisClient {
         Ok(self.historical_iterator(stream, MATERIALIZED_BOOK_CHANNEL_CAPACITY))
     }
 
+    /// Return raw standardized orderbook snapshots and deltas without
+    /// reconstructing complete books.
+    pub fn l2_updates(
+        &self,
+        mut query: HistoricalQuery,
+    ) -> Result<HistoricalIterator<StandardEvent>, PolarisError> {
+        query.materialize_orderbooks = false;
+        let updates = self.events(query)?.filter_map(|event| match event {
+            Ok(event)
+                if matches!(
+                    event.event_type.as_str(),
+                    "orderbook" | "orderbook_delta" | "orderbook_snapshot" | "l2_snapshot"
+                ) =>
+            {
+                Some(Ok(event))
+            }
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        });
+        Ok(HistoricalIterator::direct(updates))
+    }
+
     pub fn bbo(&self, query: BboQuery) -> Result<HistoricalIterator<BboQuote>, PolarisError> {
         let stream = self.run(self.inner.bbo(query))?;
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
@@ -356,17 +388,35 @@ impl PolarisClient {
             }
         });
         HistoricalIterator {
-            _runtime: Arc::clone(&self.runtime),
-            receiver,
+            backend: HistoricalIteratorBackend::Channel {
+                _runtime: Arc::clone(&self.runtime),
+                receiver,
+            },
             failed_runtime_check: false,
         }
     }
 }
 
 pub struct HistoricalIterator<T> {
-    _runtime: Arc<Runtime>,
-    receiver: tokio::sync::mpsc::Receiver<Result<T, PolarisError>>,
+    backend: HistoricalIteratorBackend<T>,
     failed_runtime_check: bool,
+}
+
+enum HistoricalIteratorBackend<T> {
+    Channel {
+        _runtime: Arc<Runtime>,
+        receiver: tokio::sync::mpsc::Receiver<Result<T, PolarisError>>,
+    },
+    Direct(Box<dyn Iterator<Item = Result<T, PolarisError>> + Send>),
+}
+
+impl<T> HistoricalIterator<T> {
+    fn direct(iterator: impl Iterator<Item = Result<T, PolarisError>> + Send + 'static) -> Self {
+        Self {
+            backend: HistoricalIteratorBackend::Direct(Box::new(iterator)),
+            failed_runtime_check: false,
+        }
+    }
 }
 
 pub type ReplayIterator = HistoricalIterator<StandardEvent>;
@@ -429,7 +479,10 @@ impl<T> Iterator for HistoricalIterator<T> {
             self.failed_runtime_check = true;
             return Some(Err(PolarisError::BlockingInAsyncRuntime));
         }
-        self.receiver.blocking_recv()
+        match &mut self.backend {
+            HistoricalIteratorBackend::Channel { receiver, .. } => receiver.blocking_recv(),
+            HistoricalIteratorBackend::Direct(iterator) => iterator.next(),
+        }
     }
 }
 

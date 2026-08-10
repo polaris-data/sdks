@@ -471,6 +471,26 @@ class PolarisClient:
         )
         return self._iterate(iterator, "l2_snapshots")
 
+    def l2_updates(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        allow_gaps: bool = False,
+    ) -> Iterator[JSONDict]:
+        """Iterate raw orderbook snapshots and deltas without reconstruction."""
+        iterator = self._call(
+            "l2_updates",
+            source,
+            market,
+            self._time(from_),
+            self._time(to),
+            allow_gaps,
+        )
+        return self._iterate(iterator, "l2_updates")
+
     def funding_rates(
         self,
         *,

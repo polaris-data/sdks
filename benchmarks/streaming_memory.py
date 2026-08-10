@@ -81,6 +81,13 @@ def run_worker(root: Path, mode: str, deltas: int) -> None:
                 from_=from_us,
                 to=to_us,
             )
+        elif mode == "l2_updates":
+            rows = client.l2_updates(
+                source=SOURCE,
+                market=MARKET,
+                from_=from_us,
+                to=to_us,
+            )
         else:
             rows = client.l2_snapshots(
                 source=SOURCE,
@@ -157,7 +164,7 @@ def parse_minimum_throughput(values: list[str]) -> dict[str, float]:
             raise argparse.ArgumentTypeError(
                 f"expected MODE=ROWS_PER_SECOND, got {value!r}"
             ) from error
-        if mode not in {"events", "bbo", "l2"}:
+        if mode not in {"events", "bbo", "l2_updates", "l2"}:
             raise argparse.ArgumentTypeError(f"unknown benchmark mode {mode!r}")
         if rate <= 0:
             raise argparse.ArgumentTypeError("minimum throughput must be positive")
@@ -192,13 +199,15 @@ def main() -> int:
     parser.add_argument(
         "--modes",
         nargs="+",
-        choices=["events", "bbo", "l2"],
-        default=["events", "bbo", "l2"],
+        choices=["events", "bbo", "l2_updates", "l2"],
+        default=["events", "bbo", "l2_updates"],
     )
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--root", type=Path, help=argparse.SUPPRESS)
     parser.add_argument(
-        "--mode", choices=["events", "bbo", "l2"], help=argparse.SUPPRESS
+        "--mode",
+        choices=["events", "bbo", "l2_updates", "l2"],
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--deltas", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args()

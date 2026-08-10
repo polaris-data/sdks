@@ -10,7 +10,7 @@ use pyo3::{
     create_exception,
     exceptions::PyException,
     prelude::*,
-    types::{PyAny, PyModule},
+    types::{PyAny, PyDict, PyList, PyModule},
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -172,6 +172,72 @@ fn to_python<'py, T: Serialize>(py: Python<'py>, value: &T) -> PyResult<Bound<'p
         .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
     prune_empty_event_identity(&mut value);
     Ok(pythonize::pythonize(py, &value)?)
+}
+
+fn json_value_to_python<'py>(
+    py: Python<'py>,
+    value: &Value,
+    omit_empty_side: bool,
+) -> PyResult<Bound<'py, PyAny>> {
+    match value {
+        Value::Null => Ok(py.None().into_bound(py)),
+        Value::Bool(value) => Ok(value.into_pyobject(py)?.to_owned().into_any()),
+        Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                Ok(value.into_pyobject(py)?.into_any())
+            } else if let Some(value) = value.as_u64() {
+                Ok(value.into_pyobject(py)?.into_any())
+            } else if let Some(value) = value.as_f64() {
+                Ok(value.into_pyobject(py)?.into_any())
+            } else {
+                Err(pyo3::exceptions::PyValueError::new_err(
+                    "invalid JSON number",
+                ))
+            }
+        }
+        Value::String(value) => Ok(value.into_pyobject(py)?.into_any()),
+        Value::Array(values) => {
+            let output = PyList::empty(py);
+            for value in values {
+                output.append(json_value_to_python(py, value, false)?)?;
+            }
+            Ok(output.into_any())
+        }
+        Value::Object(values) => {
+            let output = PyDict::new(py);
+            for (key, value) in values {
+                if omit_empty_side && key == "side" && value.as_str() == Some("") {
+                    continue;
+                }
+                output.set_item(key, json_value_to_python(py, value, false)?)?;
+            }
+            Ok(output.into_any())
+        }
+    }
+}
+
+fn standard_event_to_python<'py>(
+    py: Python<'py>,
+    event: &StandardEvent,
+) -> PyResult<Bound<'py, PyAny>> {
+    let output = PyDict::new(py);
+    output.set_item("timestamp", event.timestamp)?;
+    if !event.source.is_empty() {
+        output.set_item("source", &event.source)?;
+    }
+    if !event.market.is_empty() {
+        output.set_item("market", &event.market)?;
+    }
+    if !event.event_type.is_empty() {
+        output.set_item("type", &event.event_type)?;
+    }
+    if !event.data.is_null() {
+        output.set_item("data", json_value_to_python(py, &event.data, true)?)?;
+    }
+    for (key, value) in &event.extra {
+        output.set_item(key, json_value_to_python(py, value, false)?)?;
+    }
+    Ok(output.into_any())
 }
 
 #[pyclass(module = "polaris_data._native")]
@@ -582,6 +648,28 @@ impl NativeClient {
         )))
     }
 
+    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
+    fn l2_updates<'py>(
+        &self,
+        py: Python<'py>,
+        source: String,
+        market: String,
+        from_: Option<String>,
+        to: Option<String>,
+        allow_gaps: bool,
+    ) -> PyResult<NativeHistorical> {
+        let iterator = py
+            .detach(|| {
+                let mut query = historical_query(source, market, from_, to, allow_gaps);
+                query.materialize_orderbooks = false;
+                self.inner.events(query)
+            })
+            .map_err(native_error)?;
+        Ok(NativeHistorical::new(NativeHistoricalIterator::L2Events(
+            iterator,
+        )))
+    }
+
     #[pyo3(signature = (source, market, from_=None, to=None, interval=None, allow_gaps=false))]
     fn bbo<'py>(
         &self,
@@ -795,6 +883,17 @@ fn next_historical<'py, T: Serialize + Send>(
     }
 }
 
+fn next_standard_event<'py>(
+    py: Python<'py>,
+    iterator: &mut blocking::HistoricalIterator<StandardEvent>,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    match py.detach(|| iterator.next()) {
+        Some(Ok(value)) => standard_event_to_python(py, &value).map(Some),
+        Some(Err(error)) => Err(native_error(error)),
+        None => Ok(None),
+    }
+}
+
 fn next_l2_event<'py>(
     py: Python<'py>,
     iterator: &mut blocking::HistoricalIterator<StandardEvent>,
@@ -807,7 +906,7 @@ fn next_l2_event<'py>(
                     "orderbook" | "orderbook_delta" | "l2_snapshot" | "orderbook_snapshot"
                 ) =>
             {
-                return to_python(py, &event).map(Some);
+                return standard_event_to_python(py, &event).map(Some);
             }
             Some(Ok(_)) => {}
             Some(Err(error)) => return Err(native_error(error)),
@@ -827,7 +926,7 @@ impl NativeHistorical {
             return Ok(None);
         };
         let result = match iterator {
-            NativeHistoricalIterator::Events(iterator) => next_historical(py, iterator),
+            NativeHistoricalIterator::Events(iterator) => next_standard_event(py, iterator),
             NativeHistoricalIterator::L2Events(iterator) => next_l2_event(py, iterator),
             NativeHistoricalIterator::Trades(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Bbo(iterator) => next_historical(py, iterator),
@@ -941,7 +1040,7 @@ impl NativeReplay {
             NativeReplayIterator::Chunked(iterator) => iterator.next(),
         });
         match next {
-            Some(Ok(value)) => to_python(py, &value).map(Some),
+            Some(Ok(value)) => standard_event_to_python(py, &value).map(Some),
             Some(Err(error)) => Err(native_error(error)),
             None => {
                 self.iterator = None;
