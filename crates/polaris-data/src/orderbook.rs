@@ -1,16 +1,45 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
+use ordered_float::OrderedFloat;
 use serde_json::{Map, Value, json};
 
-use crate::{OrderbookLevel, PolarisError, StandardEvent};
+use crate::{BboQuote, OrderbookLevel, PolarisError, StandardEvent};
 
 const SNAPSHOT_TYPES: [&str; 3] = ["orderbook", "orderbook_snapshot", "l2_snapshot"];
 const DELTA_TYPE: &str = "orderbook_delta";
 
 #[derive(Clone, Debug, Default)]
 struct BookState {
-    bids: Vec<OrderbookLevel>,
-    asks: Vec<OrderbookLevel>,
+    bids: BTreeMap<OrderedFloat<f64>, f64>,
+    asks: BTreeMap<OrderedFloat<f64>, f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BookUpdate {
+    Ignored,
+    Suppressed,
+    Applied,
+}
+
+pub(crate) struct BookView<'a> {
+    state: &'a BookState,
+}
+
+impl BookView<'_> {
+    pub(crate) fn bids(&self) -> impl Iterator<Item = (f64, f64)> + '_ {
+        self.state
+            .bids
+            .iter()
+            .rev()
+            .map(|(price, quantity)| (price.0, *quantity))
+    }
+
+    pub(crate) fn asks(&self) -> impl Iterator<Item = (f64, f64)> + '_ {
+        self.state
+            .asks
+            .iter()
+            .map(|(price, quantity)| (price.0, *quantity))
+    }
 }
 
 /// Reconstruct complete order books from standardized snapshot and delta events.
@@ -19,7 +48,7 @@ struct BookState {
 /// refused by returning `Ok(None)`. Non-orderbook events pass through unchanged.
 #[derive(Clone, Debug, Default)]
 pub struct OrderbookBuilder {
-    books: HashMap<(String, String), BookState>,
+    books: HashMap<String, HashMap<String, BookState>>,
 }
 
 impl OrderbookBuilder {
@@ -32,43 +61,75 @@ impl OrderbookBuilder {
     }
 
     pub fn clear_book(&mut self, source: &str, market: &str) {
-        self.books.remove(&(source.to_owned(), market.to_owned()));
+        if let Some(markets) = self.books.get_mut(source) {
+            markets.remove(market);
+            if markets.is_empty() {
+                self.books.remove(source);
+            }
+        }
     }
 
     pub fn apply(
         &mut self,
         mut event: StandardEvent,
     ) -> Result<Option<StandardEvent>, PolarisError> {
+        match self.update(&event)? {
+            BookUpdate::Ignored => return Ok(Some(event)),
+            BookUpdate::Suppressed => return Ok(None),
+            BookUpdate::Applied => {}
+        }
+
+        let state = self
+            .books
+            .get(&event.source)
+            .and_then(|markets| markets.get(&event.market))
+            .expect("book state initialized");
+        let mut data = match std::mem::take(&mut event.data) {
+            Value::Object(object) => object,
+            _ => Map::new(),
+        };
+        data.insert("bids".to_owned(), canonical_levels(state.bids.iter().rev()));
+        data.insert("asks".to_owned(), canonical_levels(state.asks.iter()));
+        event.extra.remove("bids");
+        event.extra.remove("asks");
+        event.event_type = "orderbook".to_owned();
+        event.data = Value::Object(data);
+        Ok(Some(event))
+    }
+
+    pub(crate) fn update(&mut self, event: &StandardEvent) -> Result<BookUpdate, PolarisError> {
         let is_snapshot = SNAPSHOT_TYPES.contains(&event.event_type.as_str());
         let is_delta = event.event_type == DELTA_TYPE;
         if !is_snapshot && !is_delta {
-            return Ok(Some(event));
+            return Ok(BookUpdate::Ignored);
         }
 
-        let mut data = match &event.data {
-            Value::Object(object) => object.clone(),
-            _ if event.extra.contains_key("bids") || event.extra.contains_key("asks") => Map::new(),
+        let data = match &event.data {
+            Value::Object(object) => Some(object),
+            _ if event.extra.contains_key("bids") || event.extra.contains_key("asks") => None,
             _ => {
                 return Err(PolarisError::Decode(
                     "invalid orderbook payload: data must be an object".to_owned(),
                 ));
             }
         };
-        copy_envelope_side(&event, &mut data, "bids");
-        copy_envelope_side(&event, &mut data, "asks");
-
-        let bids = parse_side(data.get("bids"), is_snapshot, "bids")?;
-        let asks = parse_side(data.get("asks"), is_snapshot, "asks")?;
-        let key = (event.source.clone(), event.market.clone());
-
+        let bids = parse_side(side_value(data, event, "bids"), is_snapshot, "bids")?;
+        let asks = parse_side(side_value(data, event, "asks"), is_snapshot, "asks")?;
         if is_snapshot {
             let mut state = BookState::default();
             apply_levels(&mut state.bids, bids.expect("snapshot bids validated"));
             apply_levels(&mut state.asks, asks.expect("snapshot asks validated"));
-            self.books.insert(key.clone(), state);
+            self.books
+                .entry(event.source.clone())
+                .or_default()
+                .insert(event.market.clone(), state);
         } else {
-            let Some(state) = self.books.get_mut(&key) else {
-                return Ok(None);
+            let Some(state) = self
+                .books
+                .get_mut(&event.source)
+                .and_then(|markets| markets.get_mut(&event.market))
+            else {
+                return Ok(BookUpdate::Suppressed);
             };
             if let Some(levels) = bids {
                 apply_levels(&mut state.bids, levels);
@@ -78,28 +139,42 @@ impl OrderbookBuilder {
             }
         }
 
-        let state = self.books.get(&key).expect("book state initialized");
-        let mut bids = state.bids.clone();
-        let mut asks = state.asks.clone();
-        bids.sort_by(|left, right| right.price.total_cmp(&left.price));
-        asks.sort_by(|left, right| left.price.total_cmp(&right.price));
+        Ok(BookUpdate::Applied)
+    }
 
-        data.insert("bids".to_owned(), canonical_levels(&bids));
-        data.insert("asks".to_owned(), canonical_levels(&asks));
-        event.extra.remove("bids");
-        event.extra.remove("asks");
-        event.event_type = "orderbook".to_owned();
-        event.data = Value::Object(data);
-        Ok(Some(event))
+    pub(crate) fn best_bid_offer(
+        &self,
+        source: &str,
+        market: &str,
+        timestamp: i64,
+    ) -> Option<BboQuote> {
+        let state = self.books.get(source)?.get(market)?;
+        let (bid_price, bid_quantity) = state.bids.last_key_value()?;
+        let (ask_price, ask_quantity) = state.asks.first_key_value()?;
+        Some(BboQuote {
+            timestamp,
+            bid_price: bid_price.0,
+            bid_quantity: *bid_quantity,
+            ask_price: ask_price.0,
+            ask_quantity: *ask_quantity,
+        })
+    }
+
+    pub(crate) fn view(&self, source: &str, market: &str) -> Option<BookView<'_>> {
+        self.books
+            .get(source)?
+            .get(market)
+            .map(|state| BookView { state })
     }
 }
 
-fn copy_envelope_side(event: &StandardEvent, data: &mut Map<String, Value>, side: &str) {
-    if !data.contains_key(side) {
-        if let Some(value) = event.extra.get(side) {
-            data.insert(side.to_owned(), value.clone());
-        }
-    }
+fn side_value<'a>(
+    data: Option<&'a Map<String, Value>>,
+    event: &'a StandardEvent,
+    side: &str,
+) -> Option<&'a Value> {
+    data.and_then(|object| object.get(side))
+        .or_else(|| event.extra.get(side))
 }
 
 fn parse_side(
@@ -167,25 +242,21 @@ fn parse_number(value: &Value) -> Option<f64> {
         .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
 }
 
-fn apply_levels(book: &mut Vec<OrderbookLevel>, updates: Vec<OrderbookLevel>) {
+fn apply_levels(book: &mut BTreeMap<OrderedFloat<f64>, f64>, updates: Vec<OrderbookLevel>) {
     for update in updates {
-        if let Some(index) = book.iter().position(|level| level.price == update.price) {
-            if update.quantity == 0.0 {
-                book.remove(index);
-            } else {
-                book[index] = update;
-            }
-        } else if update.quantity > 0.0 {
-            book.push(update);
+        let price = OrderedFloat(update.price);
+        if update.quantity == 0.0 {
+            book.remove(&price);
+        } else {
+            book.insert(price, update.quantity);
         }
     }
 }
 
-fn canonical_levels(levels: &[OrderbookLevel]) -> Value {
+fn canonical_levels<'a>(levels: impl Iterator<Item = (&'a OrderedFloat<f64>, &'a f64)>) -> Value {
     Value::Array(
         levels
-            .iter()
-            .map(|level| json!({"price": level.price, "quantity": level.quantity}))
+            .map(|(price, quantity)| json!({"price": price.0, "quantity": quantity}))
             .collect(),
     )
 }

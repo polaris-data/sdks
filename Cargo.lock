@@ -856,6 +856,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
+name = "ordered-float"
+version = "4.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -875,7 +884,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "polaris-data"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "async-stream",
  "chrono",
@@ -886,6 +895,7 @@ dependencies = [
  "http",
  "log",
  "logtest",
+ "ordered-float",
  "regex",
  "reqwest",
  "serde",
@@ -902,7 +912,7 @@ dependencies = [
 
 [[package]]
 name = "polaris-python"
-version = "0.10.2"
+version = "0.11.0"
 dependencies = [
  "chrono",
  "futures-util",

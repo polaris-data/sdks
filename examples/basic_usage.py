@@ -18,13 +18,16 @@ with PolarisClient(api_key="pk_live_your_key") as client:
     )
     print(f"Replayed {row_count} rows")
 
-    rows = client.events(
-        source="binance",
-        market="BTC-USDT",
-        from_="2024-01-01T00:00:00Z",
-        to="2024-01-01T01:00:00Z",
+    row_count = sum(
+        1
+        for _ in client.events(
+            source="binance",
+            market="BTC-USDT",
+            from_="2024-01-01T00:00:00Z",
+            to="2024-01-01T01:00:00Z",
+        )
     )
-    print(f"Loaded {len(rows)} event rows")
+    print(f"Loaded {row_count} event rows")
 
     bars = client.ohlcv(
         source="binance",

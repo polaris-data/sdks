@@ -8,6 +8,8 @@ use crate::models::{
 #[derive(Clone, Debug)]
 struct Bucket {
     timestamp: i64,
+    first_timestamp: i64,
+    last_timestamp: i64,
     open: f64,
     high: f64,
     low: f64,
@@ -16,89 +18,101 @@ struct Bucket {
     trades: u64,
 }
 
-pub(crate) fn aggregate(
-    trades: &[TradeEvent],
-    interval: OhlcvInterval,
-    format: OhlcvFormat,
-) -> OhlcvOutput {
-    let width = interval_to_millis(interval);
-    let mut buckets: BTreeMap<i64, Bucket> = BTreeMap::new();
-    let mut previous_close: Option<f64> = None;
-    let mut previous_bucket: Option<i64> = None;
+pub(crate) struct OhlcvAggregator {
+    width: i64,
+    buckets: BTreeMap<i64, Bucket>,
+}
 
-    let mut ordered = trades.iter().collect::<Vec<_>>();
-    ordered.sort_by_key(|trade| trade.timestamp);
-    for trade in ordered {
-        let bucket_ts = (trade.timestamp / width) * width;
+impl OhlcvAggregator {
+    pub(crate) fn new(interval: OhlcvInterval) -> Self {
+        Self {
+            width: interval_to_millis(interval),
+            buckets: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn add(&mut self, trade: &TradeEvent) {
+        let bucket_ts = trade.timestamp.div_euclid(self.width) * self.width;
         let price = trade.data.price;
         let quantity = trade.data.quantity;
 
-        buckets
+        self.buckets
             .entry(bucket_ts)
             .and_modify(|bucket| {
                 bucket.high = bucket.high.max(price);
                 bucket.low = bucket.low.min(price);
-                bucket.close = price;
+                if trade.timestamp < bucket.first_timestamp {
+                    bucket.first_timestamp = trade.timestamp;
+                    bucket.open = price;
+                }
+                if trade.timestamp >= bucket.last_timestamp {
+                    bucket.last_timestamp = trade.timestamp;
+                    bucket.close = price;
+                }
                 bucket.volume += quantity;
                 bucket.trades += 1;
             })
             .or_insert(Bucket {
                 timestamp: bucket_ts,
-                open: if previous_bucket.is_some_and(|previous| previous + width == bucket_ts) {
-                    previous_close.unwrap_or(price)
-                } else {
-                    price
-                },
+                first_timestamp: trade.timestamp,
+                last_timestamp: trade.timestamp,
+                open: price,
                 high: price,
                 low: price,
                 close: price,
                 volume: quantity,
                 trades: 1,
             });
-        previous_close = Some(price);
-        previous_bucket = Some(bucket_ts);
     }
 
-    let bars: Vec<OhlcvBar> = buckets
-        .into_values()
-        .map(|bucket| OhlcvBar {
-            timestamp: bucket.timestamp,
-            open: bucket.open,
-            high: bucket.high,
-            low: bucket.low,
-            close: bucket.close,
-            volume: bucket.volume,
-            trades: bucket.trades,
-        })
-        .collect();
+    pub(crate) fn finish(self, format: OhlcvFormat) -> OhlcvOutput {
+        let mut bars = Vec::with_capacity(self.buckets.len());
+        let mut previous: Option<(i64, f64)> = None;
+        for bucket in self.buckets.into_values() {
+            let open = previous
+                .filter(|(timestamp, _)| *timestamp + self.width == bucket.timestamp)
+                .map(|(_, close)| close)
+                .unwrap_or(bucket.open);
+            previous = Some((bucket.timestamp, bucket.close));
+            bars.push(OhlcvBar {
+                timestamp: bucket.timestamp,
+                open,
+                high: bucket.high,
+                low: bucket.low,
+                close: bucket.close,
+                volume: bucket.volume,
+                trades: bucket.trades,
+            });
+        }
 
-    match format {
-        OhlcvFormat::Bars => OhlcvOutput::Bars(bars),
-        OhlcvFormat::TradingView => {
-            let candles = bars
-                .iter()
-                .map(|bar| TradingViewCandle {
-                    time: bar.timestamp / 1_000,
-                    open: bar.open,
-                    high: bar.high,
-                    low: bar.low,
-                    close: bar.close,
-                })
-                .collect();
-            let volumes = bars
-                .iter()
-                .map(|bar| TradingViewVolume {
-                    time: bar.timestamp / 1_000,
-                    value: bar.volume,
-                })
-                .collect();
+        match format {
+            OhlcvFormat::Bars => OhlcvOutput::Bars(bars),
+            OhlcvFormat::TradingView => {
+                let candles = bars
+                    .iter()
+                    .map(|bar| TradingViewCandle {
+                        time: bar.timestamp / 1_000,
+                        open: bar.open,
+                        high: bar.high,
+                        low: bar.low,
+                        close: bar.close,
+                    })
+                    .collect();
+                let volumes = bars
+                    .iter()
+                    .map(|bar| TradingViewVolume {
+                        time: bar.timestamp / 1_000,
+                        value: bar.volume,
+                    })
+                    .collect();
 
-            OhlcvOutput::TradingView(TradingViewOhlcv { candles, volumes })
+                OhlcvOutput::TradingView(TradingViewOhlcv { candles, volumes })
+            }
         }
     }
 }
 
-fn interval_to_millis(interval: OhlcvInterval) -> i64 {
+pub(crate) fn interval_to_millis(interval: OhlcvInterval) -> i64 {
     match interval {
         OhlcvInterval::Ms100 => 100,
         OhlcvInterval::S1 => 1_000,

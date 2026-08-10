@@ -4,8 +4,8 @@ use futures_util::StreamExt;
 use log::Level;
 use logtest::Logger;
 use polaris_data::{
-    CatalogQuery, HistoricalQuery, OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery,
-    PolarisClient, PolarisError, ReplayQuery, blocking,
+    CatalogQuery, HistoricalQuery, HistoricalStream, OhlcvFormat, OhlcvInterval, OhlcvOutput,
+    OhlcvQuery, PolarisClient, PolarisError, ReplayQuery, blocking,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -21,6 +21,10 @@ fn build_client(server: &MockServer, root: &TempDir) -> PolarisClient {
         .timeout(Duration::from_secs(5))
         .build()
         .expect("client")
+}
+
+async fn collect_stream<T>(stream: HistoricalStream<T>) -> Result<Vec<T>, PolarisError> {
+    stream.collect::<Vec<_>>().await.into_iter().collect()
 }
 
 fn zstd_ndjson(lines: &[serde_json::Value]) -> Vec<u8> {
@@ -288,8 +292,12 @@ async fn events_download_snapshots_and_reuse_local_cache() {
         materialize_orderbooks: true,
     };
 
-    let first = client.events(query.clone()).await.expect("first events");
-    let second = client.events(query).await.expect("second events");
+    let first = collect_stream(client.events(query.clone()).await.expect("first events"))
+        .await
+        .expect("first rows");
+    let second = collect_stream(client.events(query).await.expect("second events"))
+        .await
+        .expect("second rows");
 
     assert_eq!(first.len(), 1);
     assert_eq!(second.len(), 1);
@@ -603,17 +611,21 @@ async fn preview_catalog_without_api_key_infers_public_cutoff_window() {
             .await;
     }
 
-    let rows = client
-        .events(HistoricalQuery {
-            source: "binance".to_owned(),
-            market: "BTC-USDT".to_owned(),
-            from: None,
-            to: None,
-            allow_gaps: false,
-            materialize_orderbooks: true,
-        })
-        .await
-        .expect("rows");
+    let rows = collect_stream(
+        client
+            .events(HistoricalQuery {
+                source: "binance".to_owned(),
+                market: "BTC-USDT".to_owned(),
+                from: None,
+                to: None,
+                allow_gaps: false,
+                materialize_orderbooks: true,
+            })
+            .await
+            .expect("rows"),
+    )
+    .await
+    .expect("stream rows");
 
     assert_eq!(rows.len(), 1);
 }
@@ -707,7 +719,7 @@ async fn invalid_ndjson_and_invalid_zstd_are_mapped_to_decode_errors() {
         .mount(&server)
         .await;
 
-    let error = client
+    let stream = client
         .events(HistoricalQuery {
             source: "binance".to_owned(),
             market: "BTC-USDT".to_owned(),
@@ -717,7 +729,8 @@ async fn invalid_ndjson_and_invalid_zstd_are_mapped_to_decode_errors() {
             materialize_orderbooks: true,
         })
         .await
-        .expect_err("invalid zstd");
+        .expect("stream setup");
+    let error = collect_stream(stream).await.expect_err("invalid zstd");
     assert!(matches!(error, PolarisError::Decode(_)));
 
     let second_root = TempDir::new().expect("tempdir");
@@ -749,7 +762,7 @@ async fn invalid_ndjson_and_invalid_zstd_are_mapped_to_decode_errors() {
         .mount(&server)
         .await;
 
-    let error = second_client
+    let stream = second_client
         .events(HistoricalQuery {
             source: "binance".to_owned(),
             market: "BTC-USDT".to_owned(),
@@ -759,7 +772,8 @@ async fn invalid_ndjson_and_invalid_zstd_are_mapped_to_decode_errors() {
             materialize_orderbooks: true,
         })
         .await
-        .expect_err("invalid ndjson");
+        .expect("stream setup");
+    let error = collect_stream(stream).await.expect_err("invalid ndjson");
     assert!(matches!(error, PolarisError::Decode(_)));
 }
 
@@ -841,8 +855,14 @@ async fn concurrent_clients_atomically_share_one_snapshot_download() {
     };
     let (left, right) = tokio::join!(first.events(query.clone()), second.events(query));
 
-    assert_eq!(left.expect("first").len(), 1);
-    assert_eq!(right.expect("second").len(), 1);
+    let left = collect_stream(left.expect("first"))
+        .await
+        .expect("first rows");
+    let right = collect_stream(right.expect("second"))
+        .await
+        .expect("second rows");
+    assert_eq!(left.len(), 1);
+    assert_eq!(right.len(), 1);
     assert!(
         root.path()
             .join("tmp")

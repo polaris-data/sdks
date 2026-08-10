@@ -1,6 +1,6 @@
 [package]
 name = "polaris-data"
-version = "0.7.3"
+version = "0.8.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "Rust SDK for the Polaris market data API."
@@ -23,6 +23,7 @@ fs2 = "0.4"
 futures-core = "0.3"
 futures-util.workspace = true
 log = "0.4"
+ordered-float.workspace = true
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde.workspace = true

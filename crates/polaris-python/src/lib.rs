@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use polaris_data::{
-    HistoricalQuery, ListSnapshotsQuery, OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery,
-    OrderbookBuilder, PolarisError, RawQuery, RawReplayQuery, ReplayQuery, StandardEvent,
-    StreamQuery, TimeInput,
+    BboQuery, BboQuote, DepthMetricsRow, HistoricalQuery, ListSnapshotsQuery, OhlcvFormat,
+    OhlcvInterval, OhlcvOutput, OhlcvQuery, OrderbookBuilder, PointSeriesEvent, PolarisError,
+    RawQuery, RawReplayQuery, ReplayQuery, StandardEvent, StreamQuery, TimeInput, TradeEvent,
     blocking::{self, RawReplayCacheConfig},
 };
 use pyo3::{
@@ -317,15 +317,17 @@ impl NativeClient {
         to: Option<String>,
         allow_gaps: bool,
         materialize_orderbooks: bool,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let result = py
+    ) -> PyResult<NativeHistorical> {
+        let iterator = py
             .detach(|| {
                 let mut query = historical_query(source, market, from_, to, allow_gaps);
                 query.materialize_orderbooks = materialize_orderbooks;
                 self.inner.events(query)
             })
             .map_err(native_error)?;
-        to_python(py, &result)
+        Ok(NativeHistorical::new(NativeHistoricalIterator::Events(
+            iterator,
+        )))
     }
 
     #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
@@ -337,14 +339,16 @@ impl NativeClient {
         from_: Option<String>,
         to: Option<String>,
         allow_gaps: bool,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let result = py
+    ) -> PyResult<NativeHistorical> {
+        let iterator = py
             .detach(|| {
                 self.inner
                     .trades(historical_query(source, market, from_, to, allow_gaps))
             })
             .map_err(native_error)?;
-        to_python(py, &result)
+        Ok(NativeHistorical::new(NativeHistoricalIterator::Trades(
+            iterator,
+        )))
     }
 
     #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, materialize_orderbooks=true))]
@@ -565,27 +569,20 @@ impl NativeClient {
         to: Option<String>,
         allow_gaps: bool,
         materialize_orderbooks: bool,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let result = py
+    ) -> PyResult<NativeHistorical> {
+        let iterator = py
             .detach(|| {
                 let mut query = historical_query(source, market, from_, to, allow_gaps);
                 query.materialize_orderbooks = materialize_orderbooks;
                 self.inner.events(query)
             })
             .map_err(native_error)?;
-        let result = result
-            .into_iter()
-            .filter(|event| {
-                matches!(
-                    event.event_type.as_str(),
-                    "orderbook" | "orderbook_delta" | "l2_snapshot" | "orderbook_snapshot"
-                )
-            })
-            .collect::<Vec<_>>();
-        to_python(py, &result)
+        Ok(NativeHistorical::new(NativeHistoricalIterator::L2Events(
+            iterator,
+        )))
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
+    #[pyo3(signature = (source, market, from_=None, to=None, interval=None, allow_gaps=false))]
     fn bbo<'py>(
         &self,
         py: Python<'py>,
@@ -593,15 +590,25 @@ impl NativeClient {
         market: String,
         from_: Option<String>,
         to: Option<String>,
+        interval: Option<&str>,
         allow_gaps: bool,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let result = py
+    ) -> PyResult<NativeHistorical> {
+        let interval = interval.map(parse_interval).transpose()?;
+        let iterator = py
             .detach(|| {
-                self.inner
-                    .bbo(historical_query(source, market, from_, to, allow_gaps))
+                self.inner.bbo(BboQuery {
+                    source,
+                    market,
+                    from: time_input(from_),
+                    to: time_input(to),
+                    allow_gaps,
+                    interval,
+                })
             })
             .map_err(native_error)?;
-        to_python(py, &result)
+        Ok(NativeHistorical::new(NativeHistoricalIterator::Bbo(
+            iterator,
+        )))
     }
 
     #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
@@ -613,14 +620,16 @@ impl NativeClient {
         from_: Option<String>,
         to: Option<String>,
         allow_gaps: bool,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let result = py
+    ) -> PyResult<NativeHistorical> {
+        let iterator = py
             .detach(|| {
                 self.inner
                     .funding_rates(historical_query(source, market, from_, to, allow_gaps))
             })
             .map_err(native_error)?;
-        to_python(py, &result)
+        Ok(NativeHistorical::new(NativeHistoricalIterator::Points(
+            iterator,
+        )))
     }
 
     #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
@@ -632,14 +641,16 @@ impl NativeClient {
         from_: Option<String>,
         to: Option<String>,
         allow_gaps: bool,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let result = py
+    ) -> PyResult<NativeHistorical> {
+        let iterator = py
             .detach(|| {
                 self.inner
                     .mark_prices(historical_query(source, market, from_, to, allow_gaps))
             })
             .map_err(native_error)?;
-        to_python(py, &result)
+        Ok(NativeHistorical::new(NativeHistoricalIterator::Points(
+            iterator,
+        )))
     }
 
     #[pyo3(signature = (source, market, interval, from_=None, to=None, allow_gaps=false))]
@@ -705,15 +716,17 @@ impl NativeClient {
         depth_pct: f64,
         slippage_notional: f64,
         allow_gaps: bool,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    ) -> PyResult<NativeHistorical> {
         let query = historical_query(source, market, from_, to, allow_gaps);
-        let result = py
+        let iterator = py
             .detach(|| {
                 self.inner
                     .depth_metrics(query, Some(depth_pct), Some(slippage_notional))
             })
             .map_err(native_error)?;
-        to_python(py, &result)
+        Ok(NativeHistorical::new(NativeHistoricalIterator::Depth(
+            iterator,
+        )))
     }
 }
 
@@ -747,6 +760,89 @@ fn aggregate_query(
         format: OhlcvFormat::Bars,
         allow_gaps,
     })
+}
+
+#[pyclass(unsendable, module = "polaris_data._native")]
+struct NativeHistorical {
+    iterator: Option<NativeHistoricalIterator>,
+}
+
+enum NativeHistoricalIterator {
+    Events(blocking::HistoricalIterator<StandardEvent>),
+    L2Events(blocking::HistoricalIterator<StandardEvent>),
+    Trades(blocking::HistoricalIterator<TradeEvent>),
+    Bbo(blocking::HistoricalIterator<BboQuote>),
+    Points(blocking::HistoricalIterator<PointSeriesEvent>),
+    Depth(blocking::HistoricalIterator<DepthMetricsRow>),
+}
+
+impl NativeHistorical {
+    fn new(iterator: NativeHistoricalIterator) -> Self {
+        Self {
+            iterator: Some(iterator),
+        }
+    }
+}
+
+fn next_historical<'py, T: Serialize + Send>(
+    py: Python<'py>,
+    iterator: &mut blocking::HistoricalIterator<T>,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    match py.detach(|| iterator.next()) {
+        Some(Ok(value)) => to_python(py, &value).map(Some),
+        Some(Err(error)) => Err(native_error(error)),
+        None => Ok(None),
+    }
+}
+
+fn next_l2_event<'py>(
+    py: Python<'py>,
+    iterator: &mut blocking::HistoricalIterator<StandardEvent>,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    loop {
+        match py.detach(|| iterator.next()) {
+            Some(Ok(event))
+                if matches!(
+                    event.event_type.as_str(),
+                    "orderbook" | "orderbook_delta" | "l2_snapshot" | "orderbook_snapshot"
+                ) =>
+            {
+                return to_python(py, &event).map(Some);
+            }
+            Some(Ok(_)) => {}
+            Some(Err(error)) => return Err(native_error(error)),
+            None => return Ok(None),
+        }
+    }
+}
+
+#[pymethods]
+impl NativeHistorical {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let Some(iterator) = self.iterator.as_mut() else {
+            return Ok(None);
+        };
+        let result = match iterator {
+            NativeHistoricalIterator::Events(iterator) => next_historical(py, iterator),
+            NativeHistoricalIterator::L2Events(iterator) => next_l2_event(py, iterator),
+            NativeHistoricalIterator::Trades(iterator) => next_historical(py, iterator),
+            NativeHistoricalIterator::Bbo(iterator) => next_historical(py, iterator),
+            NativeHistoricalIterator::Points(iterator) => next_historical(py, iterator),
+            NativeHistoricalIterator::Depth(iterator) => next_historical(py, iterator),
+        };
+        if matches!(result, Ok(None)) {
+            self.iterator = None;
+        }
+        result
+    }
+
+    fn close(&mut self) {
+        self.iterator = None;
+    }
 }
 
 #[pyclass(unsendable, module = "polaris_data._native")]
@@ -904,6 +1000,7 @@ fn decode_file<'py>(py: Python<'py>, path: PathBuf) -> PyResult<Bound<'py, PyAny
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeClient>()?;
     module.add_class::<NativeOrderbookBuilder>()?;
+    module.add_class::<NativeHistorical>()?;
     module.add_class::<NativeReplay>()?;
     module.add_class::<NativeRealtimeStream>()?;
     module.add_class::<NativeRawReplay>()?;

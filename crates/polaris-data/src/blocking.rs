@@ -16,14 +16,16 @@ use serde_json::Value;
 use tokio::runtime::{Handle, Runtime};
 
 use crate::{
-    BboQuote, CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic, DownloadManifestQuery,
-    DownloadManifestResponse, HistoricalQuery, ListSnapshotsQuery, OhlcvOutput, OhlcvQuery,
-    OrderbookEvent, PointSeriesEvent, PolarisError, RawQuery, RawReplayQuery, RawReplayStream,
-    RealtimeStream, ReplayQuery, ReplayStream, SnapshotEntry, StandardEvent, StreamQuery,
-    TimeInput, TradeEvent, VolatilityBar, VolumeBar, VwapBar,
+    BboQuery, BboQuote, CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic,
+    DownloadManifestQuery, DownloadManifestResponse, HistoricalQuery, HistoricalStream,
+    ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OrderbookEvent, PointSeriesEvent, PolarisError,
+    RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, SnapshotEntry,
+    StandardEvent, StreamQuery, TimeInput, TradeEvent, VolatilityBar, VolumeBar, VwapBar,
 };
 
 const DEFAULT_REPLAY_CHUNK_HOURS: i64 = 24;
+const HISTORICAL_CHANNEL_CAPACITY: usize = 16;
+const MATERIALIZED_BOOK_CHANNEL_CAPACITY: usize = 1;
 
 /// Configuration for persistent raw-replay caching.
 #[derive(Clone, Debug)]
@@ -173,12 +175,25 @@ impl PolarisClient {
         self.run(self.inner.list_snapshots(query))
     }
 
-    pub fn events(&self, query: HistoricalQuery) -> Result<Vec<StandardEvent>, PolarisError> {
-        self.run(self.inner.events(query))
+    pub fn events(
+        &self,
+        query: HistoricalQuery,
+    ) -> Result<HistoricalIterator<StandardEvent>, PolarisError> {
+        let capacity = if query.materialize_orderbooks {
+            MATERIALIZED_BOOK_CHANNEL_CAPACITY
+        } else {
+            HISTORICAL_CHANNEL_CAPACITY
+        };
+        let stream = self.run(self.inner.events(query))?;
+        Ok(self.historical_iterator(stream, capacity))
     }
 
-    pub fn trades(&self, query: HistoricalQuery) -> Result<Vec<TradeEvent>, PolarisError> {
-        self.run(self.inner.trades(query))
+    pub fn trades(
+        &self,
+        query: HistoricalQuery,
+    ) -> Result<HistoricalIterator<TradeEvent>, PolarisError> {
+        let stream = self.run(self.inner.trades(query))?;
+        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 
     pub fn stream(&self, query: StreamQuery) -> Result<RealtimeIterator, PolarisError> {
@@ -191,12 +206,13 @@ impl PolarisClient {
     }
 
     pub fn replay(&self, query: ReplayQuery) -> Result<ReplayIterator, PolarisError> {
+        let capacity = if query.materialize_orderbooks {
+            MATERIALIZED_BOOK_CHANNEL_CAPACITY
+        } else {
+            HISTORICAL_CHANNEL_CAPACITY
+        };
         let stream = self.run(self.inner.replay(query))?;
-        Ok(ReplayIterator {
-            runtime: Arc::clone(&self.runtime),
-            stream,
-            failed_runtime_check: false,
-        })
+        Ok(self.historical_iterator(stream, capacity))
     }
 
     pub fn raw(&self, query: RawQuery) -> Result<Vec<Value>, PolarisError> {
@@ -275,26 +291,30 @@ impl PolarisClient {
     pub fn l2_snapshots(
         &self,
         query: HistoricalQuery,
-    ) -> Result<Vec<OrderbookEvent>, PolarisError> {
-        self.run(self.inner.l2_snapshots(query))
+    ) -> Result<HistoricalIterator<OrderbookEvent>, PolarisError> {
+        let stream = self.run(self.inner.l2_snapshots(query))?;
+        Ok(self.historical_iterator(stream, MATERIALIZED_BOOK_CHANNEL_CAPACITY))
     }
 
-    pub fn bbo(&self, query: HistoricalQuery) -> Result<Vec<BboQuote>, PolarisError> {
-        self.run(self.inner.bbo(query))
+    pub fn bbo(&self, query: BboQuery) -> Result<HistoricalIterator<BboQuote>, PolarisError> {
+        let stream = self.run(self.inner.bbo(query))?;
+        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 
     pub fn funding_rates(
         &self,
         query: HistoricalQuery,
-    ) -> Result<Vec<PointSeriesEvent>, PolarisError> {
-        self.run(self.inner.funding_rates(query))
+    ) -> Result<HistoricalIterator<PointSeriesEvent>, PolarisError> {
+        let stream = self.run(self.inner.funding_rates(query))?;
+        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 
     pub fn mark_prices(
         &self,
         query: HistoricalQuery,
-    ) -> Result<Vec<PointSeriesEvent>, PolarisError> {
-        self.run(self.inner.mark_prices(query))
+    ) -> Result<HistoricalIterator<PointSeriesEvent>, PolarisError> {
+        let stream = self.run(self.inner.mark_prices(query))?;
+        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 
     pub fn volume(&self, query: OhlcvQuery) -> Result<Vec<VolumeBar>, PolarisError> {
@@ -314,19 +334,42 @@ impl PolarisClient {
         query: HistoricalQuery,
         depth_pct: Option<f64>,
         slippage_notional: Option<f64>,
-    ) -> Result<Vec<DepthMetricsRow>, PolarisError> {
-        self.run(
+    ) -> Result<HistoricalIterator<DepthMetricsRow>, PolarisError> {
+        let stream = self.run(
             self.inner
                 .depth_metrics(query, depth_pct, slippage_notional),
-        )
+        )?;
+        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
+    }
+
+    fn historical_iterator<T: Send + 'static>(
+        &self,
+        mut stream: HistoricalStream<T>,
+        capacity: usize,
+    ) -> HistoricalIterator<T> {
+        let (sender, receiver) = tokio::sync::mpsc::channel(capacity);
+        self.runtime.spawn(async move {
+            while let Some(item) = stream.next().await {
+                if sender.send(item).await.is_err() {
+                    break;
+                }
+            }
+        });
+        HistoricalIterator {
+            _runtime: Arc::clone(&self.runtime),
+            receiver,
+            failed_runtime_check: false,
+        }
     }
 }
 
-pub struct ReplayIterator {
-    runtime: Arc<Runtime>,
-    stream: ReplayStream,
+pub struct HistoricalIterator<T> {
+    _runtime: Arc<Runtime>,
+    receiver: tokio::sync::mpsc::Receiver<Result<T, PolarisError>>,
     failed_runtime_check: bool,
 }
+
+pub type ReplayIterator = HistoricalIterator<StandardEvent>;
 
 pub struct RealtimeIterator {
     runtime: Arc<Runtime>,
@@ -375,8 +418,8 @@ impl Iterator for RealtimeIterator {
     }
 }
 
-impl Iterator for ReplayIterator {
-    type Item = Result<StandardEvent, PolarisError>;
+impl<T> Iterator for HistoricalIterator<T> {
+    type Item = Result<T, PolarisError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if Handle::try_current().is_ok() {
@@ -386,7 +429,7 @@ impl Iterator for ReplayIterator {
             self.failed_runtime_check = true;
             return Some(Err(PolarisError::BlockingInAsyncRuntime));
         }
-        self.runtime.block_on(self.stream.next())
+        self.receiver.blocking_recv()
     }
 }
 

@@ -76,6 +76,16 @@ pub struct HistoricalQuery {
     pub materialize_orderbooks: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BboQuery {
+    pub source: String,
+    pub market: String,
+    pub from: Option<TimeInput>,
+    pub to: Option<TimeInput>,
+    pub allow_gaps: bool,
+    pub interval: Option<OhlcvInterval>,
+}
+
 impl Default for HistoricalQuery {
     fn default() -> Self {
         Self {
@@ -349,7 +359,8 @@ pub enum OhlcvOutput {
     TradingView(TradingViewOhlcv),
 }
 
-pub type ReplayStream = Pin<Box<dyn Stream<Item = Result<StandardEvent, PolarisError>> + Send>>;
+pub type HistoricalStream<T> = Pin<Box<dyn Stream<Item = Result<T, PolarisError>> + Send>>;
+pub type ReplayStream = HistoricalStream<StandardEvent>;
 pub type RawReplayStream = Pin<Box<dyn Stream<Item = Result<Value, PolarisError>> + Send>>;
 pub type RealtimeStream = Pin<Box<dyn Stream<Item = Result<StandardEvent, PolarisError>> + Send>>;
 

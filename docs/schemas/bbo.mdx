@@ -17,7 +17,7 @@ Use `client.bbo()` when you need top-of-book quote data for spread tracking and 
 ## Method signature
 
 ```python
-bbo(source, market, from_, to, limit=1000)
+bbo(source, market, from_=None, to=None, interval=None, allow_gaps=False)
 ```
 
 ## Parameters
@@ -26,15 +26,16 @@ bbo(source, market, from_, to, limit=1000)
 | --- | --- | --- | --- |
 | source | str | Yes | Source ID |
 | market | str | Yes | Normalized market or instrument ID |
-| from_ | str/datetime/date/int | Yes | Inclusive start time (ISO 8601, datetime, date, or epoch microseconds) |
-| to | str/datetime/date/int | Yes | Exclusive end time (same formats as from_) |
-| limit | int | No | Page size (default: 1000) |
+| from_ | str/datetime/date/int | No | Inclusive start time (ISO 8601, datetime, date, or epoch microseconds) |
+| to | str/datetime/date/int | No | Exclusive end time (same formats as from_) |
+| interval | str | No | Emit the last quote in each non-empty aligned bucket: `100ms`, `1s`, `10s`, `1m`, `5m`, `15m`, or `1h` |
+| allow_gaps | bool | No | Return covered rows and warn instead of failing on coverage gaps |
 
 **Note:** API key required for historical ranges. Set `POLARIS_API_KEY` environment variable or pass `api_key` to `PolarisClient()`.
 
 ## Return value
 
-List of best bid/offer quote series rows.
+A single-pass iterator of best bid/offer quote rows.
 
 ## Example response
 
@@ -70,6 +71,7 @@ The bid-ask spread can be calculated as `ask_price - bid_price`.
 
 ```python
 from datetime import datetime, timedelta, timezone
+from itertools import islice
 from polaris_data import PolarisClient
 
 end = datetime.now(timezone.utc)
@@ -82,13 +84,12 @@ with PolarisClient() as client:
         from_=start,
         to=end,
     )
-
-print(quotes[:2])
+    print(list(islice(quotes, 2)))
 ```
 
 ## How it works
 
-`client.bbo()` uses snapshot-first replay: it queries the `/snapshots` endpoint for historical data and reads from local cached files when available. The SDK extracts the top levels from order book snapshots to provide best bid/offer data.
+`client.bbo()` uses snapshot-first replay and updates an ordered native book without materializing complete books. Without an interval it emits after every valid two-sided book update. With an interval it emits the last quote from each non-empty UTC-aligned bucket.
 
 For more details on snapshot-based queries, see [Snapshots](/reference/snapshots).
 
