@@ -1,6 +1,6 @@
 [package]
 name = "polaris-data"
-version = "0.9.0"
+version = "0.10.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "Rust SDK for the Polaris market data API."

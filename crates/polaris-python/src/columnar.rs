@@ -2,13 +2,18 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use arrow_array::{
     ArrayRef, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
-    TimestampMillisecondArray, builder::StringDictionaryBuilder, types::Int32Type,
+    TimestampMillisecondArray,
+    builder::{
+        Float64Builder, LargeStringBuilder, ListBuilder, StringDictionaryBuilder, StructBuilder,
+        TimestampMicrosecondBuilder, UInt32Builder, UInt64Builder,
+    },
+    types::Int32Type,
 };
 use arrow_pyarrow::{IntoPyArrow, ToPyArrow};
-use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 use polaris_data::{
-    BboQuote, DepthMetricsRow, PointSeriesEvent, PolarisError, TradeEvent,
-    blocking::{HistoricalIterator, PreparedHistoricalReplay},
+    BboQuote, DepthMetricsRow, ExactReplayEvent, PointSeriesEvent, PolarisError, TradeEvent,
+    blocking::{ExactReplayIterator, HistoricalIterator, PreparedHistoricalReplay},
 };
 use pyo3::{prelude::*, types::PyAny};
 use serde_json::Value;
@@ -71,6 +76,11 @@ struct ExtensionField {
 }
 
 enum ColumnarIterator {
+    Events {
+        iterator: ExactReplayIterator,
+        source: String,
+        market: String,
+    },
     Trades {
         iterator: HistoricalIterator<TradeEvent>,
         source: String,
@@ -104,6 +114,23 @@ pub(crate) struct NativeColumnar {
 }
 
 impl NativeColumnar {
+    pub(crate) fn events(
+        plan: PreparedHistoricalReplay,
+        source: String,
+        market: String,
+        batch_size: usize,
+    ) -> Self {
+        Self {
+            iterator: Some(ColumnarIterator::Events {
+                iterator: plan.exact_events(),
+                source,
+                market,
+            }),
+            schema: event_schema(),
+            batch_size,
+        }
+    }
+
     pub(crate) fn trades(
         plan: PreparedHistoricalReplay,
         source: String,
@@ -187,6 +214,11 @@ impl NativeColumnar {
         };
         let schema = Arc::clone(&self.schema);
         let result = match iterator {
+            ColumnarIterator::Events {
+                iterator,
+                source,
+                market,
+            } => take_event_batch(iterator, self.batch_size, schema, source, market)?,
             ColumnarIterator::Trades {
                 iterator,
                 source,
@@ -298,6 +330,14 @@ fn timestamp_field() -> Field {
     )
 }
 
+fn exact_timestamp_field(name: &str, nullable: bool) -> Field {
+    Field::new(
+        name,
+        DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
+        nullable,
+    )
+}
+
 fn dictionary_type() -> DataType {
     DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8))
 }
@@ -308,6 +348,44 @@ fn identity_fields() -> [Field; 3] {
         Field::new("source", dictionary_type(), false),
         Field::new("market", dictionary_type(), false),
     ]
+}
+
+fn level_fields() -> Fields {
+    Fields::from(vec![
+        Field::new("price", DataType::Float64, false),
+        Field::new("quantity", DataType::Float64, false),
+    ])
+}
+
+fn level_list_type() -> DataType {
+    DataType::List(Arc::new(Field::new(
+        "item",
+        DataType::Struct(level_fields()),
+        false,
+    )))
+}
+
+fn event_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        exact_timestamp_field("timestamp", false),
+        exact_timestamp_field("receive_timestamp", true),
+        Field::new("sequence", DataType::UInt64, true),
+        Field::new("sequence_scope", dictionary_type(), true),
+        Field::new("replay_ordinal", DataType::UInt64, false),
+        Field::new("source_file_ordinal", DataType::UInt32, false),
+        Field::new("source_row_ordinal", DataType::UInt64, false),
+        Field::new("source", dictionary_type(), false),
+        Field::new("market", dictionary_type(), false),
+        Field::new("type", dictionary_type(), false),
+        Field::new("trade_price", DataType::Float64, true),
+        Field::new("trade_quantity", DataType::Float64, true),
+        Field::new("trade_side", dictionary_type(), true),
+        Field::new("bids", level_list_type(), true),
+        Field::new("asks", level_list_type(), true),
+        Field::new("point_series", dictionary_type(), true),
+        Field::new("point_value", DataType::Float64, true),
+        Field::new("event_json", DataType::LargeUtf8, false),
+    ]))
 }
 
 fn trade_schema(extensions: &[ExtensionField]) -> SchemaRef {
@@ -393,6 +471,138 @@ fn identity<'a>(value: &'a str, fallback: &'a str) -> &'a str {
     if value.is_empty() { fallback } else { value }
 }
 
+fn event_data(row: &ExactReplayEvent) -> Option<&serde_json::Map<String, Value>> {
+    row.event.data.as_object()
+}
+
+fn unsigned_value(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|value| u64::try_from(value).ok()))
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+}
+
+fn sequence(row: &ExactReplayEvent) -> Option<u64> {
+    row.event
+        .extra
+        .get("sequence")
+        .or_else(|| row.event.extra.get("nonce"))
+        .or_else(|| event_data(row).and_then(|data| data.get("sequence")))
+        .or_else(|| event_data(row).and_then(|data| data.get("nonce")))
+        .and_then(unsigned_value)
+}
+
+fn sequence_scope(row: &ExactReplayEvent) -> Option<&str> {
+    row.event
+        .extra
+        .get("sequence_scope")
+        .or_else(|| row.event.extra.get("nonce_scope"))
+        .or_else(|| event_data(row).and_then(|data| data.get("sequence_scope")))
+        .or_else(|| event_data(row).and_then(|data| data.get("nonce_scope")))
+        .and_then(Value::as_str)
+}
+
+fn timestamp_micros(value: &Value, explicitly_micros: bool) -> Option<i64> {
+    let value = value
+        .as_i64()
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))?;
+    if explicitly_micros || value.unsigned_abs() >= 100_000_000_000_000 {
+        Some(value)
+    } else {
+        Some(value.saturating_mul(1_000))
+    }
+}
+
+fn receive_timestamp(row: &ExactReplayEvent) -> Option<i64> {
+    [
+        ("receive_timestamp_us", true),
+        ("receive_timestamp", false),
+        ("received_timestamp", false),
+    ]
+    .into_iter()
+    .find_map(|(key, explicitly_micros)| {
+        row.event
+            .extra
+            .get(key)
+            .and_then(|value| timestamp_micros(value, explicitly_micros))
+    })
+}
+
+fn data_number(row: &ExactReplayEvent, key: &str) -> Option<f64> {
+    event_data(row)?.get(key).and_then(|value| {
+        value
+            .as_f64()
+            .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+    })
+}
+
+fn data_string<'a>(row: &'a ExactReplayEvent, key: &str) -> Option<&'a str> {
+    event_data(row)?.get(key)?.as_str()
+}
+
+fn parse_level(value: &Value) -> Option<(f64, f64)> {
+    let parse_number = |value: &Value| {
+        value
+            .as_f64()
+            .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+    };
+    if let Some(values) = value.as_array() {
+        return Some((
+            parse_number(values.first()?)?,
+            parse_number(values.get(1)?)?,
+        ));
+    }
+    let object = value.as_object()?;
+    let quantity = object
+        .get("quantity")
+        .or_else(|| object.get("size"))
+        .or_else(|| object.get("amount"))?;
+    Some((parse_number(object.get("price")?)?, parse_number(quantity)?))
+}
+
+fn event_levels(row: &ExactReplayEvent, side: &str) -> Option<Vec<(f64, f64)>> {
+    let values = event_data(row)
+        .and_then(|data| data.get(side))
+        .or_else(|| row.event.extra.get(side))?
+        .as_array()?;
+    values.iter().map(parse_level).collect()
+}
+
+type LevelListBuilder = ListBuilder<StructBuilder>;
+
+fn level_list_builder() -> LevelListBuilder {
+    let fields = level_fields();
+    let values = StructBuilder::new(
+        fields.clone(),
+        vec![
+            Box::new(Float64Builder::new()),
+            Box::new(Float64Builder::new()),
+        ],
+    );
+    let item = Arc::new(Field::new("item", DataType::Struct(fields), false));
+    ListBuilder::new(values).with_field(item)
+}
+
+fn append_levels(builder: &mut LevelListBuilder, row: &ExactReplayEvent, side: &str) {
+    let Some(levels) = event_levels(row, side) else {
+        builder.append(false);
+        return;
+    };
+    for (price, quantity) in levels {
+        let values = builder.values();
+        values
+            .field_builder::<Float64Builder>(0)
+            .expect("price builder")
+            .append_value(price);
+        values
+            .field_builder::<Float64Builder>(1)
+            .expect("quantity builder")
+            .append_value(quantity);
+        values.append(true);
+    }
+    builder.append(true);
+}
+
 fn extension_array<T>(
     rows: &[T],
     field: &ExtensionField,
@@ -465,6 +675,127 @@ fn optional_typed_value<T>(
         None | Some(Value::Null) => Some(None),
         Some(value) => parse(value).map(Some),
     }
+}
+
+struct EventBatchBuilder {
+    timestamp: TimestampMicrosecondBuilder,
+    receive_timestamp: TimestampMicrosecondBuilder,
+    sequence: UInt64Builder,
+    sequence_scope: StringDictionaryBuilder<Int32Type>,
+    replay_ordinal: UInt64Builder,
+    source_file_ordinal: UInt32Builder,
+    source_row_ordinal: UInt64Builder,
+    source: StringDictionaryBuilder<Int32Type>,
+    market: StringDictionaryBuilder<Int32Type>,
+    event_type: StringDictionaryBuilder<Int32Type>,
+    trade_price: Float64Builder,
+    trade_quantity: Float64Builder,
+    trade_side: StringDictionaryBuilder<Int32Type>,
+    bids: LevelListBuilder,
+    asks: LevelListBuilder,
+    point_series: StringDictionaryBuilder<Int32Type>,
+    point_value: Float64Builder,
+    event_json: LargeStringBuilder,
+    rows: usize,
+}
+
+impl EventBatchBuilder {
+    fn new(capacity: usize) -> Self {
+        Self {
+            timestamp: TimestampMicrosecondBuilder::with_capacity(capacity),
+            receive_timestamp: TimestampMicrosecondBuilder::with_capacity(capacity),
+            sequence: UInt64Builder::with_capacity(capacity),
+            sequence_scope: StringDictionaryBuilder::new(),
+            replay_ordinal: UInt64Builder::with_capacity(capacity),
+            source_file_ordinal: UInt32Builder::with_capacity(capacity),
+            source_row_ordinal: UInt64Builder::with_capacity(capacity),
+            source: StringDictionaryBuilder::new(),
+            market: StringDictionaryBuilder::new(),
+            event_type: StringDictionaryBuilder::new(),
+            trade_price: Float64Builder::with_capacity(capacity),
+            trade_quantity: Float64Builder::with_capacity(capacity),
+            trade_side: StringDictionaryBuilder::new(),
+            bids: level_list_builder(),
+            asks: level_list_builder(),
+            point_series: StringDictionaryBuilder::new(),
+            point_value: Float64Builder::with_capacity(capacity),
+            event_json: LargeStringBuilder::with_capacity(capacity, capacity * 128),
+            rows: 0,
+        }
+    }
+
+    fn append(&mut self, row: ExactReplayEvent, source: &str, market: &str) {
+        self.timestamp.append_value(row.timestamp_us);
+        self.receive_timestamp
+            .append_option(receive_timestamp(&row));
+        self.sequence.append_option(sequence(&row));
+        self.sequence_scope.append_option(sequence_scope(&row));
+        self.replay_ordinal.append_value(row.replay_ordinal);
+        self.source_file_ordinal
+            .append_value(row.source_file_ordinal);
+        self.source_row_ordinal.append_value(row.source_row_ordinal);
+        self.source
+            .append_value(identity(&row.event.source, source));
+        self.market
+            .append_value(identity(&row.event.market, market));
+        self.event_type.append_value(&row.event.event_type);
+        let is_trade = row.event.event_type == "trade";
+        self.trade_price
+            .append_option(is_trade.then(|| data_number(&row, "price")).flatten());
+        self.trade_quantity
+            .append_option(is_trade.then(|| data_number(&row, "quantity")).flatten());
+        self.trade_side
+            .append_option(is_trade.then(|| data_string(&row, "side")).flatten());
+        append_levels(&mut self.bids, &row, "bids");
+        append_levels(&mut self.asks, &row, "asks");
+        self.point_series.append_option(data_string(&row, "series"));
+        self.point_value.append_option(data_number(&row, "value"));
+        self.event_json.append_value(row.event_json);
+        self.rows += 1;
+    }
+
+    fn finish(mut self, schema: SchemaRef) -> Result<RecordBatch, PolarisError> {
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(self.timestamp.finish().with_timezone(UTC)),
+            Arc::new(self.receive_timestamp.finish().with_timezone(UTC)),
+            Arc::new(self.sequence.finish()),
+            Arc::new(self.sequence_scope.finish()),
+            Arc::new(self.replay_ordinal.finish()),
+            Arc::new(self.source_file_ordinal.finish()),
+            Arc::new(self.source_row_ordinal.finish()),
+            Arc::new(self.source.finish()),
+            Arc::new(self.market.finish()),
+            Arc::new(self.event_type.finish()),
+            Arc::new(self.trade_price.finish()),
+            Arc::new(self.trade_quantity.finish()),
+            Arc::new(self.trade_side.finish()),
+            Arc::new(self.bids.finish()),
+            Arc::new(self.asks.finish()),
+            Arc::new(self.point_series.finish()),
+            Arc::new(self.point_value.finish()),
+            Arc::new(self.event_json.finish()),
+        ];
+        RecordBatch::try_new(schema, columns)
+            .map_err(|error| PolarisError::Decode(error.to_string()))
+    }
+}
+
+fn take_event_batch(
+    iterator: &mut ExactReplayIterator,
+    batch_size: usize,
+    schema: SchemaRef,
+    source: &str,
+    market: &str,
+) -> Result<Option<Result<RecordBatch, PolarisError>>, PolarisError> {
+    let mut builder = EventBatchBuilder::new(batch_size);
+    while builder.rows < batch_size {
+        match iterator.next() {
+            Some(Ok(row)) => builder.append(row, source, market),
+            Some(Err(error)) => return Err(error),
+            None => break,
+        }
+    }
+    Ok((builder.rows > 0).then(|| builder.finish(schema)))
 }
 
 fn build_trade_batch(

@@ -113,6 +113,8 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("timeout", keyword_only, None),
         ("parallel", keyword_only, False),
         ("materialize_orderbooks", keyword_only, True),
+        ("output", keyword_only, "iterator"),
+        ("batch_size", keyword_only, 65_536),
     ]
     assert _parameters(PolarisClient.stream) == [
         ("self", positional, required),
@@ -122,17 +124,26 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("materialize_orderbooks", keyword_only, True),
     ]
 
-    event_methods = [PolarisClient.events, PolarisClient.l2_snapshots]
-    for method in event_methods:
-        assert _parameters(method) == [
-            ("self", positional, required),
-            ("source", keyword_only, required),
-            ("market", keyword_only, required),
-            ("from_", keyword_only, None),
-            ("to", keyword_only, None),
-            ("allow_gaps", keyword_only, False),
-            ("materialize_orderbooks", keyword_only, True),
-        ]
+    assert _parameters(PolarisClient.events) == [
+        ("self", positional, required),
+        ("source", keyword_only, required),
+        ("market", keyword_only, required),
+        ("from_", keyword_only, None),
+        ("to", keyword_only, None),
+        ("allow_gaps", keyword_only, False),
+        ("materialize_orderbooks", keyword_only, True),
+        ("output", keyword_only, "iterator"),
+        ("batch_size", keyword_only, 65_536),
+    ]
+    assert _parameters(PolarisClient.l2_snapshots) == [
+        ("self", positional, required),
+        ("source", keyword_only, required),
+        ("market", keyword_only, required),
+        ("from_", keyword_only, None),
+        ("to", keyword_only, None),
+        ("allow_gaps", keyword_only, False),
+        ("materialize_orderbooks", keyword_only, True),
+    ]
 
     assert _parameters(PolarisClient.l2_updates) == [
         ("self", positional, required),
@@ -168,6 +179,7 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("to", keyword_only, None),
         ("interval", keyword_only, None),
         ("allow_gaps", keyword_only, False),
+        ("changes_only", keyword_only, False),
         ("output", keyword_only, "iterator"),
         ("batch_size", keyword_only, 65_536),
     ]
@@ -244,18 +256,17 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
         inspect.signature(PolarisClient.list_snapshots).return_annotation
         == "list[SnapshotEntry]"
     )
-    assert (
-        inspect.signature(PolarisClient.replay).return_annotation
-        == "Iterator[JSONDict]"
+    assert inspect.signature(PolarisClient.replay).return_annotation == (
+        "Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
     )
     for method in [
-        PolarisClient.events,
         PolarisClient.l2_snapshots,
         PolarisClient.l2_updates,
     ]:
         assert inspect.signature(method).return_annotation == "Iterator[JSONDict]"
     for method in [
         PolarisClient.trades,
+        PolarisClient.events,
         PolarisClient.funding_rates,
         PolarisClient.mark_prices,
         PolarisClient.bbo,

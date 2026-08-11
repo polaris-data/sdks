@@ -198,7 +198,7 @@ Use it to inspect available data, query historical market data, and open realtim
 
 | Method | Returns | Use case |
 | --- | --- | --- |
-| `replay(source=..., market=..., from_=None, to=None, standard=True, allow_gaps=False, parallel=False, materialize_orderbooks=True)` | Iterator of historical events | Backfills, notebooks, and replay-style processing without materializing everything up front |
+| `replay(source=..., market=..., from_=None, to=None, standard=True, allow_gaps=False, parallel=False, materialize_orderbooks=True, output="iterator", batch_size=65536)` | Iterator, exact Arrow batches, or Pandas DataFrame | Backfills and lossless replay-style processing |
 | `stream(source=..., markets=[...], include_buffer=False, materialize_orderbooks=True)` | Closeable iterator of realtime events | Open-ended normalized market data with automatic reconnection |
 | `raw(source=..., market=..., from_=None, to=None, limit=1000)` | List of raw source payloads | Inspect exchange-native payloads and compare raw vs standardized schemas |
 
@@ -206,7 +206,7 @@ Use it to inspect available data, query historical market data, and open realtim
 
 | Method | Returns | Use case |
 | --- | --- | --- |
-| `events(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)` | Iterator of standardized historical events | General-purpose historical analysis without retaining every row |
+| `events(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True, output="iterator", batch_size=65536)` | Iterator, exact Arrow batches, or Pandas DataFrame | General-purpose historical analysis and exact event transport |
 | `trades(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Trade-level analytics, execution studies, and notebook analysis |
 | `l2_snapshots(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)` | Iterator of complete orderbook rows | Order book reconstruction and microstructure analysis |
 | `l2_updates(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of raw orderbook snapshots and deltas | High-throughput application-managed books |
@@ -216,17 +216,33 @@ Use it to inspect available data, query historical market data, and open realtim
 | `volume(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False)` | Bucketed trade volume series | Volume profiling and participation analysis |
 | `vwap(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False)` | Bucketed VWAP series | Execution benchmarking and price smoothing |
 | `volatility(source=..., market=..., from_=None, to=None, interval=..., method="log_returns", allow_gaps=False)` | Bucketed realized volatility series | Risk modeling and intraperiod volatility analysis |
-| `bbo(source=..., market=..., from_=None, to=None, interval=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Spread tracking, quote analytics, and top-of-book monitoring |
+| `bbo(source=..., market=..., from_=None, to=None, interval=None, allow_gaps=False, changes_only=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Spread tracking, quote analytics, and top-of-book monitoring |
 | `depth_metrics(source=..., market=..., from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Liquidity analysis and market impact estimation |
 
 Historical row methods are single-pass iterators. Iterate them directly for bounded memory, or call `list(...)` when you intentionally want an eager result. Setup and coverage errors occur when the method is called; decode errors can occur later while iterating. If you stop early, call the generator's `close()` method to promptly release its native reader. `bbo(interval="1s")` emits the last quote from each non-empty, UTC-aligned interval.
 
-The five typed methods above also accept `output="batches"` for a bounded
+Standardized replay automatically prefetches and decompresses one subsequent
+snapshot file on a bounded background worker while preserving file and row
+order. The legacy `parallel` argument remains accepted for compatibility; raw
+replay still uses its historical 24-hour chunking behavior.
+
+The columnar methods above accept `output="batches"` for a bounded
 iterator of `pyarrow.RecordBatch` objects or `output="dataframe"` for an eager
-Pandas DataFrame. Columnar output flattens typed fields, uses UTC millisecond
+Pandas DataFrame. Typed-series output flattens fields, uses UTC millisecond
 timestamps, and dictionary-encodes source, market, and side. Venue-specific
 trade and point fields appear as sorted `extra.<name>` columns; discovering
 those fields requires one schema pass before batches are emitted.
+
+Exact `events()` and standardized `replay()` batches use UTC microsecond
+timestamps and preserve storage order without timestamp sorting. Every row has
+stable `replay_ordinal`, `source_file_ordinal`, and `source_row_ordinal` fields,
+plus nullable receive timestamp, sequence, and sequence scope fields. Common
+trade, order-book, and point payloads have typed columns. With raw order-book
+updates, `event_json` preserves the complete source event, including unknown
+event types and venue-specific fields; with materialization enabled it contains
+the resulting complete-book event.
+Use `materialize_orderbooks=False` for execution replay so batches contain the
+initial snapshot and every ordered delta.
 
 For parameter details, response shapes, and end-to-end examples, see the
 [Python SDK docs](https://docs.polaris.supply/sdks/python).
@@ -257,6 +273,27 @@ Compare iterator, native RecordBatch, and native DataFrame paths over the
 ```bash
 uv run python benchmarks/columnar.py
 ```
+
+Compare exact dictionary replay with microsecond Arrow batches across trade,
+point, shallow-book, and deep-book fixtures using explicitly page-cache-warm
+samples and recorded hardware metadata with:
+
+```bash
+uv run python benchmarks/exact_events.py --events 788383 --runs 3
+```
+
+Evaluate first-use Arrow IPC construction, disk amplification, and repeated
+memory-mapped scans without enabling a persistent SDK cache with:
+
+```bash
+uv run python benchmarks/replay_cache_prototype.py --events 788383
+```
+
+The standardized IPC cache is deliberately not enabled by the SDK yet. The
+prototype reports cache-build cost, compressed-source versus IPC disk size, and
+warm scan throughput so a persistent format can be chosen against real venue
+datasets. Adoption also requires versioned cache keys, atomic multi-process
+construction, corruption recovery, invalidation, and an eviction policy.
 
 The benchmark runs each mode in a separate process and reports elapsed time,
 throughput, peak and incremental RSS, row count, and a price checksum. It does
@@ -298,6 +335,8 @@ The raw modes used the default million-update scale; materialized L2 used the
 explicit 1,000-update scale shown above.
 The local replay results came from one Apple Silicon macOS release run using
 the synthetic 788,383-event UNI-sized trade fixture.
+The exact-event results are three-run medians from page-cache-warm 200,000-event
+trade, point, shallow-book, and deep-book fixtures on Apple Silicon macOS.
 
 | Benchmark | Path | Scale | Construction | First event | Throughput | Memory result |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
@@ -306,13 +345,17 @@ the synthetic 788,383-event UNI-sized trade fixture.
 | Streaming and memory | Raw L2 updates | 1,000,001 updates | — | — | 1.15M rows/s | 30.8 MiB peak RSS |
 | Streaming and memory | Lazy 3,000-level builder | 1,000,001 updates | — | — | 443k rows/s | 36.3 MiB peak RSS |
 | Streaming and memory | Materialized 3,000-level L2 | 1,001 books | — | — | 646 books/s | 36.9 MiB peak RSS |
-| Local replay | Direct zstd+orjson | 788,383 events | <0.01 ms | 0.09 ms | 2.21M events/s | +0.3 MiB peak RSS |
-| Local replay | SDK `events()` | 788,383 events | 1.07 ms | 0.11 ms | 1.16M events/s | +2.4 MiB peak RSS |
-| Local replay | SDK `replay()` | 788,383 events | 0.70 ms | 0.14 ms | 1.18M events/s | +3.1 MiB peak RSS |
+| Local replay | Direct zstd+orjson | 788,383 events | <0.01 ms | 0.08 ms | 2.33M events/s | +0.4 MiB peak RSS |
+| Local replay | SDK `events()` | 788,383 events | 0.71 ms | 0.07 ms | 1.20M events/s | +2.5 MiB peak RSS |
+| Local replay | SDK `replay()` | 788,383 events | 0.72 ms | 0.10 ms | 1.20M events/s | +3.1 MiB peak RSS |
+| Exact events | Python dictionary iterator | 200,000 events per fixture | — | — | 722k–824k events/s | +3.1–4.6 MiB peak RSS |
+| Exact events | Arrow batches | 200,000 events per fixture | — | — | 976k–1.13M events/s | +50.7–56.2 MiB peak RSS |
 
-In this run, `events()` was 1.91× the direct decoder time while exceeding the
-500,000 events/s target by more than 2×. Construction and first-event latency
-were reported separately; together they remained under 1.2 ms for `events()`.
+In these runs, `events()` was 1.94× the direct decoder time while exceeding the
+500,000 events/s target by more than 2×. Exact Arrow batches were 1.35–1.41×
+faster than the per-event Python dictionary iterator across the four fixture
+shapes. Construction and first-event latency were reported separately; together
+they remained under 0.8 ms for `events()`.
 
 ## Local dataset storage
 

@@ -973,6 +973,22 @@ impl PolarisClient {
 
     /// Derive best bid / offer quotes directly from standardized orderbook updates.
     pub async fn bbo(&self, query: BboQuery) -> Result<HistoricalStream<BboQuote>, PolarisError> {
+        self.bbo_inner(query, false).await
+    }
+
+    /// Derive only best bid / offer changes, suppressing deep and no-op updates.
+    pub async fn bbo_changes(
+        &self,
+        query: BboQuery,
+    ) -> Result<HistoricalStream<BboQuote>, PolarisError> {
+        self.bbo_inner(query, true).await
+    }
+
+    async fn bbo_inner(
+        &self,
+        query: BboQuery,
+        changes_only: bool,
+    ) -> Result<HistoricalStream<BboQuote>, PolarisError> {
         let interval_ms = query.interval.map(ohlcv::interval_to_millis);
         let mut records = self
             .replay_records(ReplayQuery {
@@ -987,10 +1003,12 @@ impl PolarisClient {
         Ok(Box::pin(try_stream! {
             let mut orderbooks = OrderbookBuilder::new();
             let mut pending: Option<(i64, BboQuote)> = None;
+            let mut last_quote: Option<BboQuote> = None;
             while let Some(record) = records.next().await {
                 let event = match record? {
                     replay::ReplayRecord::Reset => {
                         orderbooks.clear();
+                        last_quote = None;
                         continue;
                     }
                     replay::ReplayRecord::Event(event) => event,
@@ -1005,6 +1023,18 @@ impl PolarisClient {
                 ) else {
                     continue;
                 };
+                if changes_only {
+                    let unchanged = last_quote.as_ref().is_some_and(|previous| {
+                        previous.bid_price == quote.bid_price
+                            && previous.bid_quantity == quote.bid_quantity
+                            && previous.ask_price == quote.ask_price
+                            && previous.ask_quantity == quote.ask_quantity
+                    });
+                    if unchanged {
+                        continue;
+                    }
+                    last_quote = Some(quote.clone());
+                }
                 let Some(width) = interval_ms else {
                     yield quote;
                     continue;

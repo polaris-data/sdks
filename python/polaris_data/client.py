@@ -402,6 +402,7 @@ class PolarisClient:
             for row in rows
         ]
 
+    @overload
     def replay(
         self,
         *,
@@ -415,8 +416,64 @@ class PolarisClient:
         timeout: float | None = None,
         parallel: bool | int = False,
         materialize_orderbooks: bool = True,
-    ) -> Iterator[JSONDict]:
+        output: Literal["iterator"] = "iterator",
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> Iterator[JSONDict]: ...
+
+    @overload
+    def replay(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        standard: Literal[True] = True,
+        allow_gaps: bool = False,
+        chunk_size: int | None = None,
+        timeout: float | None = None,
+        parallel: bool | int = False,
+        materialize_orderbooks: bool = True,
+        output: Literal["batches"],
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> Iterator[pyarrow.RecordBatch]: ...
+
+    @overload
+    def replay(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        standard: Literal[True] = True,
+        allow_gaps: bool = False,
+        chunk_size: int | None = None,
+        timeout: float | None = None,
+        parallel: bool | int = False,
+        materialize_orderbooks: bool = True,
+        output: Literal["dataframe"],
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> pandas.DataFrame: ...
+
+    def replay(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        standard: bool = True,
+        allow_gaps: bool = False,
+        chunk_size: int | None = None,
+        timeout: float | None = None,
+        parallel: bool | int = False,
+        materialize_orderbooks: bool = True,
+        output: OutputFormat = "iterator",
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
         del timeout
+        self._validate_columnar_output(output, batch_size)
         effective_chunk_size = (
             chunk_size if chunk_size is not None else DEFAULT_NETWORK_CHUNK_SIZE
         )
@@ -427,27 +484,35 @@ class PolarisClient:
         if parallel and (from_text is None or to_text is None):
             raise ValueError("from_ and to are required when parallel=True")
 
+        if output != "iterator":
+            if not standard:
+                raise ValueError("columnar output is only available for standardized replay")
+            extra = "dataframe" if output == "dataframe" else "arrow"
+            pyarrow_module = self._require_optional_module("pyarrow", extra)
+            if output == "dataframe":
+                self._require_optional_module("pandas", "dataframe")
+            iterator = self._call(
+                "events_columnar",
+                source,
+                market,
+                from_text,
+                to_text,
+                allow_gaps,
+                materialize_orderbooks,
+                batch_size,
+            )
+            return self._columnar_result(iterator, "replay", output, pyarrow_module)
+
         if standard:
-            if parallel:
-                iterator = self._call(
-                    "replay_chunked",
-                    source,
-                    market,
-                    from_text,
-                    to_text,
-                    allow_gaps,
-                    materialize_orderbooks,
-                )
-            else:
-                iterator = self._call(
-                    "replay",
-                    source,
-                    market,
-                    from_text,
-                    to_text,
-                    allow_gaps,
-                    materialize_orderbooks,
-                )
+            iterator = self._call(
+                "replay",
+                source,
+                market,
+                from_text,
+                to_text,
+                allow_gaps,
+                materialize_orderbooks,
+            )
         elif from_text is not None and to_text is not None:
             method = "raw_replay_chunked" if parallel else "raw_replay_cached"
             iterator = self._call(
@@ -466,6 +531,7 @@ class PolarisClient:
             )
         return self._iterate(iterator, "replay")
 
+    @overload
     def events(
         self,
         *,
@@ -475,7 +541,67 @@ class PolarisClient:
         to: TimeInput | None = None,
         allow_gaps: bool = False,
         materialize_orderbooks: bool = True,
-    ) -> Iterator[JSONDict]:
+        output: Literal["iterator"] = "iterator",
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> Iterator[JSONDict]: ...
+
+    @overload
+    def events(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        allow_gaps: bool = False,
+        materialize_orderbooks: bool = True,
+        output: Literal["batches"],
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> Iterator[pyarrow.RecordBatch]: ...
+
+    @overload
+    def events(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        allow_gaps: bool = False,
+        materialize_orderbooks: bool = True,
+        output: Literal["dataframe"],
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> pandas.DataFrame: ...
+
+    def events(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        allow_gaps: bool = False,
+        materialize_orderbooks: bool = True,
+        output: OutputFormat = "iterator",
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
+        self._validate_columnar_output(output, batch_size)
+        if output != "iterator":
+            extra = "dataframe" if output == "dataframe" else "arrow"
+            pyarrow_module = self._require_optional_module("pyarrow", extra)
+            if output == "dataframe":
+                self._require_optional_module("pandas", "dataframe")
+            iterator = self._call(
+                "events_columnar",
+                source,
+                market,
+                self._time(from_),
+                self._time(to),
+                allow_gaps,
+                materialize_orderbooks,
+                batch_size,
+            )
+            return self._columnar_result(iterator, "events", output, pyarrow_module)
         iterator = self._call(
             "events",
             source,
@@ -761,6 +887,7 @@ class PolarisClient:
         to: TimeInput | None = None,
         interval: str | None = None,
         allow_gaps: bool = False,
+        changes_only: bool = False,
         output: Literal["iterator"] = "iterator",
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> Iterator[JSONDict]: ...
@@ -775,6 +902,7 @@ class PolarisClient:
         to: TimeInput | None = None,
         interval: str | None = None,
         allow_gaps: bool = False,
+        changes_only: bool = False,
         output: Literal["batches"],
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> Iterator[pyarrow.RecordBatch]: ...
@@ -789,6 +917,7 @@ class PolarisClient:
         to: TimeInput | None = None,
         interval: str | None = None,
         allow_gaps: bool = False,
+        changes_only: bool = False,
         output: Literal["dataframe"],
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> pandas.DataFrame: ...
@@ -802,6 +931,7 @@ class PolarisClient:
         to: TimeInput | None = None,
         interval: str | None = None,
         allow_gaps: bool = False,
+        changes_only: bool = False,
         output: OutputFormat = "iterator",
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
@@ -819,6 +949,7 @@ class PolarisClient:
                 self._time(to),
                 interval,
                 allow_gaps,
+                changes_only,
                 batch_size,
             )
             return self._columnar_result(iterator, "bbo", output, pyarrow_module)
@@ -830,6 +961,7 @@ class PolarisClient:
             self._time(to),
             interval,
             allow_gaps,
+            changes_only,
         )
         return self._iterate(iterator, "bbo")
 

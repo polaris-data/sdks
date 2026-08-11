@@ -45,6 +45,12 @@ def write_fixture(root: Path, depth: int, deltas: int) -> Path:
             + "\n"
         )
         for index in range(1, deltas + 1):
+            if index % 3 == 0:
+                price = 99_999.0
+                quantity = 1.0 + index % 7
+            else:
+                price = 100_000.0
+                quantity = 2.0 + (index // 3) % 10
             output.write(
                 json.dumps(
                     {
@@ -52,7 +58,7 @@ def write_fixture(root: Path, depth: int, deltas: int) -> Path:
                         "source": SOURCE,
                         "market": MARKET,
                         "type": "orderbook_delta",
-                        "data": {"bids": [[100_000.0, 1.0 + index % 10]]},
+                        "data": {"bids": [[price, quantity]]},
                     },
                     separators=(",", ":"),
                 )
@@ -86,12 +92,13 @@ def run_worker(root: Path, mode: str, deltas: int) -> None:
                     to=to_us,
                     materialize_orderbooks=False,
                 )
-            elif mode == "bbo":
+            elif mode in {"bbo", "bbo_changes"}:
                 rows = client.bbo(
                     source=SOURCE,
                     market=MARKET,
                     from_=from_us,
                     to=to_us,
+                    changes_only=mode == "bbo_changes",
                 )
             elif mode == "l2_updates":
                 rows = client.l2_updates(
@@ -116,8 +123,10 @@ def run_worker(root: Path, mode: str, deltas: int) -> None:
                 "mode": mode,
                 "deltas": deltas,
                 "rows": count,
+                "input_events": deltas + 1,
                 "seconds": elapsed,
                 "rows_per_second": count / elapsed,
+                "input_events_per_second": (deltas + 1) / elapsed,
                 "peak_rss_bytes": peak_rss_bytes(),
             }
         )
@@ -176,7 +185,7 @@ def parse_minimum_throughput(values: list[str]) -> dict[str, float]:
             raise argparse.ArgumentTypeError(
                 f"expected MODE=ROWS_PER_SECOND, got {value!r}"
             ) from error
-        if mode not in {"events", "bbo", "l2_updates", "l2_builder", "l2"}:
+        if mode not in {"events", "bbo", "bbo_changes", "l2_updates", "l2_builder", "l2"}:
             raise argparse.ArgumentTypeError(f"unknown benchmark mode {mode!r}")
         if rate <= 0:
             raise argparse.ArgumentTypeError("minimum throughput must be positive")
@@ -211,14 +220,14 @@ def main() -> int:
     parser.add_argument(
         "--modes",
         nargs="+",
-        choices=["events", "bbo", "l2_updates", "l2_builder", "l2"],
-        default=["events", "bbo", "l2_updates", "l2_builder"],
+        choices=["events", "bbo", "bbo_changes", "l2_updates", "l2_builder", "l2"],
+        default=["events", "bbo", "bbo_changes", "l2_updates", "l2_builder"],
     )
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--root", type=Path, help=argparse.SUPPRESS)
     parser.add_argument(
         "--mode",
-        choices=["events", "bbo", "l2_updates", "l2_builder", "l2"],
+        choices=["events", "bbo", "bbo_changes", "l2_updates", "l2_builder", "l2"],
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--deltas", type=int, help=argparse.SUPPRESS)

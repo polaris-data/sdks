@@ -25,3 +25,5 @@ pub use models::{
     VolatilityBar, VolumeBar, VwapBar,
 };
 pub use orderbook::OrderbookBuilder;
+#[doc(hidden)]
+pub use replay::ExactReplayEvent;
