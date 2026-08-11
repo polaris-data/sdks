@@ -113,6 +113,172 @@ def test_trade_batches_are_typed_bounded_and_preserve_dynamic_fields(tmp_path) -
     assert table.column("extra.nested").to_pylist() == [None, None, '{"a":1,"b":2}']
 
 
+def test_exact_event_batches_preserve_precision_order_and_unknown_payloads(tmp_path) -> None:
+    exact_timestamp = START_MS * 1_000 + 123
+    rows = [
+        {
+            "timestamp": exact_timestamp,
+            "type": "trade",
+            "sequence": "7",
+            "sequence_scope": "book-channel-1",
+            "receive_timestamp_us": exact_timestamp + 10,
+            "data": {"price": 100, "quantity": 2, "side": "buy"},
+        },
+        {
+            "timestamp": exact_timestamp,
+            "type": "orderbook_delta",
+            "data": {"bids": [[99.5, 3]], "asks": []},
+        },
+        {
+            "timestamp": exact_timestamp + 1,
+            "type": "venue_specific",
+            "data": {"nested": {"untouched": [1, 2, 3]}},
+            "opaque": {"also": "preserved"},
+        },
+    ]
+    _write_fixture(tmp_path, rows)
+
+    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
+        event_batches = list(
+            _query(
+                client,
+                "events",
+                output="batches",
+                batch_size=2,
+                materialize_orderbooks=False,
+            )
+        )
+        replay_batches = list(
+            client.replay(
+                source=SOURCE,
+                market=MARKET,
+                from_=START_MS * 1_000,
+                to=(START_MS + 10) * 1_000,
+                output="batches",
+                batch_size=1,
+                materialize_orderbooks=False,
+            )
+        )
+
+    assert [batch.num_rows for batch in event_batches] == [2, 1]
+    table = pa.Table.from_batches(event_batches)
+    replay_table = pa.Table.from_batches(replay_batches)
+    assert table.combine_chunks().equals(replay_table.combine_chunks())
+    assert table.schema.field("timestamp").type == pa.timestamp("us", tz="UTC")
+    assert table.column("timestamp").cast(pa.int64()).to_pylist() == [
+        exact_timestamp,
+        exact_timestamp,
+        exact_timestamp + 1,
+    ]
+    assert table.column("receive_timestamp").cast(pa.int64()).to_pylist() == [
+        exact_timestamp + 10,
+        None,
+        None,
+    ]
+    assert table.column("sequence").to_pylist() == [7, None, None]
+    assert table.column("sequence_scope").to_pylist() == [
+        "book-channel-1",
+        None,
+        None,
+    ]
+    assert table.column("replay_ordinal").to_pylist() == [0, 1, 2]
+    assert table.column("source_file_ordinal").to_pylist() == [0, 0, 0]
+    assert table.column("source_row_ordinal").to_pylist() == [0, 1, 2]
+    assert table.column("trade_price").to_pylist() == [100.0, None, None]
+    assert table.column("bids").to_pylist() == [
+        None,
+        [{"price": 99.5, "quantity": 3.0}],
+        None,
+    ]
+    assert [json.loads(value) for value in table.column("event_json").to_pylist()] == rows
+
+
+def test_raw_replay_rejects_columnar_output() -> None:
+    with PolarisClient(base_url="http://127.0.0.1:1") as client:
+        with pytest.raises(ValueError, match="standardized replay"):
+            client.replay(
+                source=SOURCE,
+                market=MARKET,
+                standard=False,
+                output="batches",
+            )
+
+
+def test_event_batch_boundaries_do_not_reset_materialized_books(tmp_path) -> None:
+    _write_fixture(
+        tmp_path,
+        [
+            {
+                "timestamp": START_MS * 1_000,
+                "type": "orderbook",
+                "data": {"bids": [[100, 1]], "asks": [[101, 2]]},
+            },
+            {
+                "timestamp": START_MS * 1_000 + 1,
+                "type": "orderbook_delta",
+                "data": {"bids": [[100, 3]]},
+            },
+            {
+                "timestamp": START_MS * 1_000 + 2,
+                "type": "orderbook_delta",
+                "data": {"asks": [[101, 0], [100.5, 4]]},
+            },
+        ],
+    )
+
+    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
+        batches = list(
+            _query(
+                client,
+                "events",
+                output="batches",
+                batch_size=1,
+                materialize_orderbooks=True,
+            )
+        )
+
+    assert [batch.num_rows for batch in batches] == [1, 1, 1]
+    table = pa.Table.from_batches(batches)
+    assert table.column("replay_ordinal").to_pylist() == [0, 1, 2]
+    assert table.column("bids").to_pylist()[-1] == [
+        {"price": 100.0, "quantity": 3.0}
+    ]
+    assert table.column("asks").to_pylist()[-1] == [
+        {"price": 100.5, "quantity": 4.0}
+    ]
+    last_event = json.loads(table.column("event_json")[-1].as_py())
+    assert last_event["timestamp"] == START_MS * 1_000 + 2
+    assert last_event["type"] == "orderbook"
+
+
+def test_exact_event_dataframe_keeps_microsecond_timestamp(tmp_path) -> None:
+    exact_timestamp = START_MS * 1_000 + 321
+    _write_fixture(
+        tmp_path,
+        [
+            {
+                "timestamp": exact_timestamp,
+                "type": "venue_specific",
+                "data": {"value": "preserved"},
+            }
+        ],
+    )
+
+    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
+        frame = _query(
+            client,
+            "events",
+            output="dataframe",
+            materialize_orderbooks=False,
+        )
+
+    assert str(frame.dtypes["timestamp"]) == "datetime64[us, UTC]"
+    assert int(frame.iloc[0]["timestamp"].value // 1_000) == exact_timestamp
+    assert json.loads(frame.iloc[0]["event_json"])["data"] == {
+        "value": "preserved"
+    }
+
+
 def test_trade_dataframe_has_notebook_ready_dtypes(tmp_path) -> None:
     _write_fixture(
         tmp_path,

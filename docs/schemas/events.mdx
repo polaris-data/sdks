@@ -14,7 +14,7 @@ Use `client.events()` when you want more than just trade executions. This method
 ## Method signature
 
 ```python
-events(source, market, from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)
+events(source, market, from_=None, to=None, allow_gaps=False, materialize_orderbooks=True, output="iterator", batch_size=65536)
 ```
 
 ## Parameters
@@ -27,12 +27,28 @@ events(source, market, from_=None, to=None, allow_gaps=False, materialize_orderb
 | to | str/datetime/date/int | No | Exclusive end time (same formats as from_) |
 | allow_gaps | bool | No | Return covered rows and warn instead of failing on coverage gaps |
 | materialize_orderbooks | bool | No | Reconstruct complete books from deltas (default: true) |
+| output | str | No | `iterator`, `batches`, or `dataframe` |
+| batch_size | int | No | Maximum rows per Arrow batch; must be positive |
 
 **Note:** API key required for historical ranges. Set `POLARIS_API_KEY` environment variable or pass `api_key` to `PolarisClient()`.
 
 ## Return value
 
-A single-pass iterator of mixed normalized event records. Use `list(...)` only when you intentionally need an eager result.
+A single-pass iterator of mixed normalized event records, bounded exact
+`pyarrow.RecordBatch` objects, or an eager Pandas DataFrame. Use `list(...)`
+only when you intentionally need an eager result.
+
+Exact batches preserve source-file order and use `timestamp[us, tz=UTC]`.
+`replay_ordinal` is the stable position in the decoded replay;
+`source_file_ordinal` and `source_row_ordinal` identify its stored origin.
+`receive_timestamp`, `sequence`, and `sequence_scope` are nullable because not
+every venue provides them. Typed columns cover common trade, order-book, and
+point fields. With `materialize_orderbooks=False`, `event_json` retains the
+complete source event and every unknown payload; with materialization enabled,
+it contains the resulting complete-book event.
+Sequence values are only comparable within their declared scope and may reset;
+neither timestamps nor sequences are used to reorder stored events.
+Batch size never changes ordering or resets order-book state.
 
 ## Common event types
 

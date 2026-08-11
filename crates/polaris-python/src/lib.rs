@@ -400,6 +400,35 @@ impl NativeClient {
         )))
     }
 
+    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, materialize_orderbooks=true, batch_size=65_536))]
+    fn events_columnar(
+        &self,
+        py: Python<'_>,
+        source: String,
+        market: String,
+        from_: Option<String>,
+        to: Option<String>,
+        allow_gaps: bool,
+        materialize_orderbooks: bool,
+        batch_size: usize,
+    ) -> PyResult<NativeColumnar> {
+        validate_batch_size(batch_size)?;
+        let identity_source = source.clone();
+        let identity_market = market.clone();
+        py.detach(|| {
+            let mut query = historical_query(source, market, from_, to, allow_gaps);
+            query.materialize_orderbooks = materialize_orderbooks;
+            let plan = self.inner.prepare_historical(query)?;
+            Ok(NativeColumnar::events(
+                plan,
+                identity_source,
+                identity_market,
+                batch_size,
+            ))
+        })
+        .map_err(native_error)
+    }
+
     #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
     fn trades<'py>(
         &self,
@@ -697,7 +726,7 @@ impl NativeClient {
         )))
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, interval=None, allow_gaps=false))]
+    #[pyo3(signature = (source, market, from_=None, to=None, interval=None, allow_gaps=false, changes_only=false))]
     fn bbo<'py>(
         &self,
         py: Python<'py>,
@@ -707,18 +736,24 @@ impl NativeClient {
         to: Option<String>,
         interval: Option<&str>,
         allow_gaps: bool,
+        changes_only: bool,
     ) -> PyResult<NativeHistorical> {
         let interval = interval.map(parse_interval).transpose()?;
         let iterator = py
             .detach(|| {
-                self.inner.bbo(BboQuery {
+                let query = BboQuery {
                     source,
                     market,
                     from: time_input(from_),
                     to: time_input(to),
                     allow_gaps,
                     interval,
-                })
+                };
+                if changes_only {
+                    self.inner.bbo_changes(query)
+                } else {
+                    self.inner.bbo(query)
+                }
             })
             .map_err(native_error)?;
         Ok(NativeHistorical::new(NativeHistoricalIterator::Bbo(
@@ -726,7 +761,7 @@ impl NativeClient {
         )))
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, interval=None, allow_gaps=false, batch_size=65_536))]
+    #[pyo3(signature = (source, market, from_=None, to=None, interval=None, allow_gaps=false, changes_only=false, batch_size=65_536))]
     fn bbo_columnar(
         &self,
         py: Python<'_>,
@@ -736,6 +771,7 @@ impl NativeClient {
         to: Option<String>,
         interval: Option<&str>,
         allow_gaps: bool,
+        changes_only: bool,
         batch_size: usize,
     ) -> PyResult<NativeColumnar> {
         validate_batch_size(batch_size)?;
@@ -744,14 +780,19 @@ impl NativeClient {
         let identity_market = market.clone();
         let iterator = py
             .detach(|| {
-                self.inner.bbo(BboQuery {
+                let query = BboQuery {
                     source,
                     market,
                     from: time_input(from_),
                     to: time_input(to),
                     allow_gaps,
                     interval: parsed_interval,
-                })
+                };
+                if changes_only {
+                    self.inner.bbo_changes(query)
+                } else {
+                    self.inner.bbo(query)
+                }
             })
             .map_err(native_error)?;
         Ok(NativeColumnar::bbo(

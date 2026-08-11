@@ -21,7 +21,8 @@ use crate::{
     ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OrderbookEvent, PointSeriesData, PointSeriesEvent,
     PolarisError, RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery,
     SnapshotEntry, StandardEvent, StreamQuery, TimeInput, TradeData, TradeEvent, VolatilityBar,
-    VolumeBar, VwapBar, replay::LocalReplayIterator,
+    VolumeBar, VwapBar,
+    replay::{LocalExactReplayIterator, LocalReplayIterator},
 };
 
 const DEFAULT_REPLAY_CHUNK_HOURS: i64 = 24;
@@ -337,6 +338,14 @@ impl PolarisClient {
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 
+    pub fn bbo_changes(
+        &self,
+        query: BboQuery,
+    ) -> Result<HistoricalIterator<BboQuote>, PolarisError> {
+        let stream = self.run(self.inner.bbo_changes(query))?;
+        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
+    }
+
     pub fn funding_rates(
         &self,
         query: HistoricalQuery,
@@ -420,6 +429,17 @@ impl PreparedHistoricalReplay {
         ))
     }
 
+    #[doc(hidden)]
+    pub fn exact_events(&self) -> ExactReplayIterator {
+        HistoricalIterator::direct(LocalExactReplayIterator::new(
+            self.prepared.paths.clone(),
+            self.prepared.from_us,
+            self.prepared.to_us,
+            self.prepared.gaps.clone(),
+            self.prepared.materialize_orderbooks,
+        ))
+    }
+
     pub fn trades(&self) -> HistoricalIterator<TradeEvent> {
         let trades = self.events().filter_map(|event| match event {
             Ok(event) if event.event_type != "trade" => None,
@@ -488,6 +508,8 @@ impl<T> HistoricalIterator<T> {
 }
 
 pub type ReplayIterator = HistoricalIterator<StandardEvent>;
+#[doc(hidden)]
+pub type ExactReplayIterator = HistoricalIterator<crate::ExactReplayEvent>;
 
 pub struct RealtimeIterator {
     runtime: Arc<Runtime>,

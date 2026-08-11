@@ -86,8 +86,8 @@ Use `PolarisClient` for discovery, historical replay, and direct query workflows
 | `health()` | JSON object | Confirm API availability |
 | `catalog(source=None, market=None)` | JSON object | Discover sources and exact market IDs |
 | `list_snapshots(source, market, from_, to, limit=1000)` | List of snapshot entries | Find snapshot files for a range |
-| `replay(source, market, from_=None, to=None, standard=True, materialize_orderbooks=True)` | Iterator of rows | Stream historical data for replay or backfills |
-| `events(source, market, from_=None, to=None, materialize_orderbooks=True)` | Iterator of normalized events | Process mixed event types with bounded memory |
+| `replay(source, market, from_=None, to=None, standard=True, materialize_orderbooks=True, output="iterator", batch_size=65536)` | Iterator, exact Arrow batches, or DataFrame | Stream historical data for replay or backfills |
+| `events(source, market, from_=None, to=None, materialize_orderbooks=True, output="iterator", batch_size=65536)` | Iterator, exact Arrow batches, or DataFrame | Process mixed event types with bounded memory |
 | `trades(source, market, from_=None, to=None, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or DataFrame | Analyze executions |
 | `raw(source, market, from_=None, to=None, limit=1000)` | List of raw payloads | Inspect venue-native messages |
 | `ohlcv(source, market, interval, from_=None, to=None, format=None)` | List of bars or TradingView-style JSON | Plot fast market charts |
@@ -98,7 +98,7 @@ Use `PolarisClient` for discovery, historical replay, and direct query workflows
 | `volume(source, market, interval, from_=None, to=None)` | Bucketed trade volume series | Volume profiling and participation analysis |
 | `vwap(source, market, interval, from_=None, to=None)` | Bucketed VWAP series | Execution benchmarking and price smoothing |
 | `volatility(source, market, interval, from_=None, to=None, method="log_returns")` | Bucketed realized volatility series | Risk modeling and intraperiod volatility analysis |
-| `bbo(source, market, from_=None, to=None, interval=None, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or DataFrame | Spread tracking, quote analytics, and top-of-book monitoring |
+| `bbo(source, market, from_=None, to=None, interval=None, changes_only=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or DataFrame | Spread tracking, quote analytics, and top-of-book monitoring |
 | `depth_metrics(source, market, from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or DataFrame | Liquidity analysis and market impact estimation |
 
 Historical row methods return single-pass generators. Iterate directly for bounded memory, or wrap a call in `list(...)` when you need indexing or repeated access. Close a partially consumed generator with `rows.close()`. BBO also accepts `interval="100ms"`, `"1s"`, `"10s"`, `"1m"`, `"5m"`, `"15m"`, or `"1h"` to emit the last quote from each non-empty UTC-aligned bucket.
@@ -141,6 +141,16 @@ BBO and depth metrics have fixed schemas and remain single-pass.
 `from_` and `to` accept ISO 8601 strings, `datetime`, `date`, or Unix epoch microseconds. They are optional on `replay(...)`, `events(...)`, `trades(...)`, `raw(...)`, and `ohlcv(...)`. If you omit either boundary, the SDK fills the request from the most recent available window up to the last 7 days of data, or the public cutoff date for preview datasets.
 
 For historical event queries, `standard=True` is the default on `replay(...)`. Pass `standard=False` when you explicitly want raw schema payloads through replay.
+
+For exact execution replay, request `output="batches"` and
+`materialize_orderbooks=False`. These batches retain every standardized event
+in stored capture order, use microsecond timestamps, and include stable replay,
+file, and row ordinals. Nullable receive timestamp, sequence, and sequence-scope
+columns expose venue ordering metadata when present. Typed trade, order-book,
+and point columns support compiled consumers. With raw order-book updates,
+`event_json` preserves the complete source event and unknown payloads; with
+materialization enabled it contains the resulting complete-book event. Raw
+`standard=False` replay remains iterator-only.
 
 Orderbooks are reconstructed by default across `stream`, `replay`, `events`, and
 `l2_snapshots`. `orderbook` replaces the complete state, `orderbook_delta`
@@ -391,6 +401,8 @@ print(volatility[0])
 ## Query best bid/offer
 
 Use `bbo(...)` for spread tracking, quote analytics, and top-of-book monitoring.
+Set `changes_only=True` when the consumer only needs actual top-of-book changes;
+the default continues to emit after every valid two-sided book update.
 
 ```python
 from datetime import datetime, timedelta, timezone

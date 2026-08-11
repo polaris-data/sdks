@@ -1,8 +1,10 @@
 use std::{
     fs::File,
     io::{BufRead, BufReader},
-    path::{Path, PathBuf},
+    path::PathBuf,
     pin::Pin,
+    sync::mpsc::{Receiver, sync_channel},
+    thread::{self, JoinHandle},
     vec::IntoIter,
 };
 
@@ -18,6 +20,26 @@ use crate::{
 };
 
 const EVENT_CHANNEL_CAPACITY: usize = 16;
+const PREFETCH_CHANNEL_CAPACITY: usize = 256;
+
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExactReplayEvent {
+    pub event: StandardEvent,
+    pub event_json: String,
+    pub timestamp_us: i64,
+    pub replay_ordinal: u64,
+    pub source_file_ordinal: u32,
+    pub source_row_ordinal: u64,
+}
+
+struct DecodedEvent {
+    event: StandardEvent,
+    event_json: Option<String>,
+    timestamp_us: i64,
+    source_file_ordinal: u32,
+    source_row_ordinal: u64,
+}
 
 pub(crate) enum ReplayRecord {
     Event(StandardEvent),
@@ -36,30 +58,34 @@ pub(crate) fn replay_record_stream(
     Box::pin(try_stream! {
         gaps.sort_unstable();
         let mut gaps = gaps.into_iter().peekable();
-        for path in paths {
-            let (sender, mut receiver) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
-            let reader_path = path.clone();
-            let reader = tokio::task::spawn_blocking(move || {
-                read_snapshot_events(&reader_path, from_us, to_us, |event| {
-                    sender.blocking_send(event).is_ok()
-                })
-            });
-
-            while let Some(event) = receiver.recv().await {
-                while gaps
-                    .peek()
-                    .is_some_and(|(_, end_us)| event.timestamp.saturating_mul(1_000) >= *end_us)
+        let (sender, mut receiver) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
+        let reader = tokio::task::spawn_blocking(move || {
+            for decoded in ReplayFileIterator::new(paths, from_us, to_us, false) {
+                let decoded = decoded?;
+                if sender
+                    .blocking_send((decoded.event, decoded.timestamp_us))
+                    .is_err()
                 {
-                    yield ReplayRecord::Reset;
-                    gaps.next();
+                    break;
                 }
-                yield ReplayRecord::Event(event);
             }
+            Ok::<(), PolarisError>(())
+        });
 
-            reader
-                .await
-                .map_err(|err| PolarisError::Request(format!("snapshot reader join failed: {err}")))??;
+        while let Some((event, timestamp_us)) = receiver.recv().await {
+            while gaps
+                .peek()
+                .is_some_and(|(_, end_us)| timestamp_us >= *end_us)
+            {
+                yield ReplayRecord::Reset;
+                gaps.next();
+            }
+            yield ReplayRecord::Event(event);
         }
+
+        reader
+            .await
+            .map_err(|err| PolarisError::Request(format!("snapshot reader join failed: {err}")))??;
     })
 }
 
@@ -85,10 +111,7 @@ pub(crate) fn replay_stream(
 }
 
 pub(crate) struct LocalReplayIterator {
-    paths: IntoIter<PathBuf>,
-    current: Option<SnapshotEventReader>,
-    from_us: i64,
-    to_us: i64,
+    files: ReplayFileIterator,
     gaps: std::iter::Peekable<IntoIter<(i64, i64)>>,
     orderbooks: OrderbookBuilder,
     materialize_orderbooks: bool,
@@ -105,10 +128,7 @@ impl LocalReplayIterator {
     ) -> Self {
         gaps.sort_unstable();
         Self {
-            paths: paths.into_iter(),
-            current: None,
-            from_us,
-            to_us,
+            files: ReplayFileIterator::new(paths, from_us, to_us, false),
             gaps: gaps.into_iter().peekable(),
             orderbooks: OrderbookBuilder::new(),
             materialize_orderbooks,
@@ -118,8 +138,7 @@ impl LocalReplayIterator {
 
     fn fail(&mut self, error: PolarisError) -> Option<Result<StandardEvent, PolarisError>> {
         self.finished = true;
-        self.current = None;
-        self.paths = Vec::new().into_iter();
+        self.files.close();
         Some(Err(error))
     }
 }
@@ -132,43 +151,283 @@ impl Iterator for LocalReplayIterator {
             return None;
         }
         loop {
-            if self.current.is_none() {
-                let Some(path) = self.paths.next() else {
-                    self.finished = true;
-                    return None;
-                };
-                match SnapshotEventReader::open(path, self.from_us, self.to_us) {
-                    Ok(reader) => self.current = Some(reader),
-                    Err(error) => return self.fail(error),
-                }
-            }
-
-            let next = self.current.as_mut().expect("reader initialized").next();
-            let event = match next {
-                Some(Ok(event)) => event,
+            let decoded = match self.files.next() {
+                Some(Ok(decoded)) => decoded,
                 Some(Err(error)) => return self.fail(error),
                 None => {
-                    self.current = None;
-                    continue;
+                    self.finished = true;
+                    return None;
                 }
             };
-            let timestamp_us = event.timestamp.saturating_mul(1_000);
             while self
                 .gaps
                 .peek()
-                .is_some_and(|(_, end_us)| timestamp_us >= *end_us)
+                .is_some_and(|(_, end_us)| decoded.timestamp_us >= *end_us)
             {
                 self.orderbooks.clear();
                 self.gaps.next();
             }
             if self.materialize_orderbooks {
-                match self.orderbooks.apply(event) {
+                match self.orderbooks.apply(decoded.event) {
                     Ok(Some(event)) => return Some(Ok(event)),
                     Ok(None) => continue,
                     Err(error) => return self.fail(error),
                 }
             }
-            return Some(Ok(event));
+            return Some(Ok(decoded.event));
+        }
+    }
+}
+
+#[doc(hidden)]
+pub struct LocalExactReplayIterator {
+    files: ReplayFileIterator,
+    gaps: std::iter::Peekable<IntoIter<(i64, i64)>>,
+    orderbooks: OrderbookBuilder,
+    materialize_orderbooks: bool,
+    replay_ordinal: u64,
+    finished: bool,
+}
+
+impl LocalExactReplayIterator {
+    pub(crate) fn new(
+        paths: Vec<PathBuf>,
+        from_us: i64,
+        to_us: i64,
+        mut gaps: Vec<(i64, i64)>,
+        materialize_orderbooks: bool,
+    ) -> Self {
+        gaps.sort_unstable();
+        Self {
+            files: ReplayFileIterator::new(paths, from_us, to_us, true),
+            gaps: gaps.into_iter().peekable(),
+            orderbooks: OrderbookBuilder::new(),
+            materialize_orderbooks,
+            replay_ordinal: 0,
+            finished: false,
+        }
+    }
+}
+
+impl Iterator for LocalExactReplayIterator {
+    type Item = Result<ExactReplayEvent, PolarisError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        loop {
+            let decoded = match self.files.next() {
+                Some(Ok(decoded)) => decoded,
+                Some(Err(error)) => {
+                    self.finished = true;
+                    self.files.close();
+                    return Some(Err(error));
+                }
+                None => {
+                    self.finished = true;
+                    return None;
+                }
+            };
+            while self
+                .gaps
+                .peek()
+                .is_some_and(|(_, end_us)| decoded.timestamp_us >= *end_us)
+            {
+                self.orderbooks.clear();
+                self.gaps.next();
+            }
+            let replay_ordinal = self.replay_ordinal;
+            self.replay_ordinal = self.replay_ordinal.saturating_add(1);
+            let (event, event_json) = if self.materialize_orderbooks {
+                match self.orderbooks.apply(decoded.event) {
+                    Ok(Some(event)) => {
+                        let mut exact_event = event.clone();
+                        exact_event.timestamp = decoded.timestamp_us;
+                        let event_json = match serde_json::to_string(&exact_event) {
+                            Ok(event_json) => event_json,
+                            Err(error) => {
+                                self.finished = true;
+                                self.files.close();
+                                return Some(Err(PolarisError::Decode(error.to_string())));
+                            }
+                        };
+                        (event, event_json)
+                    }
+                    Ok(None) => continue,
+                    Err(error) => {
+                        self.finished = true;
+                        self.files.close();
+                        return Some(Err(error));
+                    }
+                }
+            } else {
+                (
+                    decoded.event,
+                    decoded
+                        .event_json
+                        .expect("exact replay reader retains source JSON"),
+                )
+            };
+            return Some(Ok(ExactReplayEvent {
+                event,
+                event_json,
+                timestamp_us: decoded.timestamp_us,
+                replay_ordinal,
+                source_file_ordinal: decoded.source_file_ordinal,
+                source_row_ordinal: decoded.source_row_ordinal,
+            }));
+        }
+    }
+}
+
+struct ReplayFileIterator {
+    paths: std::iter::Enumerate<IntoIter<PathBuf>>,
+    current: Option<SnapshotReader>,
+    prefetched: Option<SnapshotReader>,
+    from_us: i64,
+    to_us: i64,
+    capture_json: bool,
+    finished: bool,
+}
+
+impl ReplayFileIterator {
+    fn new(paths: Vec<PathBuf>, from_us: i64, to_us: i64, capture_json: bool) -> Self {
+        Self {
+            paths: paths.into_iter().enumerate(),
+            current: None,
+            prefetched: None,
+            from_us,
+            to_us,
+            capture_json,
+            finished: false,
+        }
+    }
+
+    fn initialize(&mut self) -> Result<bool, PolarisError> {
+        let Some((ordinal, path)) = self.paths.next() else {
+            self.finished = true;
+            return Ok(false);
+        };
+        self.current = Some(SnapshotReader::Direct(SnapshotEventReader::open(
+            path,
+            self.from_us,
+            self.to_us,
+            ordinal as u32,
+            self.capture_json,
+        )?));
+        self.start_prefetch();
+        Ok(true)
+    }
+
+    fn start_prefetch(&mut self) {
+        if self.prefetched.is_none() {
+            if let Some((ordinal, path)) = self.paths.next() {
+                self.prefetched = Some(SnapshotReader::prefetched(
+                    path,
+                    self.from_us,
+                    self.to_us,
+                    ordinal as u32,
+                    self.capture_json,
+                ));
+            }
+        }
+    }
+
+    fn close(&mut self) {
+        self.finished = true;
+        self.current = None;
+        self.prefetched = None;
+        self.paths = Vec::new().into_iter().enumerate();
+    }
+}
+
+impl Iterator for ReplayFileIterator {
+    type Item = Result<DecodedEvent, PolarisError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        if self.current.is_none() {
+            match self.initialize() {
+                Ok(true) => {}
+                Ok(false) => return None,
+                Err(error) => {
+                    self.close();
+                    return Some(Err(error));
+                }
+            }
+        }
+        loop {
+            if let Some(item) = self.current.as_mut().expect("reader initialized").next() {
+                return Some(item);
+            }
+            self.current = self.prefetched.take();
+            if self.current.is_none() {
+                self.finished = true;
+                return None;
+            }
+            self.start_prefetch();
+        }
+    }
+}
+
+enum SnapshotReader {
+    Direct(SnapshotEventReader),
+    Prefetched {
+        receiver: Receiver<Result<DecodedEvent, PolarisError>>,
+        worker: Option<JoinHandle<()>>,
+    },
+}
+
+impl SnapshotReader {
+    fn prefetched(
+        path: PathBuf,
+        from_us: i64,
+        to_us: i64,
+        file_ordinal: u32,
+        capture_json: bool,
+    ) -> Self {
+        let (sender, receiver) = sync_channel(PREFETCH_CHANNEL_CAPACITY);
+        let worker = thread::spawn(move || {
+            match SnapshotEventReader::open(path, from_us, to_us, file_ordinal, capture_json) {
+                Ok(reader) => {
+                    for item in reader {
+                        if sender.send(item).is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(error));
+                }
+            }
+        });
+        Self::Prefetched {
+            receiver,
+            worker: Some(worker),
+        }
+    }
+}
+
+impl Iterator for SnapshotReader {
+    type Item = Result<DecodedEvent, PolarisError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Direct(reader) => reader.next(),
+            Self::Prefetched { receiver, worker } => match receiver.recv() {
+                Ok(item) => Some(item),
+                Err(_) => {
+                    let joined = worker.take().is_none_or(|worker| worker.join().is_ok());
+                    (!joined).then(|| {
+                        Err(PolarisError::Request(
+                            "snapshot prefetch worker panicked".to_owned(),
+                        ))
+                    })
+                }
+            },
         }
     }
 }
@@ -180,11 +439,20 @@ struct SnapshotEventReader {
     buffer: Vec<u8>,
     from_us: i64,
     to_us: i64,
+    source_file_ordinal: u32,
+    next_row_ordinal: u64,
+    capture_json: bool,
     finished: bool,
 }
 
 impl SnapshotEventReader {
-    fn open(path: PathBuf, from_us: i64, to_us: i64) -> Result<Self, PolarisError> {
+    fn open(
+        path: PathBuf,
+        from_us: i64,
+        to_us: i64,
+        source_file_ordinal: u32,
+        capture_json: bool,
+    ) -> Result<Self, PolarisError> {
         let file = File::open(&path)?;
         let compressed = path.extension().and_then(|value| value.to_str()) == Some("zst");
         let reader: Box<dyn BufRead + Send> = if compressed {
@@ -202,6 +470,9 @@ impl SnapshotEventReader {
             buffer: Vec::with_capacity(8 * 1024),
             from_us,
             to_us,
+            source_file_ordinal,
+            next_row_ordinal: 0,
+            capture_json,
             finished: false,
         })
     }
@@ -219,7 +490,7 @@ impl SnapshotEventReader {
 }
 
 impl Iterator for SnapshotEventReader {
-    type Item = Result<StandardEvent, PolarisError>;
+    type Item = Result<DecodedEvent, PolarisError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.finished {
@@ -248,6 +519,8 @@ impl Iterator for SnapshotEventReader {
             if self.buffer.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
+            let source_row_ordinal = self.next_row_ordinal;
+            self.next_row_ordinal = self.next_row_ordinal.saturating_add(1);
             let mut event: StandardEvent = match serde_json::from_slice(&self.buffer) {
                 Ok(event) => event,
                 Err(error) => {
@@ -257,6 +530,20 @@ impl Iterator for SnapshotEventReader {
                         self.path.display()
                     ))));
                 }
+            };
+            let event_json = if self.capture_json {
+                match String::from_utf8(self.buffer.clone()) {
+                    Ok(value) => Some(value),
+                    Err(error) => {
+                        self.finished = true;
+                        return Some(Err(PolarisError::Decode(format!(
+                            "invalid utf-8 in {}: {error}",
+                            self.path.display()
+                        ))));
+                    }
+                }
+            } else {
+                None
             };
             let timestamp_us = if event.timestamp.unsigned_abs() >= 100_000_000_000_000 {
                 let timestamp_us = event.timestamp;
@@ -272,25 +559,15 @@ impl Iterator for SnapshotEventReader {
             if timestamp_us < self.from_us {
                 continue;
             }
-            return Some(Ok(event));
+            return Some(Ok(DecodedEvent {
+                event,
+                event_json,
+                timestamp_us,
+                source_file_ordinal: self.source_file_ordinal,
+                source_row_ordinal,
+            }));
         }
     }
-}
-
-fn read_snapshot_events(
-    path: &Path,
-    from_us: i64,
-    to_us: i64,
-    mut emit: impl FnMut(StandardEvent) -> bool,
-) -> Result<(), PolarisError> {
-    let reader = SnapshotEventReader::open(path.to_path_buf(), from_us, to_us)?;
-    for event in reader {
-        let event = event?;
-        if !emit(event) {
-            break;
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -395,6 +672,67 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].timestamp, 1_704_067_200_000_i64);
         assert_eq!(rows[0].data["price"], 1);
+    }
+
+    #[test]
+    fn exact_reader_preserves_capture_order_precision_and_ordinals_across_files() {
+        let root = TempDir::new().unwrap();
+        let first = root.path().join("first.jsonl");
+        let second = root.path().join("second.jsonl");
+        std::fs::write(
+            &first,
+            format!(
+                "{}\n{}\n",
+                json!({"timestamp":1_704_067_200_000_999_i64,"type":"trade","data":{"price":1}}),
+                json!({"timestamp":1_704_067_200_000_500_i64,"type":"trade","data":{"price":2}}),
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &second,
+            format!(
+                "{}\n",
+                json!({"timestamp":1_704_067_200_001_001_i64,"type":"trade","data":{"price":3}}),
+            ),
+        )
+        .unwrap();
+
+        let rows = LocalExactReplayIterator::new(
+            vec![first, second],
+            1_704_067_200_000_000,
+            1_704_067_200_002_000,
+            vec![],
+            false,
+        )
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+        assert_eq!(
+            rows.iter().map(|row| row.timestamp_us).collect::<Vec<_>>(),
+            vec![
+                1_704_067_200_000_999,
+                1_704_067_200_000_500,
+                1_704_067_200_001_001,
+            ]
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.replay_ordinal)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.source_file_ordinal, row.source_row_ordinal))
+                .collect::<Vec<_>>(),
+            vec![(0, 0), (0, 1), (1, 0)]
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.event.data["price"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
     }
 
     #[tokio::test]

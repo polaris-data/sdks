@@ -122,6 +122,7 @@ Use `PolarisClient` for discovery and snapshot-backed historical queries.
 | `vwap(OhlcvQuery)` | `Vec<VwapBar>` | Bucketed VWAP series for execution benchmarking and price smoothing |
 | `volatility(OhlcvQuery)` | `Vec<VolatilityBar>` | Bucketed realized volatility series for risk modeling and intraperiod volatility analysis |
 | `bbo(BboQuery)` | `HistoricalStream<BboQuote>` | Best bid/offer quotes with optional native interval coalescing |
+| `bbo_changes(BboQuery)` | `HistoricalStream<BboQuote>` | Best bid/offer changes with deep and no-op updates suppressed |
 | `depth_metrics(HistoricalQuery, depth_pct, slippage_notional)` | `HistoricalStream<DepthMetricsRow>` | Derived depth, spread, imbalance, and slippage metrics for liquidity analysis and market impact estimation |
 
 `from` and `to` accept ISO 8601 strings, `chrono::DateTime<Utc>`, or Unix epoch microseconds as `i64` or `u64`. If you omit one or both bounds, the SDK infers a bounded historical range from catalog metadata, using the latest 7 days by default and applying public cutoff rules for preview datasets when no API key is present.
@@ -423,6 +424,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Query best bid/offer
 
 Use `bbo(...)` for spread tracking, quote analytics, and top-of-book monitoring.
+Use `bbo_changes(...)` with the same query when only actual best-price or
+best-quantity changes should be emitted.
 
 ```rust
 use futures_util::StreamExt;

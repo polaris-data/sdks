@@ -1979,7 +1979,7 @@ def test_replay_reads_local_snapshot_day_files_before_network(tmp_path) -> None:
         client.close()
 
 
-def test_replay_parallel_chunks_standard_replay_in_order(tmp_path) -> None:
+def test_replay_parallel_prefetches_standard_files_in_order(tmp_path) -> None:
     client = make_client(
         lambda request: (_ for _ in ()).throw(
             AssertionError("network should not be called when local daily files exist")
@@ -2552,6 +2552,65 @@ def test_bbo_derives_best_prices_and_quantities_from_l2_snapshots(tmp_path) -> N
         ]
     finally:
         client.close()
+
+
+def test_bbo_changes_only_suppresses_deep_and_no_op_updates(tmp_path) -> None:
+    rows = [
+        {
+            "timestamp": _ts("2024-01-01T00:00:00Z"),
+            "type": "orderbook",
+            "data": {"bids": [[100, 1], [99, 2]], "asks": [[101, 1]]},
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:00:01Z"),
+            "type": "orderbook_delta",
+            "data": {"bids": [[99, 3]]},
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:00:02Z"),
+            "type": "orderbook_delta",
+            "data": {"bids": [[100, 4]]},
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:00:03Z"),
+            "type": "orderbook_delta",
+            "data": {"bids": [[100, 4]]},
+        },
+        {
+            "timestamp": _ts("2024-01-01T00:00:04Z"),
+            "type": "orderbook_delta",
+            "data": {"asks": [[101, 0], [100.5, 2]]},
+        },
+    ]
+    path = tmp_path / "daily" / "binance" / "BTC-USDT" / "2024-01-01.jsonl.zst"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(_zstd_ndjson(rows))
+
+    with PolarisClient(dataset_root=tmp_path) as client:
+        all_quotes = list(
+            client.bbo(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T00:00:05Z",
+            )
+        )
+        changed_quotes = list(
+            client.bbo(
+                source="binance",
+                market="BTC-USDT",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T00:00:05Z",
+                changes_only=True,
+            )
+        )
+
+    assert len(all_quotes) == 5
+    assert [quote["timestamp"] for quote in changed_quotes] == [
+        _ts("2024-01-01T00:00:00Z"),
+        _ts("2024-01-01T00:00:02Z"),
+        _ts("2024-01-01T00:00:04Z"),
+    ]
 
 
 def test_depth_metrics_derive_depth_spread_and_slippage_from_l2_snapshots(
