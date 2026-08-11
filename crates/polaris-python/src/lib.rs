@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+mod columnar;
+
 use polaris_data::{
     BboQuery, BboQuote, DepthMetricsRow, HistoricalQuery, ListSnapshotsQuery, OhlcvFormat,
     OhlcvInterval, OhlcvOutput, OhlcvQuery, OrderbookBuilder, PointSeriesEvent, PolarisError,
@@ -15,9 +17,11 @@ use pyo3::{
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use crate::columnar::NativeColumnar;
+
 create_exception!(_native, NativeError, PyException);
 
-fn native_error(error: PolarisError) -> PyErr {
+pub(crate) fn native_error(error: PolarisError) -> PyErr {
     let payload = match error {
         PolarisError::Unauthorized {
             message,
@@ -417,6 +421,29 @@ impl NativeClient {
         )))
     }
 
+    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, batch_size=65_536))]
+    fn trades_columnar(
+        &self,
+        py: Python<'_>,
+        source: String,
+        market: String,
+        from_: Option<String>,
+        to: Option<String>,
+        allow_gaps: bool,
+        batch_size: usize,
+    ) -> PyResult<NativeColumnar> {
+        validate_batch_size(batch_size)?;
+        let identity_source = source.clone();
+        let identity_market = market.clone();
+        py.detach(|| {
+            let mut query = historical_query(source, market, from_, to, allow_gaps);
+            query.materialize_orderbooks = false;
+            let plan = self.inner.prepare_historical(query)?;
+            NativeColumnar::trades(plan, identity_source, identity_market, batch_size)
+        })
+        .map_err(native_error)
+    }
+
     #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, materialize_orderbooks=true))]
     fn replay(
         &self,
@@ -699,6 +726,42 @@ impl NativeClient {
         )))
     }
 
+    #[pyo3(signature = (source, market, from_=None, to=None, interval=None, allow_gaps=false, batch_size=65_536))]
+    fn bbo_columnar(
+        &self,
+        py: Python<'_>,
+        source: String,
+        market: String,
+        from_: Option<String>,
+        to: Option<String>,
+        interval: Option<&str>,
+        allow_gaps: bool,
+        batch_size: usize,
+    ) -> PyResult<NativeColumnar> {
+        validate_batch_size(batch_size)?;
+        let parsed_interval = interval.map(parse_interval).transpose()?;
+        let identity_source = source.clone();
+        let identity_market = market.clone();
+        let iterator = py
+            .detach(|| {
+                self.inner.bbo(BboQuery {
+                    source,
+                    market,
+                    from: time_input(from_),
+                    to: time_input(to),
+                    allow_gaps,
+                    interval: parsed_interval,
+                })
+            })
+            .map_err(native_error)?;
+        Ok(NativeColumnar::bbo(
+            iterator,
+            identity_source,
+            identity_market,
+            batch_size,
+        ))
+    }
+
     #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
     fn funding_rates<'py>(
         &self,
@@ -720,6 +783,30 @@ impl NativeClient {
         )))
     }
 
+    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, batch_size=65_536))]
+    fn funding_rates_columnar(
+        &self,
+        py: Python<'_>,
+        source: String,
+        market: String,
+        from_: Option<String>,
+        to: Option<String>,
+        allow_gaps: bool,
+        batch_size: usize,
+    ) -> PyResult<NativeColumnar> {
+        self.point_series_columnar(
+            py,
+            source,
+            market,
+            from_,
+            to,
+            allow_gaps,
+            batch_size,
+            "funding_rate",
+            "funding_rate",
+        )
+    }
+
     #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
     fn mark_prices<'py>(
         &self,
@@ -739,6 +826,30 @@ impl NativeClient {
         Ok(NativeHistorical::new(NativeHistoricalIterator::Points(
             iterator,
         )))
+    }
+
+    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, batch_size=65_536))]
+    fn mark_prices_columnar(
+        &self,
+        py: Python<'_>,
+        source: String,
+        market: String,
+        from_: Option<String>,
+        to: Option<String>,
+        allow_gaps: bool,
+        batch_size: usize,
+    ) -> PyResult<NativeColumnar> {
+        self.point_series_columnar(
+            py,
+            source,
+            market,
+            from_,
+            to,
+            allow_gaps,
+            batch_size,
+            "mark_price",
+            "mark_price",
+        )
     }
 
     #[pyo3(signature = (source, market, interval, from_=None, to=None, allow_gaps=false))]
@@ -816,6 +927,39 @@ impl NativeClient {
             iterator,
         )))
     }
+
+    #[pyo3(signature = (source, market, from_=None, to=None, depth_pct=0.01, slippage_notional=10_000.0, allow_gaps=false, batch_size=65_536))]
+    fn depth_metrics_columnar(
+        &self,
+        py: Python<'_>,
+        source: String,
+        market: String,
+        from_: Option<String>,
+        to: Option<String>,
+        depth_pct: f64,
+        slippage_notional: f64,
+        allow_gaps: bool,
+        batch_size: usize,
+    ) -> PyResult<NativeColumnar> {
+        validate_batch_size(batch_size)?;
+        let identity_source = source.clone();
+        let identity_market = market.clone();
+        let iterator = py
+            .detach(|| {
+                self.inner.depth_metrics(
+                    historical_query(source, market, from_, to, allow_gaps),
+                    Some(depth_pct),
+                    Some(slippage_notional),
+                )
+            })
+            .map_err(native_error)?;
+        Ok(NativeColumnar::depth(
+            iterator,
+            identity_source,
+            identity_market,
+            batch_size,
+        ))
+    }
 }
 
 impl NativeClient {
@@ -829,6 +973,47 @@ impl NativeClient {
             directory: directory.unwrap_or_else(|| self.inner.cache_dir().join("replay")),
         }
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn point_series_columnar(
+        &self,
+        py: Python<'_>,
+        source: String,
+        market: String,
+        from_: Option<String>,
+        to: Option<String>,
+        allow_gaps: bool,
+        batch_size: usize,
+        series_name: &'static str,
+        value_name: &'static str,
+    ) -> PyResult<NativeColumnar> {
+        validate_batch_size(batch_size)?;
+        let identity_source = source.clone();
+        let identity_market = market.clone();
+        py.detach(|| {
+            let mut query = historical_query(source, market, from_, to, allow_gaps);
+            query.materialize_orderbooks = false;
+            let plan = self.inner.prepare_historical(query)?;
+            NativeColumnar::points(
+                plan,
+                identity_source,
+                identity_market,
+                series_name,
+                value_name,
+                batch_size,
+            )
+        })
+        .map_err(native_error)
+    }
+}
+
+fn validate_batch_size(batch_size: usize) -> PyResult<()> {
+    if batch_size == 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "batch_size must be greater than 0",
+        ));
+    }
+    Ok(())
 }
 
 fn aggregate_query(
@@ -1117,6 +1302,7 @@ fn decode_file<'py>(py: Python<'py>, path: PathBuf) -> PyResult<Bound<'py, PyAny
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeClient>()?;
+    module.add_class::<NativeColumnar>()?;
     module.add_class::<NativeOrderbookBuilder>()?;
     module.add_class::<NativeHistorical>()?;
     module.add_class::<NativeReplay>()?;

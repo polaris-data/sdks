@@ -16,7 +16,7 @@ Use `client.mark_prices()` when you need mark price data for perpetual contracts
 ## Method signature
 
 ```python
-mark_prices(source, market, from_=None, to=None, allow_gaps=False)
+mark_prices(source, market, from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)
 ```
 
 ## Parameters
@@ -28,19 +28,23 @@ mark_prices(source, market, from_=None, to=None, allow_gaps=False)
 | from_ | str/datetime/date/int | No | Inclusive start time (ISO 8601, datetime, date, or epoch microseconds) |
 | to | str/datetime/date/int | No | Exclusive end time (same formats as from_) |
 | allow_gaps | bool | No | Return covered rows and warn instead of failing on coverage gaps |
+| output | str | No | `iterator`, `batches`, or `dataframe` |
+| batch_size | int | No | Maximum rows per Arrow batch; must be positive |
 
 **Note:** API key required for historical ranges. Set `POLARIS_API_KEY` environment variable or pass `api_key` to `PolarisClient()`.
 
 ## Return value
 
-A single-pass iterator of mark-price point-series rows.
+A single-pass iterator of point-series dictionaries by default, flat PyArrow
+batches with `output="batches"`, or a Pandas DataFrame with
+`output="dataframe"`.
 
 ## Example response
 
 ```python
 [
     {
-        'timestamp': 1704067200000000,
+        'timestamp': 1704067200000,
         'venue': 'binance',
         'symbol': 'BTCUSDT',
         'mark_price': 43250.75
@@ -52,7 +56,7 @@ A single-pass iterator of mark-price point-series rows.
 
 Mark price records include:
 
-- `timestamp`: observation time in UTC microseconds since the Unix epoch
+- `timestamp`: observation time in UTC milliseconds; columnar output is timezone-aware UTC
 - `venue`: exchange identifier
 - `symbol`: normalized instrument symbol
 - `mark_price`: the mark price used for margin and liquidation calculations

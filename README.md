@@ -27,6 +27,13 @@ Or install it into the active environment with:
 uv pip install polaris-data
 ```
 
+Install optional notebook and Arrow support with:
+
+```bash
+pip install "polaris-data[dataframe]"  # Pandas + PyArrow
+pip install "polaris-data[arrow]"      # PyArrow batches only
+```
+
 Install the Rust SDK from crates.io:
 
 ```bash
@@ -200,19 +207,26 @@ Use it to inspect available data, query historical market data, and open realtim
 | Method | Returns | Use case |
 | --- | --- | --- |
 | `events(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)` | Iterator of standardized historical events | General-purpose historical analysis without retaining every row |
-| `trades(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of standardized trade events | Trade-level analytics, execution studies, and derived bar calculations |
+| `trades(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Trade-level analytics, execution studies, and notebook analysis |
 | `l2_snapshots(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)` | Iterator of complete orderbook rows | Order book reconstruction and microstructure analysis |
 | `l2_updates(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of raw orderbook snapshots and deltas | High-throughput application-managed books |
-| `funding_rates(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of funding-rate point series rows | Perpetual funding studies and carry modeling |
-| `mark_prices(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of mark-price point series rows | Basis analysis, mark tracking, and liquidation-related research |
+| `funding_rates(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Perpetual funding studies and carry modeling |
+| `mark_prices(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Basis analysis, mark tracking, and liquidation-related research |
 | `ohlcv(source=..., market=..., from_=None, to=None, interval=..., format=None, allow_gaps=False)` | Aggregated OHLCV bars | Charting, bar-based strategies, and downstream TA workflows |
 | `volume(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False)` | Bucketed trade volume series | Volume profiling and participation analysis |
 | `vwap(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False)` | Bucketed VWAP series | Execution benchmarking and price smoothing |
 | `volatility(source=..., market=..., from_=None, to=None, interval=..., method="log_returns", allow_gaps=False)` | Bucketed realized volatility series | Risk modeling and intraperiod volatility analysis |
-| `bbo(source=..., market=..., from_=None, to=None, interval=None, allow_gaps=False)` | Iterator of best bid/offer quotes | Spread tracking, quote analytics, and top-of-book monitoring |
-| `depth_metrics(source=..., market=..., from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0, allow_gaps=False)` | Iterator of derived liquidity metrics | Liquidity analysis and market impact estimation |
+| `bbo(source=..., market=..., from_=None, to=None, interval=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Spread tracking, quote analytics, and top-of-book monitoring |
+| `depth_metrics(source=..., market=..., from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Liquidity analysis and market impact estimation |
 
 Historical row methods are single-pass iterators. Iterate them directly for bounded memory, or call `list(...)` when you intentionally want an eager result. Setup and coverage errors occur when the method is called; decode errors can occur later while iterating. If you stop early, call the generator's `close()` method to promptly release its native reader. `bbo(interval="1s")` emits the last quote from each non-empty, UTC-aligned interval.
+
+The five typed methods above also accept `output="batches"` for a bounded
+iterator of `pyarrow.RecordBatch` objects or `output="dataframe"` for an eager
+Pandas DataFrame. Columnar output flattens typed fields, uses UTC millisecond
+timestamps, and dictionary-encodes source, market, and side. Venue-specific
+trade and point fields appear as sorted `extra.<name>` columns; discovering
+those fields requires one schema pass before batches are emitted.
 
 For parameter details, response shapes, and end-to-end examples, see the
 [Python SDK docs](https://docs.polaris.supply/sdks/python).
@@ -236,6 +250,21 @@ uv run python benchmarks/streaming_memory.py \
   --min-rps events=50000 --min-rps bbo=100000 \
   --min-rps l2_updates=500000 --min-rps l2_builder=250000
 ```
+
+Compare iterator, native RecordBatch, and native DataFrame paths over the
+788,383-trade fixture with:
+
+```bash
+uv run python benchmarks/columnar.py
+```
+
+The benchmark runs each mode in a separate process and reports elapsed time,
+throughput, peak and incremental RSS, row count, and a price checksum. It does
+not enforce machine-specific performance thresholds. Its
+`list-json-normalize` mode is a worst-case convenience pattern: it first
+materializes every nested row dictionary with `list(client.trades(...))`, then
+calls `pandas.json_normalize(...)`. The resulting peak RSS includes the Python
+row objects and Pandas conversion temporaries, not just the final DataFrame.
 
 Full-book materialization remains available as an explicitly scaled benchmark:
 

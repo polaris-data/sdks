@@ -14,7 +14,7 @@ Use `client.trades()` when you want execution-level records only. Trade events r
 ## Method signature
 
 ```python
-trades(source, market, from_=None, to=None, allow_gaps=False)
+trades(source, market, from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)
 ```
 
 ## Parameters
@@ -26,19 +26,23 @@ trades(source, market, from_=None, to=None, allow_gaps=False)
 | from_ | str/datetime/date/int | No | Inclusive start time (ISO 8601, datetime, date, or epoch microseconds) |
 | to | str/datetime/date/int | No | Exclusive end time (same formats as from_) |
 | allow_gaps | bool | No | Return covered rows and warn instead of failing on coverage gaps |
+| output | str | No | `iterator`, `batches`, or `dataframe` |
+| batch_size | int | No | Maximum rows per Arrow batch; must be positive |
 
 **Note:** API key required for historical ranges. Set `POLARIS_API_KEY` environment variable or pass `api_key` to `PolarisClient()`.
 
 ## Return value
 
-A single-pass iterator of normalized trade event dictionaries.
+A single-pass iterator of normalized trade event dictionaries by default. With
+`output="batches"`, returns flat PyArrow record batches; with
+`output="dataframe"`, returns an eager Pandas DataFrame.
 
 ## Example response
 
 ```python
 [
     {
-        'timestamp': 1704067200000000,
+        'timestamp': 1704067200000,
         'venue': 'binance',
         'symbol': 'BTC-USDT',
         'type': 'trade',
@@ -59,7 +63,8 @@ Trade events use the standard event envelope with `type: "trade"` and the follow
 - `data.quantity`: executed size in base units
 - `data.side`: aggressor side, one of `buy`, `sell`, or `unknown`
 
-The envelope-level `timestamp` is the execution time in UTC microseconds since the Unix epoch.
+Iterator timestamps are UTC milliseconds since the Unix epoch. Columnar output
+uses `timestamp[ms, tz=UTC]`; query boundary integers remain epoch microseconds.
 
 ## Example
 

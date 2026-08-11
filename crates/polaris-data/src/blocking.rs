@@ -18,10 +18,10 @@ use tokio::runtime::{Handle, Runtime};
 use crate::{
     BboQuery, BboQuote, CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic,
     DownloadManifestQuery, DownloadManifestResponse, HistoricalQuery, HistoricalStream,
-    ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OrderbookEvent, PointSeriesEvent, PolarisError,
-    RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, SnapshotEntry,
-    StandardEvent, StreamQuery, TimeInput, TradeEvent, VolatilityBar, VolumeBar, VwapBar,
-    replay::LocalReplayIterator,
+    ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OrderbookEvent, PointSeriesData, PointSeriesEvent,
+    PolarisError, RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery,
+    SnapshotEntry, StandardEvent, StreamQuery, TimeInput, TradeData, TradeEvent, VolatilityBar,
+    VolumeBar, VwapBar, replay::LocalReplayIterator,
 };
 
 const DEFAULT_REPLAY_CHUNK_HOURS: i64 = 24;
@@ -180,6 +180,16 @@ impl PolarisClient {
         &self,
         query: HistoricalQuery,
     ) -> Result<HistoricalIterator<StandardEvent>, PolarisError> {
+        Ok(self.prepare_historical(query)?.events())
+    }
+
+    /// Resolve and download a standardized historical range once so internal
+    /// consumers can reopen the same immutable local files.
+    #[doc(hidden)]
+    pub fn prepare_historical(
+        &self,
+        query: HistoricalQuery,
+    ) -> Result<PreparedHistoricalReplay, PolarisError> {
         let prepared = self.run(self.inner.prepare_replay(ReplayQuery {
             source: query.source,
             market: query.market,
@@ -188,13 +198,7 @@ impl PolarisClient {
             allow_gaps: query.allow_gaps,
             materialize_orderbooks: query.materialize_orderbooks,
         }))?;
-        Ok(HistoricalIterator::direct(LocalReplayIterator::new(
-            prepared.paths,
-            prepared.from_us,
-            prepared.to_us,
-            prepared.gaps,
-            prepared.materialize_orderbooks,
-        )))
+        Ok(PreparedHistoricalReplay { prepared })
     }
 
     pub fn trades(
@@ -394,6 +398,70 @@ impl PolarisClient {
             },
             failed_runtime_check: false,
         }
+    }
+}
+
+/// A resolved standardized replay that can be reopened without another
+/// catalog, coverage, or download request.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct PreparedHistoricalReplay {
+    prepared: crate::client::PreparedReplay,
+}
+
+impl PreparedHistoricalReplay {
+    pub fn events(&self) -> HistoricalIterator<StandardEvent> {
+        HistoricalIterator::direct(LocalReplayIterator::new(
+            self.prepared.paths.clone(),
+            self.prepared.from_us,
+            self.prepared.to_us,
+            self.prepared.gaps.clone(),
+            self.prepared.materialize_orderbooks,
+        ))
+    }
+
+    pub fn trades(&self) -> HistoricalIterator<TradeEvent> {
+        let trades = self.events().filter_map(|event| match event {
+            Ok(event) if event.event_type != "trade" => None,
+            Ok(event) => {
+                let data = serde_json::from_value::<TradeData>(event.data).map_err(|error| {
+                    PolarisError::Decode(format!("invalid trade payload: {error}"))
+                });
+                Some(data.map(|data| TradeEvent {
+                    timestamp: event.timestamp,
+                    source: event.source,
+                    market: event.market,
+                    event_type: event.event_type,
+                    data,
+                }))
+            }
+            Err(error) => Some(Err(error)),
+        });
+        HistoricalIterator::direct(trades)
+    }
+
+    pub fn point_series(
+        &self,
+        expected_series: &'static str,
+    ) -> HistoricalIterator<PointSeriesEvent> {
+        let points = self.events().filter_map(move |event| match event {
+            Ok(event) if event.event_type != "point" => None,
+            Ok(event) => {
+                let data: PointSeriesData = serde_json::from_value(event.data).ok()?;
+                if data.series_name != expected_series {
+                    return None;
+                }
+                Some(Ok(PointSeriesEvent {
+                    timestamp: event.timestamp,
+                    source: event.source,
+                    market: event.market,
+                    event_type: event.event_type,
+                    data,
+                }))
+            }
+            Err(error) => Some(Err(error)),
+        });
+        HistoricalIterator::direct(points)
     }
 }
 

@@ -46,6 +46,7 @@ pub struct PolarisClient {
     stream_url: url::Url,
 }
 
+#[derive(Clone)]
 pub(crate) struct PreparedReplay {
     pub(crate) paths: Vec<PathBuf>,
     pub(crate) from_us: i64,

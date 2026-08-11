@@ -17,7 +17,7 @@ Use `client.bbo()` when you need top-of-book quote data for spread tracking and 
 ## Method signature
 
 ```python
-bbo(source, market, from_=None, to=None, interval=None, allow_gaps=False)
+bbo(source, market, from_=None, to=None, interval=None, allow_gaps=False, output="iterator", batch_size=65536)
 ```
 
 ## Parameters
@@ -30,19 +30,22 @@ bbo(source, market, from_=None, to=None, interval=None, allow_gaps=False)
 | to | str/datetime/date/int | No | Exclusive end time (same formats as from_) |
 | interval | str | No | Emit the last quote in each non-empty aligned bucket: `100ms`, `1s`, `10s`, `1m`, `5m`, `15m`, or `1h` |
 | allow_gaps | bool | No | Return covered rows and warn instead of failing on coverage gaps |
+| output | str | No | `iterator`, `batches`, or `dataframe` |
+| batch_size | int | No | Maximum rows per Arrow batch; must be positive |
 
 **Note:** API key required for historical ranges. Set `POLARIS_API_KEY` environment variable or pass `api_key` to `PolarisClient()`.
 
 ## Return value
 
-A single-pass iterator of best bid/offer quote rows.
+A single-pass iterator of quote dictionaries by default, flat PyArrow batches
+with `output="batches"`, or a Pandas DataFrame with `output="dataframe"`.
 
 ## Example response
 
 ```python
 [
     {
-        'timestamp': 1704067200000000,
+        'timestamp': 1704067200000,
         'venue': 'binance',
         'symbol': 'BTC-USDT',
         'bid_price': 43250.00,
@@ -57,7 +60,7 @@ A single-pass iterator of best bid/offer quote rows.
 
 BBO records include:
 
-- `timestamp`: quote time in UTC microseconds since the Unix epoch
+- `timestamp`: quote time in UTC milliseconds; columnar output is timezone-aware UTC
 - `venue`: exchange identifier
 - `symbol`: normalized instrument symbol
 - `bid_price`: best bid price

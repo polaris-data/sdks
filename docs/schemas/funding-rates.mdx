@@ -16,7 +16,7 @@ Use `client.funding_rates()` when you need historical funding rate data for perp
 ## Method signature
 
 ```python
-funding_rates(source, market, from_=None, to=None, allow_gaps=False)
+funding_rates(source, market, from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)
 ```
 
 ## Parameters
@@ -28,19 +28,23 @@ funding_rates(source, market, from_=None, to=None, allow_gaps=False)
 | from_ | str/datetime/date/int | No | Inclusive start time (ISO 8601, datetime, date, or epoch microseconds) |
 | to | str/datetime/date/int | No | Exclusive end time (same formats as from_) |
 | allow_gaps | bool | No | Return covered rows and warn instead of failing on coverage gaps |
+| output | str | No | `iterator`, `batches`, or `dataframe` |
+| batch_size | int | No | Maximum rows per Arrow batch; must be positive |
 
 **Note:** API key required for historical ranges. Set `POLARIS_API_KEY` environment variable or pass `api_key` to `PolarisClient()`.
 
 ## Return value
 
-A single-pass iterator of funding-rate point-series rows.
+A single-pass iterator of point-series dictionaries by default, flat PyArrow
+batches with `output="batches"`, or a Pandas DataFrame with
+`output="dataframe"`.
 
 ## Example response
 
 ```python
 [
     {
-        'timestamp': 1704067200000000,
+        'timestamp': 1704067200000,
         'venue': 'binance',
         'symbol': 'BTCUSDT',
         'funding_rate': 0.00017,
@@ -53,7 +57,7 @@ A single-pass iterator of funding-rate point-series rows.
 
 Funding rate records include:
 
-- `timestamp`: observation time in UTC microseconds since the Unix epoch
+- `timestamp`: observation time in UTC milliseconds; columnar output is timezone-aware UTC
 - `venue`: exchange identifier
 - `symbol`: normalized instrument symbol
 - `funding_rate`: the funding rate (decimal, e.g., 0.00017 = 0.017%)

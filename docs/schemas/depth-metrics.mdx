@@ -17,7 +17,7 @@ Use `client.depth_metrics()` when you need derived liquidity metrics for market 
 ## Method signature
 
 ```python
-depth_metrics(source, market, from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0, allow_gaps=False)
+depth_metrics(source, market, from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0, allow_gaps=False, output="iterator", batch_size=65536)
 ```
 
 ## Parameters
@@ -31,19 +31,22 @@ depth_metrics(source, market, from_=None, to=None, depth_pct=0.01, slippage_noti
 | depth_pct | float | No | Depth percentage for bid/ask imbalance (default: 0.01 = 1%) |
 | slippage_notional | float | No | Notional amount for slippage calculation (default: 10000.0) |
 | allow_gaps | bool | No | Return covered rows and warn instead of failing on coverage gaps |
+| output | str | No | `iterator`, `batches`, or `dataframe` |
+| batch_size | int | No | Maximum rows per Arrow batch; must be positive |
 
 **Note:** API key required for historical ranges. Set `POLARIS_API_KEY` environment variable or pass `api_key` to `PolarisClient()`.
 
 ## Return value
 
-A single-pass iterator of derived depth and liquidity metric rows.
+A single-pass iterator of metric dictionaries by default, flat PyArrow batches
+with `output="batches"`, or a Pandas DataFrame with `output="dataframe"`.
 
 ## Example response
 
 ```python
 [
     {
-        'timestamp': 1704067200000000,
+        'timestamp': 1704067200000,
         'venue': 'binance',
         'symbol': 'BTC-USDT',
         'spread': 0.50,
@@ -60,7 +63,7 @@ A single-pass iterator of derived depth and liquidity metric rows.
 
 Depth metrics records include:
 
-- `timestamp`: observation time in UTC microseconds since the Unix epoch
+- `timestamp`: observation time in UTC milliseconds; columnar output is timezone-aware UTC
 - `venue`: exchange identifier
 - `symbol`: normalized instrument symbol
 - `spread`: absolute bid-ask spread
