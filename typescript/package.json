@@ -1,6 +1,6 @@
 {
   "name": "polaris-data",
-  "version": "0.7.0",
+  "version": "0.6.0",
   "description": "TypeScript SDK for the Polaris market data API (Node.js and browser)",
   "license": "MIT",
   "author": "Polaris <hello@polaris.supply>",
