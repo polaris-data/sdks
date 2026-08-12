@@ -19,6 +19,7 @@ import type {
   OhlcvOptions,
   OrderbookEvent,
   StandardEvent,
+  TradeEvent,
   PaginatedResponse,
   PolarisClientOptions,
   RawQueryOptions,
@@ -63,7 +64,7 @@ import { OrderbookBuilder } from "./orderbook";
 // SDK version – bumped manually during releases
 // ---------------------------------------------------------------------------
 
-const VERSION = "0.5.5";
+const VERSION = "0.6.0";
 
 // ---------------------------------------------------------------------------
 // Internal shorthand
@@ -260,15 +261,15 @@ export class BasePolarisClient {
    * Missing standardized snapshots are discovered via daily `GET /download`
    * manifests and downloaded automatically.
    */
-  async events(options: HistoricalQueryOptions): Promise<Json[]> {
+  async events(options: HistoricalQueryOptions): Promise<StandardEvent[]> {
     const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: Json[] = [];
+    const result: StandardEvent[] = [];
     const events = this._readSnapshotEvents(options.source, options.market, fromMs, toMs);
     for await (const event of materializeEvents(
       events,
       options.materializeOrderbooks ?? true,
     )) {
-      result.push(event);
+      result.push(event as StandardEvent);
     }
     return result;
   }
@@ -279,9 +280,9 @@ export class BasePolarisClient {
    * Reads from locally-cached standard snapshot files, filtering to
    * `type === "trade"`.
    */
-  async trades(options: HistoricalQueryOptions): Promise<Json[]> {
+  async trades(options: HistoricalQueryOptions): Promise<TradeEvent[]> {
     const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: Json[] = [];
+    const result: TradeEvent[] = [];
     for await (const event of this._readSnapshotEvents(
       options.source,
       options.market,
@@ -289,7 +290,7 @@ export class BasePolarisClient {
       toMs,
       (e) => e.type === "trade",
     )) {
-      result.push(event);
+      result.push(event as TradeEvent);
     }
     return result;
   }
@@ -431,7 +432,7 @@ export class BasePolarisClient {
       const price = coerceNumeric(data.price);
       const quantity = coerceNumeric(data.quantity);
       if (price === undefined || quantity === undefined) continue;
-      agg.add(event.timestamp as number, price, quantity);
+      agg.add(sdkTimestamp(event as StandardEvent)!, price, quantity);
     }
 
     return agg.finish();
@@ -458,7 +459,7 @@ export class BasePolarisClient {
       const data = event.data as { price: unknown };
       const price = coerceNumeric(data.price);
       if (price === undefined) continue;
-      agg.add(event.timestamp as number, price);
+      agg.add(sdkTimestamp(event as StandardEvent)!, price);
     }
 
     return agg.finish();
@@ -510,7 +511,7 @@ export class BasePolarisClient {
       (e) => e.type === "trade",
     )) {
       const data = event.data as { price: number; quantity: number };
-      agg.add(event.timestamp as number, data.price, data.quantity);
+      agg.add(sdkTimestamp(event as StandardEvent)!, data.price, data.quantity);
     }
 
     return agg.finish();
@@ -561,7 +562,7 @@ export class BasePolarisClient {
    * }
    * ```
    */
-  async *replay(options: ReplayOptions): AsyncGenerator<Json> {
+  async *replay(options: ReplayOptions): AsyncGenerator<StandardEvent> {
     if (options.standard !== false) {
       const { fromMs, toMs } = await this._resolveHistoricalRange(options);
       const events = this._readSnapshotEvents(
@@ -762,24 +763,23 @@ export class BasePolarisClient {
     const storage = await this._getStorage();
     for (const filePath of coverage.paths) {
       const lines = await readSnapshotLines(storage, filePath);
-      for (const line of lines) {
-        let event: Json;
-        try {
-          event = JSON.parse(line) as Json;
-        } catch {
-          continue;
-        }
-
-        const ts = normalizeTimestampMs(event.timestamp);
+      const decoded = this._decodeSnapshotLines(lines, filePath);
+      for (let event of decoded) {
+        const ts = sdkTimestamp(event);
         if (ts === undefined || ts < fromMs || ts >= toMs) continue;
         if (filter && !filter(event)) continue;
 
-        if (event.timestamp !== ts) {
+        if ("timestamp" in event && event.timestamp !== ts) {
           event = { ...event, timestamp: ts };
         }
         yield event;
       }
     }
+  }
+
+  /** @internal Exposed as a method so cross-runtime contract tests use the production decoder. */
+  private _decodeSnapshotLines(lines: string[], filePath: string): StandardEvent[] {
+    return decodeSnapshotLines(lines, filePath);
   }
 
   private async _resolveSnapshotCoverage(
@@ -1439,7 +1439,6 @@ class VolatilityAggregator {
   }
 
   finish(): VolatilityBar[] {
-    const points = this._points.slice().sort((a, b) => a[0] - b[0]);
     const buckets = new Map<
       number,
       {
@@ -1451,7 +1450,7 @@ class VolatilityAggregator {
       }
     >();
 
-    for (const [timestamp, price] of points) {
+    for (const [timestamp, price] of this._points) {
       const bucket =
         Math.floor(timestamp / this._intervalMs) * this._intervalMs;
 
@@ -1777,7 +1776,7 @@ function isFundingRateEvent(event: Json): event is FundingRateEvent {
 }
 
 function isMarkPriceEvent(event: Json): event is MarkPriceEvent {
-  return pointSeriesName(event) === "mark_price";
+  return ["mark_price", "mark_px"].includes(pointSeriesName(event) ?? "");
 }
 
 function isOrderbookEvent(event: Json): event is OrderbookEvent {
@@ -1791,9 +1790,9 @@ function isOrderbookEvent(event: Json): event is OrderbookEvent {
 async function* materializeEvents(
   events: AsyncIterable<Json>,
   enabled: boolean,
-): AsyncGenerator<Json> {
+): AsyncGenerator<StandardEvent> {
   if (!enabled) {
-    yield* events;
+    for await (const event of events) yield event as StandardEvent;
     return;
   }
   const orderbooks = new OrderbookBuilder();
@@ -1899,10 +1898,8 @@ function sortedOrderbookLevels(
 }
 
 function deriveBbo(row: Json): BboQuote | undefined {
-  const timestamp = row.timestamp;
-  if (typeof timestamp !== "number" || !Number.isFinite(timestamp)) {
-    return undefined;
-  }
+  const timestamp = sdkTimestamp(row as StandardEvent);
+  if (timestamp === undefined) return undefined;
 
   const sides = extractOrderbookSides(row);
   if (!sides) return undefined;
@@ -1967,10 +1964,8 @@ function deriveDepthMetrics(
   depthPct: number,
   slippageNotional: number,
 ): DepthMetricsRow | undefined {
-  const timestamp = row.timestamp;
-  if (typeof timestamp !== "number" || !Number.isFinite(timestamp)) {
-    return undefined;
-  }
+  const timestamp = sdkTimestamp(row as StandardEvent);
+  if (timestamp === undefined) return undefined;
 
   const sides = extractOrderbookSides(row);
   if (!sides) return undefined;
@@ -2110,6 +2105,117 @@ async function readSnapshotLines(storage: IStorage, filePath: string): Promise<s
   const decompressed = decompress(compressed);
   const text = new TextDecoder().decode(decompressed);
   return text.split("\n").filter((l) => l.trim().length > 0);
+}
+
+function decodeSnapshotLines(lines: string[], filePath: string): StandardEvent[] {
+  if (lines.length === 0) return [];
+  let first: unknown;
+  try {
+    first = JSON.parse(lines[0]);
+  } catch (error) {
+    throw new PolarisError(`Invalid first NDJSON row in '${filePath}': ${String(error)}`);
+  }
+  if (!isRecord(first)) {
+    throw new PolarisError(`Invalid first NDJSON row in '${filePath}': expected an object`);
+  }
+
+  const isV2 = first.type === "metadata";
+  if (isV2) {
+    const version = isRecord(first.data) ? first.data.schema_version : undefined;
+    if (typeof version !== "string") {
+      throw new PolarisError(`Metadata in '${filePath}' is missing data.schema_version`);
+    }
+    if (version !== "v2") {
+      throw new PolarisError(
+        `Unsupported standard event schema version '${version}' in '${filePath}'`,
+      );
+    }
+  }
+
+  const result: StandardEvent[] = [];
+  for (let index = isV2 ? 1 : 0; index < lines.length; index++) {
+    let value: unknown;
+    try {
+      value = JSON.parse(lines[index]);
+    } catch (error) {
+      if (!isV2) continue;
+      throw new PolarisError(`Invalid v2 NDJSON row in '${filePath}': ${String(error)}`);
+    }
+    if (!isRecord(value)) {
+      if (!isV2) continue;
+      throw new PolarisError(`Invalid v2 NDJSON row in '${filePath}': expected an object`);
+    }
+    if (isV2) {
+      validateV2Event(value, filePath);
+      result.push(value as StandardEvent);
+    } else {
+      const timestamp = normalizeTimestampMs(value.timestamp);
+      if (timestamp === undefined) continue;
+      result.push({ ...value, timestamp } as StandardEvent);
+    }
+  }
+  return result;
+}
+
+function validateV2Event(value: Json, filePath: string): asserts value is StandardEvent {
+  const exchangeTimestampValid = value.exchange_timestamp === null ||
+    (typeof value.exchange_timestamp === "number" && Number.isFinite(value.exchange_timestamp));
+  const exchangeSequenceValid = value.exchange_sequence === null ||
+    typeof value.exchange_sequence === "string";
+  if (
+    value.type === "metadata" ||
+    typeof value.collector_timestamp !== "number" ||
+    !Number.isFinite(value.collector_timestamp) ||
+    typeof value.collector_sequence !== "number" ||
+    !Number.isSafeInteger(value.collector_sequence) ||
+    value.collector_sequence < 0 ||
+    !("exchange_timestamp" in value) ||
+    !exchangeTimestampValid ||
+    !("exchange_sequence" in value) ||
+    !exchangeSequenceValid ||
+    typeof value.source !== "string" ||
+    typeof value.market !== "string" ||
+    typeof value.type !== "string" ||
+    !isRecord(value.data)
+  ) {
+    throw new PolarisError(`Invalid v2 standard event in '${filePath}'`);
+  }
+  const data = value.data;
+  if (value.type === "trade") {
+    const orderIdValid = "order_id" in data &&
+      (data.order_id === null || typeof data.order_id === "string");
+    const sideValid = "side" in data &&
+      (data.side === null || data.side === "buy" || data.side === "sell");
+    if (
+      !orderIdValid || !sideValid || typeof data.price !== "number" ||
+      typeof data.quantity !== "number"
+    ) {
+      throw new PolarisError(`Invalid v2 trade payload in '${filePath}'`);
+    }
+  } else if (value.type === "orderbook") {
+    if (
+      typeof data.is_snapshot !== "boolean" || !Array.isArray(data.bids) ||
+      !Array.isArray(data.asks)
+    ) {
+      throw new PolarisError(`Invalid v2 orderbook payload in '${filePath}'`);
+    }
+  } else if (value.type === "point") {
+    if (typeof data.series !== "string" || typeof data.value !== "string") {
+      throw new PolarisError(`Invalid v2 point payload in '${filePath}'`);
+    }
+  } else if (value.type === "record") {
+    if (typeof data.series !== "string" || !isRecord(data.values)) {
+      throw new PolarisError(`Invalid v2 record payload in '${filePath}'`);
+    }
+  } else {
+    throw new PolarisError(`Unsupported v2 standard event type '${value.type}' in '${filePath}'`);
+  }
+}
+
+function sdkTimestamp(event: StandardEvent): number | undefined {
+  return "collector_timestamp" in event
+    ? normalizeTimestampMs(event.collector_timestamp)
+    : normalizeTimestampMs(event.timestamp);
 }
 
 function normalizeTimestampMs(value: unknown): number | undefined {

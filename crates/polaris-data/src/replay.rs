@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 use crate::{
     OrderbookBuilder,
     errors::PolarisError,
-    models::{ReplayStream, StandardEvent},
+    models::{LegacyStandardEvent, ReplayStream, StandardEvent, StandardEventV2},
 };
 
 const EVENT_CHANNEL_CAPACITY: usize = 16;
@@ -243,7 +243,7 @@ impl Iterator for LocalExactReplayIterator {
                 match self.orderbooks.apply(decoded.event) {
                     Ok(Some(event)) => {
                         let mut exact_event = event.clone();
-                        exact_event.timestamp = decoded.timestamp_us;
+                        exact_event.set_legacy_timestamp(decoded.timestamp_us);
                         let event_json = match serde_json::to_string(&exact_event) {
                             Ok(event_json) => event_json,
                             Err(error) => {
@@ -437,12 +437,20 @@ struct SnapshotEventReader {
     path: PathBuf,
     compressed: bool,
     buffer: Vec<u8>,
+    pending: Option<Vec<u8>>,
+    schema: SnapshotSchema,
     from_us: i64,
     to_us: i64,
     source_file_ordinal: u32,
     next_row_ordinal: u64,
     capture_json: bool,
     finished: bool,
+}
+
+#[derive(Clone, Copy)]
+enum SnapshotSchema {
+    Legacy,
+    V2,
 }
 
 impl SnapshotEventReader {
@@ -463,18 +471,71 @@ impl SnapshotEventReader {
         } else {
             Box::new(BufReader::new(file))
         };
-        Ok(Self {
+        let mut snapshot = Self {
             reader,
             path,
             compressed,
             buffer: Vec::with_capacity(8 * 1024),
+            pending: None,
+            schema: SnapshotSchema::Legacy,
             from_us,
             to_us,
             source_file_ordinal,
             next_row_ordinal: 0,
             capture_json,
             finished: false,
-        })
+        };
+        snapshot.initialize_schema()?;
+        Ok(snapshot)
+    }
+
+    fn initialize_schema(&mut self) -> Result<(), PolarisError> {
+        loop {
+            self.buffer.clear();
+            match self.reader.read_until(b'\n', &mut self.buffer) {
+                Ok(0) => {
+                    self.finished = true;
+                    return Ok(());
+                }
+                Ok(_) => {}
+                Err(error) => return Err(self.map_io_error(error)),
+            }
+            trim_line_ending(&mut self.buffer);
+            if self.buffer.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            let value: serde_json::Value =
+                serde_json::from_slice(&self.buffer).map_err(|error| {
+                    PolarisError::Decode(format!(
+                        "invalid ndjson line in {}: {error}",
+                        self.path.display()
+                    ))
+                })?;
+            if value.get("type").and_then(serde_json::Value::as_str) == Some("metadata") {
+                let version = value
+                    .get("data")
+                    .and_then(serde_json::Value::as_object)
+                    .and_then(|data| data.get("schema_version"))
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        PolarisError::Decode(format!(
+                            "metadata in {} is missing data.schema_version",
+                            self.path.display()
+                        ))
+                    })?;
+                if version != "v2" {
+                    return Err(PolarisError::Decode(format!(
+                        "unsupported standard event schema version '{version}' in {}",
+                        self.path.display()
+                    )));
+                }
+                self.schema = SnapshotSchema::V2;
+                self.next_row_ordinal = 1;
+            } else {
+                self.pending = Some(self.buffer.clone());
+            }
+            return Ok(());
+        }
     }
 
     fn map_io_error(&self, error: std::io::Error) -> PolarisError {
@@ -497,36 +558,88 @@ impl Iterator for SnapshotEventReader {
             return None;
         }
         loop {
-            self.buffer.clear();
-            match self.reader.read_until(b'\n', &mut self.buffer) {
-                Ok(0) => {
-                    self.finished = true;
-                    return None;
+            if let Some(pending) = self.pending.take() {
+                self.buffer = pending;
+            } else {
+                self.buffer.clear();
+                match self.reader.read_until(b'\n', &mut self.buffer) {
+                    Ok(0) => {
+                        self.finished = true;
+                        return None;
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        self.finished = true;
+                        return Some(Err(self.map_io_error(error)));
+                    }
                 }
-                Ok(_) => {}
-                Err(error) => {
-                    self.finished = true;
-                    return Some(Err(self.map_io_error(error)));
-                }
-            }
-            while self
-                .buffer
-                .last()
-                .is_some_and(|byte| matches!(byte, b'\n' | b'\r'))
-            {
-                self.buffer.pop();
+                trim_line_ending(&mut self.buffer);
             }
             if self.buffer.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
             let source_row_ordinal = self.next_row_ordinal;
             self.next_row_ordinal = self.next_row_ordinal.saturating_add(1);
-            let mut event: StandardEvent = match serde_json::from_slice(&self.buffer) {
-                Ok(event) => event,
+            let value: serde_json::Value = match serde_json::from_slice(&self.buffer) {
+                Ok(value) => value,
                 Err(error) => {
                     self.finished = true;
                     return Some(Err(PolarisError::Decode(format!(
                         "invalid ndjson line in {}: {error}",
+                        self.path.display()
+                    ))));
+                }
+            };
+            let event = match self.schema {
+                SnapshotSchema::Legacy => {
+                    serde_json::from_value::<LegacyStandardEvent>(value).map(StandardEvent::Legacy)
+                }
+                SnapshotSchema::V2 => {
+                    let Some(object) = value.as_object() else {
+                        self.finished = true;
+                        return Some(Err(PolarisError::Decode(format!(
+                            "expected each v2 NDJSON row in {} to be an object",
+                            self.path.display()
+                        ))));
+                    };
+                    if object.get("type").and_then(serde_json::Value::as_str) == Some("metadata") {
+                        self.finished = true;
+                        return Some(Err(PolarisError::Decode(format!(
+                            "standard snapshot {} contains non-leading metadata",
+                            self.path.display()
+                        ))));
+                    }
+                    let missing = [
+                        "collector_timestamp",
+                        "collector_sequence",
+                        "exchange_timestamp",
+                        "exchange_sequence",
+                    ]
+                    .into_iter()
+                    .find(|key| !object.contains_key(*key));
+                    if let Some(field) = missing {
+                        self.finished = true;
+                        return Some(Err(PolarisError::Decode(format!(
+                            "v2 standard event in {} is missing {field}",
+                            self.path.display()
+                        ))));
+                    }
+                    serde_json::from_value::<StandardEventV2>(value).and_then(|event| {
+                        validate_v2_event(&event).map_err(serde::de::Error::custom)?;
+                        Ok(StandardEvent::V2(event))
+                    })
+                }
+            };
+            let mut event = match event {
+                Ok(event) => event,
+                Err(error) => {
+                    self.finished = true;
+                    return Some(Err(PolarisError::Decode(format!(
+                        "invalid {:?} standard event in {}: {error}",
+                        match self.schema {
+                            SnapshotSchema::Legacy => "legacy",
+                            SnapshotSchema::V2 => "v2",
+                        },
                         self.path.display()
                     ))));
                 }
@@ -545,16 +658,20 @@ impl Iterator for SnapshotEventReader {
             } else {
                 None
             };
-            let timestamp_us = if event.timestamp.unsigned_abs() >= 100_000_000_000_000 {
-                let timestamp_us = event.timestamp;
-                event.timestamp /= 1_000;
-                timestamp_us
-            } else {
-                event.timestamp.saturating_mul(1_000)
+            let timestamp_us = match &mut event {
+                StandardEvent::Legacy(event) => {
+                    if event.timestamp.unsigned_abs() >= 100_000_000_000_000 {
+                        let timestamp_us = event.timestamp;
+                        event.timestamp /= 1_000;
+                        timestamp_us
+                    } else {
+                        event.timestamp.saturating_mul(1_000)
+                    }
+                }
+                StandardEvent::V2(event) => event.collector_timestamp.saturating_mul(1_000),
             };
             if timestamp_us >= self.to_us {
-                self.finished = true;
-                return None;
+                continue;
             }
             if timestamp_us < self.from_us {
                 continue;
@@ -570,6 +687,73 @@ impl Iterator for SnapshotEventReader {
     }
 }
 
+fn trim_line_ending(buffer: &mut Vec<u8>) {
+    while buffer
+        .last()
+        .is_some_and(|byte| matches!(byte, b'\n' | b'\r'))
+    {
+        buffer.pop();
+    }
+}
+
+fn validate_v2_event(event: &StandardEventV2) -> Result<(), String> {
+    if event.source.is_empty() || event.market.is_empty() || event.event_type.is_empty() {
+        return Err("v2 standard event requires source, market, and type".to_owned());
+    }
+    let data = event
+        .data
+        .as_object()
+        .ok_or_else(|| "v2 standard event data must be an object".to_owned())?;
+    match event.event_type.as_str() {
+        "trade" => {
+            if !data.contains_key("order_id")
+                || !data.get("price").is_some_and(serde_json::Value::is_number)
+                || !data
+                    .get("quantity")
+                    .is_some_and(serde_json::Value::is_number)
+                || !data.contains_key("side")
+            {
+                return Err("invalid v2 trade payload".to_owned());
+            }
+            if data
+                .get("order_id")
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+                || data.get("side").is_some_and(|value| {
+                    !value.is_null() && !matches!(value.as_str(), Some("buy" | "sell"))
+                })
+            {
+                return Err("invalid v2 trade nullable fields".to_owned());
+            }
+        }
+        "orderbook" => {
+            if !data
+                .get("is_snapshot")
+                .is_some_and(serde_json::Value::is_boolean)
+                || !data.get("bids").is_some_and(serde_json::Value::is_array)
+                || !data.get("asks").is_some_and(serde_json::Value::is_array)
+            {
+                return Err("invalid v2 orderbook payload".to_owned());
+            }
+        }
+        "point" => {
+            if !data.get("series").is_some_and(serde_json::Value::is_string)
+                || !data.get("value").is_some_and(serde_json::Value::is_string)
+            {
+                return Err("invalid v2 point payload".to_owned());
+            }
+        }
+        "record" => {
+            if !data.get("series").is_some_and(serde_json::Value::is_string)
+                || !data.get("values").is_some_and(serde_json::Value::is_object)
+            {
+                return Err("invalid v2 record payload".to_owned());
+            }
+        }
+        other => return Err(format!("unsupported v2 standard event type '{other}'")),
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use futures_util::StreamExt;
@@ -577,6 +761,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    const LEGACY_FIXTURE: &str = include_str!("../../../tests/fixtures/events/legacy-v1.jsonl");
+    const V2_FIXTURE: &str = include_str!("../../../tests/fixtures/events/schema-v2.jsonl");
 
     #[tokio::test]
     async fn materialization_clears_across_known_coverage_gaps() {
@@ -616,9 +803,158 @@ mod tests {
             .unwrap();
 
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].event_type, "orderbook");
-        assert_eq!(rows[1].event_type, "trade");
-        assert_eq!(rows[2].data["bids"], json!([{"price":90.0,"quantity":2.0}]));
+        assert_eq!(rows[0].event_type(), "orderbook");
+        assert_eq!(rows[1].event_type(), "trade");
+        assert_eq!(
+            rows[2].data()["bids"],
+            json!([{"price":90.0,"quantity":2.0}])
+        );
+    }
+
+    #[test]
+    fn v2_reader_consumes_metadata_preserves_order_and_scans_after_to_regression() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("v2.jsonl");
+        std::fs::write(&path, V2_FIXTURE).unwrap();
+
+        let all = ReplayFileIterator::new(
+            vec![path.clone()],
+            1_704_067_200_000_000,
+            1_704_067_201_000_000,
+            true,
+        )
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+        assert_eq!(all.len(), 7);
+        assert_eq!(
+            all.iter()
+                .map(|row| row.source_row_ordinal)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5, 6, 8]
+        );
+        assert_eq!(
+            all.iter()
+                .map(|row| row.event.timestamp())
+                .collect::<Vec<_>>(),
+            vec![
+                1_704_067_200_100,
+                1_704_067_200_300,
+                1_704_067_200_200,
+                1_704_067_200_400,
+                1_704_067_200_500,
+                1_704_067_200_450,
+                1_704_067_200_550,
+            ]
+        );
+        assert!(
+            all.iter()
+                .all(|row| matches!(row.event, StandardEvent::V2(_)))
+        );
+        let point = crate::PolarisClient::try_parse_point_series(
+            all[3].event.clone(),
+            &["mark_price", "mark_px"],
+        )
+        .expect("numeric-string point payload should decode");
+        assert_eq!(point.data().value, 100.75);
+
+        let filtered = ReplayFileIterator::new(
+            vec![path.clone()],
+            1_704_067_200_150_000,
+            1_704_067_200_250_000,
+            false,
+        )
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].event.event_type(), "trade");
+
+        let after_out_of_range = ReplayFileIterator::new(
+            vec![path],
+            1_704_067_200_525_000,
+            1_704_067_200_575_000,
+            false,
+        )
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+        assert_eq!(after_out_of_range.len(), 1);
+        assert_eq!(after_out_of_range[0].source_row_ordinal, 8);
+    }
+
+    #[test]
+    fn shared_legacy_and_v2_fixtures_replay_as_one_mixed_range() {
+        let root = TempDir::new().unwrap();
+        let legacy = root.path().join("legacy.jsonl");
+        let v2 = root.path().join("v2.jsonl");
+        std::fs::write(&legacy, LEGACY_FIXTURE).unwrap();
+        std::fs::write(&v2, V2_FIXTURE).unwrap();
+
+        let rows = ReplayFileIterator::new(
+            vec![legacy, v2],
+            1_704_067_200_000_000,
+            1_704_067_201_000_000,
+            false,
+        )
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+        assert_eq!(rows.len(), 11);
+        assert!(
+            rows[..4]
+                .iter()
+                .all(|row| matches!(row.event, StandardEvent::Legacy(_)))
+        );
+        assert!(
+            rows[4..]
+                .iter()
+                .all(|row| matches!(row.event, StandardEvent::V2(_)))
+        );
+        assert_eq!(rows[4].source_row_ordinal, 1);
+    }
+
+    #[test]
+    fn v2_materialized_delta_keeps_delta_identity_and_complete_book() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("v2.jsonl");
+        std::fs::write(&path, V2_FIXTURE).unwrap();
+        let rows = LocalReplayIterator::new(
+            vec![path],
+            1_704_067_200_000_000,
+            1_704_067_201_000_000,
+            Vec::new(),
+            true,
+        )
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+        assert_eq!(rows.len(), 7);
+        assert_eq!(rows[1].data()["is_snapshot"], false);
+        assert_eq!(
+            rows[1].data()["bids"],
+            json!([{"price":100.0,"quantity":4.0}])
+        );
+        assert_eq!(
+            rows[1].data()["asks"],
+            json!([{"price":102.0,"quantity":5.0}])
+        );
+    }
+
+    #[test]
+    fn unsupported_metadata_version_fails_before_events() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("unknown.jsonl");
+        std::fs::write(
+            &path,
+            "{\"type\":\"metadata\",\"data\":{\"schema_version\":\"v3\"}}\n{\"timestamp\":1}\n",
+        )
+        .unwrap();
+        let error = match ReplayFileIterator::new(vec![path], i64::MIN, i64::MAX, false).next() {
+            Some(Err(error)) => error,
+            _ => panic!("expected unsupported version error"),
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported standard event schema version 'v3'")
+        );
     }
 
     #[tokio::test]
@@ -670,8 +1006,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].timestamp, 1_704_067_200_000_i64);
-        assert_eq!(rows[0].data["price"], 1);
+        assert_eq!(rows[0].timestamp(), 1_704_067_200_000_i64);
+        assert_eq!(rows[0].data()["price"], 1);
     }
 
     #[test]
@@ -729,7 +1065,7 @@ mod tests {
         );
         assert_eq!(
             rows.iter()
-                .map(|row| row.event.data["price"].as_i64().unwrap())
+                .map(|row| row.event.data()["price"].as_i64().unwrap())
                 .collect::<Vec<_>>(),
             vec![1, 2, 3]
         );

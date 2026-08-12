@@ -33,7 +33,7 @@ Or add it manually to `Cargo.toml`:
 
 ```toml
 [dependencies]
-polaris-data = "0.4"
+polaris-data = "0.11"
 ```
 
 The SDK is async-first and is designed for Tokio-based services, backfills, and trading infrastructure.
@@ -133,6 +133,26 @@ complete state, deltas update listed prices, and zero quantity deletes a price.
 Books clear across gaps and reconnects, with deltas skipped until a new snapshot.
 Use `l2_updates(...)` for raw snapshots and deltas, then feed selected updates
 into the exported `OrderbookBuilder` for application-managed books.
+
+## Match event schema versions
+
+`StandardEvent` is an untagged wire-compatible enum. Match
+`StandardEvent::Legacy` or `StandardEvent::V2` when you need the stored
+envelope. The shared `event.timestamp()` accessor returns legacy `timestamp` or
+v2 `collector_timestamp`; it does not add a `timestamp` field to v2 rows.
+
+```rust
+use polaris_data::StandardEvent;
+
+match &event {
+    StandardEvent::Legacy(row) => println!("{}", row.timestamp),
+    StandardEvent::V2(row) => println!("{:?}", row.exchange_timestamp),
+}
+println!("SDK time: {}", event.timestamp());
+```
+
+See [Event schema v2 migration](/guides/event-schema-v2-migration) for trade,
+order-book, and ordering changes.
 
 ## Discover a market before you query it
 

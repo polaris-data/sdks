@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 test("event APIs materialize orderbooks by default and expose raw L2 updates", async () => {
@@ -47,5 +48,101 @@ test("event APIs materialize orderbooks by default and expose raw L2 updates", a
     return book ? [book] : [];
   });
   assert.deepEqual(rebuilt, l2);
+  client.close();
+});
+
+test("v2 decoder consumes metadata and materializes unified books without changing delta identity", async () => {
+  const { OrderbookBuilder, PolarisClient } = await import("../dist/node/index.js");
+  const fixture = await readFile(new URL("../../tests/fixtures/events/schema-v2.jsonl", import.meta.url), "utf8");
+  const legacyFixture = await readFile(new URL("../../tests/fixtures/events/legacy-v1.jsonl", import.meta.url), "utf8");
+  const lines = fixture.trim().split("\n");
+  const client = new PolarisClient({ baseUrl: "https://api.example" });
+  const decoded = client._decodeSnapshotLines(lines, "schema-v2.jsonl");
+  const legacyDecoded = client._decodeSnapshotLines(legacyFixture.trim().split("\n"), "legacy-v1.jsonl");
+
+  assert.deepEqual(legacyDecoded, legacyFixture.trim().split("\n").map(JSON.parse));
+
+  assert.equal(decoded.length, 8);
+  assert.deepEqual(decoded.map(({ collector_timestamp }) => collector_timestamp), [
+    1704067200100,
+    1704067200300,
+    1704067200200,
+    1704067200400,
+    1704067200500,
+    1704067200450,
+    1704067261000,
+    1704067200550,
+  ]);
+  assert.equal(decoded[2].exchange_timestamp, 1704067198000);
+  assert.equal(decoded[2].data.order_id, null);
+  assert.equal(decoded[2].data.side, null);
+  assert.equal(decoded[3].data.value, "100.75");
+  assert.equal(new OrderbookBuilder().apply(decoded[1]), undefined);
+
+  client._resolveHistoricalRange = async () => ({ fromMs: 1704067200000, toMs: 1704067201000 });
+  client._readSnapshotEvents = async function* (_source, _market, from, to, filter) {
+    for (const row of decoded) {
+      const timestamp = row.collector_timestamp;
+      if (timestamp >= from && timestamp < to && (!filter || filter(row))) yield structuredClone(row);
+    }
+  };
+  const materialized = await client.events({ source: "lighter", market: "BTC-USD" });
+  assert.equal(materialized[1].data.is_snapshot, false);
+  assert.deepEqual(materialized[1].data.bids, [{ price: 100, quantity: 4 }]);
+  assert.deepEqual(materialized[1].data.asks, [{ price: 102, quantity: 5 }]);
+
+  const bbo = await client.bbo({ source: "lighter", market: "BTC-USD" });
+  assert.deepEqual(bbo.map(({ timestamp }) => timestamp), [
+    1704067200100,
+    1704067200300,
+    1704067200550,
+  ]);
+  const depth = await client.depthMetrics({ source: "lighter", market: "BTC-USD" });
+  assert.deepEqual(depth.map(({ timestamp }) => timestamp), [
+    1704067200100,
+    1704067200300,
+    1704067200550,
+  ]);
+  const bars = await client.ohlcv({ source: "lighter", market: "BTC-USD", interval: "1m" });
+  assert.deepEqual(bars, [{
+    timestamp: 1704067200000,
+    open: 100.5,
+    high: 102,
+    low: 99,
+    close: 99,
+    volume: 6.25,
+    trades: 3,
+  }]);
+  const volatility = await client.volatility({
+    source: "lighter",
+    market: "BTC-USD",
+    interval: "1m",
+  });
+  assert.equal(volatility[0].returns, 2);
+  const marks = await client.markPrices({ source: "lighter", market: "BTC-USD" });
+  assert.equal(marks.length, 1);
+  assert.equal(marks[0].data.series, "mark_px");
+
+  const unsupported = [...lines];
+  unsupported[0] = unsupported[0].replace('"v2"', '"v3"');
+  assert.throws(
+    () => client._decodeSnapshotLines(unsupported, "unknown.jsonl"),
+    /Unsupported standard event schema version 'v3'/,
+  );
+  const missingSnapshotFlag = [...lines];
+  const malformedBook = JSON.parse(missingSnapshotFlag[1]);
+  delete malformedBook.data.is_snapshot;
+  missingSnapshotFlag[1] = JSON.stringify(malformedBook);
+  assert.throws(
+    () => client._decodeSnapshotLines(missingSnapshotFlag, "missing-is-snapshot.jsonl"),
+    /Invalid v2 orderbook payload/,
+  );
+  assert.deepEqual(
+    client._decodeSnapshotLines(
+      [...legacyFixture.trim().split("\n"), lines[1]],
+      "headerless-v1.jsonl",
+    ),
+    legacyDecoded,
+  );
   client.close();
 });

@@ -79,21 +79,23 @@ impl OrderbookBuilder {
             BookUpdate::Applied => {}
         }
 
+        let source = event.source().to_owned();
+        let market = event.market().to_owned();
         let state = self
             .books
-            .get(&event.source)
-            .and_then(|markets| markets.get(&event.market))
+            .get(&source)
+            .and_then(|markets| markets.get(&market))
             .expect("book state initialized");
-        let mut data = match std::mem::take(&mut event.data) {
+        let mut data = match std::mem::take(event.data_mut()) {
             Value::Object(object) => object,
             _ => Map::new(),
         };
         data.insert("bids".to_owned(), canonical_levels(state.bids.iter().rev()));
         data.insert("asks".to_owned(), canonical_levels(state.asks.iter()));
-        event.extra.remove("bids");
-        event.extra.remove("asks");
-        event.event_type = "orderbook".to_owned();
-        event.data = Value::Object(data);
+        event.extra_mut().remove("bids");
+        event.extra_mut().remove("asks");
+        *event.event_type_mut() = "orderbook".to_owned();
+        *event.data_mut() = Value::Object(data);
         Ok(Some(event))
     }
 
@@ -120,15 +122,35 @@ impl OrderbookBuilder {
         &mut self,
         event: &StandardEvent,
     ) -> Result<BookUpdate, PolarisError> {
-        let is_snapshot = SNAPSHOT_TYPES.contains(&event.event_type.as_str());
-        let is_delta = event.event_type == DELTA_TYPE;
+        let (is_snapshot, is_delta) = match event {
+            StandardEvent::Legacy(_) => (
+                SNAPSHOT_TYPES.contains(&event.event_type()),
+                event.event_type() == DELTA_TYPE,
+            ),
+            StandardEvent::V2(_) => {
+                if event.event_type() != "orderbook" {
+                    return Ok(BookUpdate::Ignored);
+                }
+                let is_snapshot = event
+                    .data()
+                    .get("is_snapshot")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        PolarisError::Decode(
+                            "invalid v2 orderbook payload: data.is_snapshot must be a boolean"
+                                .to_owned(),
+                        )
+                    })?;
+                (is_snapshot, !is_snapshot)
+            }
+        };
         if !is_snapshot && !is_delta {
             return Ok(BookUpdate::Ignored);
         }
 
-        let data = match &event.data {
+        let data = match event.data() {
             Value::Object(object) => Some(object),
-            _ if event.extra.contains_key("bids") || event.extra.contains_key("asks") => None,
+            _ if event.extra().contains_key("bids") || event.extra().contains_key("asks") => None,
             _ => {
                 return Err(PolarisError::Decode(
                     "invalid orderbook payload: data must be an object".to_owned(),
@@ -142,14 +164,14 @@ impl OrderbookBuilder {
             apply_levels(&mut state.bids, bids.expect("snapshot bids validated"));
             apply_levels(&mut state.asks, asks.expect("snapshot asks validated"));
             self.books
-                .entry(event.source.clone())
+                .entry(event.source().to_owned())
                 .or_default()
-                .insert(event.market.clone(), state);
+                .insert(event.market().to_owned(), state);
         } else {
             let Some(state) = self
                 .books
-                .get_mut(&event.source)
-                .and_then(|markets| markets.get_mut(&event.market))
+                .get_mut(event.source())
+                .and_then(|markets| markets.get_mut(event.market()))
             else {
                 return Ok(BookUpdate::Suppressed);
             };
@@ -196,7 +218,7 @@ fn side_value<'a>(
     side: &str,
 ) -> Option<&'a Value> {
     data.and_then(|object| object.get(side))
-        .or_else(|| event.extra.get(side))
+        .or_else(|| event.extra().get(side))
 }
 
 fn parse_side(
@@ -293,16 +315,17 @@ fn typed_levels<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::LegacyStandardEvent;
 
     fn event(kind: &str, source: &str, market: &str, data: Value) -> StandardEvent {
-        StandardEvent {
+        StandardEvent::Legacy(LegacyStandardEvent {
             timestamp: 1,
             source: source.to_owned(),
             market: market.to_owned(),
             event_type: kind.to_owned(),
             data,
             extra: Default::default(),
-        }
+        })
     }
 
     #[test]
@@ -329,7 +352,7 @@ mod tests {
             ))
             .unwrap()
             .unwrap();
-        assert_eq!(snapshot.data["bids"][0]["price"], 100.0);
+        assert_eq!(snapshot.data()["bids"][0]["price"], 100.0);
 
         let updated = builder
             .apply(event(
@@ -340,13 +363,13 @@ mod tests {
             ))
             .unwrap()
             .unwrap();
-        assert_eq!(updated.event_type, "orderbook");
+        assert_eq!(updated.event_type(), "orderbook");
         assert_eq!(
-            updated.data["bids"],
+            updated.data()["bids"],
             json!([{"price": 99.0, "quantity": 1.0}, {"price": 98.0, "quantity": 4.0}])
         );
         assert_eq!(
-            updated.data["asks"],
+            updated.data()["asks"],
             json!([{"price": 101.0, "quantity": 5.0}])
         );
 
@@ -360,7 +383,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            replaced.data["bids"],
+            replaced.data()["bids"],
             json!([{"price": 97.0, "quantity": 6.0}])
         );
 
@@ -423,7 +446,7 @@ mod tests {
             ))
             .unwrap()
             .unwrap();
-        assert_eq!(result.data["bids"][0]["price"], 1.0);
+        assert_eq!(result.data()["bids"][0]["price"], 1.0);
     }
 
     #[test]

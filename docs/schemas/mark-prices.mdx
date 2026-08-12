@@ -83,7 +83,7 @@ with PolarisClient() as client:
 
 ## How it works
 
-`client.mark_prices()` uses snapshot-first replay: it queries the `/snapshots` endpoint for historical data and reads from local cached files when available. Mark prices are extracted from standardized datapoint events with the `index_price` or mark price labels.
+`client.mark_prices()` uses snapshot-first replay: it queries the `/snapshots` endpoint for historical data and reads from local cached files when available. Mark prices are extracted from standardized point events with the `mark_price` or `mark_px` series name.
 
 For more details on snapshot-based queries, see [Snapshots](/reference/snapshots).
 

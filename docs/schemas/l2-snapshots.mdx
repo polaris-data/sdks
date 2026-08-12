@@ -1,88 +1,90 @@
 ---
-title: "L2 Snapshots"
-sidebarTitle: "L2 Snapshots"
-description: "Query normalized order book snapshots with client.l2_snapshots()"
+title: "L2 Snapshots and Updates"
+sidebarTitle: "L2 Order Books"
+description: "Query complete Level 2 books or read raw order book snapshots and deltas."
 keywords:
   - l2_snapshots
+  - l2_updates
+  - l2Snapshots
+  - l2Updates
   - order book
-  - orderbook
+  - orderbook_delta
+  - OrderbookBuilder
   - market depth
-  - Python SDK
-  - client.l2_snapshots
 ---
 
-Use `client.l2_snapshots()` when you need complete Level 2 books for market microstructure analysis. The SDK reconstructs standardized `orderbook` snapshots and `orderbook_delta` updates by default.
+Use the L2 methods to read complete reconstructed books or the original stored
+order book updates. The SDKs support legacy snapshots and deltas alongside
+unified v2 `orderbook` events.
 
-## Method signature
+## Choose an L2 method
 
-```python
+| Method | Output | Use it for |
+| --- | --- | --- |
+| `l2_snapshots()` / `l2Snapshots()` | Complete sorted book after every applicable update | Analysis that requires every intermediate full book |
+| `l2_updates()` / `l2Updates()` | Original snapshots and sparse deltas | Application-managed state, custom sampling, and low-allocation processing |
+
+## Method signatures
+
+<CodeGroup>
+```python Python
 l2_snapshots(source, market, from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)
+l2_updates(source, market, from_=None, to=None, allow_gaps=False)
 ```
+
+```rust Rust
+l2_snapshots(HistoricalQuery) -> HistoricalStream<OrderbookEvent>
+l2_updates(HistoricalQuery) -> HistoricalStream<StandardEvent>
+```
+
+```typescript TypeScript
+l2Snapshots({ source, market, from?, to?, materializeOrderbooks? }) => Promise<OrderbookEvent[]>
+l2Updates({ source, market, from?, to? }) => Promise<OrderbookEvent[]>
+```
+</CodeGroup>
 
 ## Parameters
 
 | Parameter | Type | Required | Notes |
 | --- | --- | --- | --- |
-| source | str | Yes | Source ID |
-| market | str | Yes | Normalized market or instrument ID |
-| from_ | str/datetime/date/int | No | Inclusive start time (ISO 8601, datetime, date, or epoch microseconds) |
-| to | str/datetime/date/int | No | Exclusive end time (same formats as from_) |
-| allow_gaps | bool | No | Return covered rows and warn instead of failing on coverage gaps |
-| materialize_orderbooks | bool | No | Reconstruct complete books from deltas (default: true) |
+| source | string | Yes | Source ID |
+| market | string | Yes | Normalized market or instrument ID |
+| from / from_ | string/date/datetime/number | No | Inclusive start time |
+| to | string/date/datetime/number | No | Exclusive end time |
+| allow_gaps | boolean | No | Python and Rust only. Return covered rows and warn instead of failing on coverage gaps |
+| materialize_orderbooks / materializeOrderbooks | boolean | No | L2 snapshots only. Reconstruct complete books from deltas; defaults to `true` |
 
-**Note:** API key required for historical ranges. Set `POLARIS_API_KEY` environment variable or pass `api_key` to `PolarisClient()`.
+If either time boundary is omitted, the SDK resolves a bounded range from
+catalog metadata. Explicitly bounded ranges can replay from complete local
+coverage without a network request.
 
-## Return value
+## Event versions and time
 
-A single-pass iterator of normalized order book dictionaries.
+Legacy rows retain their original `orderbook`, `orderbook_snapshot`,
+`l2_snapshot`, or `orderbook_delta` type and use `timestamp`. V2 uses only
+`type: "orderbook"`, uses `data.is_snapshot` to classify the update, and uses
+`collector_timestamp` as the SDK event time. Nullable `exchange_timestamp`
+remains venue-time provenance.
 
-## Example response
+A snapshot replaces both sides of the book. A delta replaces the quantity at
+each listed price, and quantity zero removes that price. A legacy delta can omit
+an unchanged side; v2 provides both side arrays.
 
-```python
-[
-    {
-        'timestamp': 1704067200000000,
-        'venue': 'binance',
-        'symbol': 'BTC-USDT',
-        'type': 'orderbook',
-        'data': {
-            'bids': [
-                {'price': 43250.00, 'quantity': 1.5},
-                {'price': 43249.50, 'quantity': 2.0}
-            ],
-            'asks': [
-                {'price': 43250.50, 'quantity': 1.2},
-                {'price': 43251.00, 'quantity': 3.5}
-            ]
-        }
-    }
-]
-```
+## Complete L2 snapshots
 
-## Fields
+`l2_snapshots()` and `l2Snapshots()` reconstruct complete books by default.
+Python and Rust return single-pass streams; TypeScript returns an array.
 
-Materialized L2 rows use the standard event envelope with `type: "orderbook"` and the following fields under `data`:
+Materialized L2 rows use the standard event envelope with
+`type: "orderbook"` and these fields under `data`:
 
-- `data.bids`: array of bid levels, each with `price` and `quantity`
-- `data.asks`: array of ask levels, each with `price` and `quantity`
+- `data.bids`: bid levels sorted from highest to lowest price
+- `data.asks`: ask levels sorted from lowest to highest price
+- `data.is_snapshot`: v2 origin flag; `true` replaces the book and `false` applies absolute updates
 
-Bid levels are sorted descending by price, ask levels are sorted ascending. The envelope-level `timestamp` is the snapshot time in UTC microseconds since the Unix epoch.
-
-A snapshot replaces both sides. A delta changes only listed prices, and quantity
-zero removes a price. Deltas are not applied until a snapshot has been received,
-and state is cleared across coverage gaps and reconnects. Use `l2_updates()` in
-Python and Rust or `l2Updates()` in TypeScript to return raw snapshots and
-deltas without reconstructing complete books.
-
-## Reconstruction lifecycle
-
-1. `orderbook` with bid `100 × 2` initializes the book.
-2. `orderbook_delta` with bid `100 × 3` replaces that quantity.
-3. `orderbook_delta` with bid `100 × 0` deletes the price.
-4. A coverage gap or reconnect clears the reconstructed state.
-5. Any following delta is skipped until another `orderbook` snapshot arrives.
-
-## Example
+Materialized v2 deltas retain `data.is_snapshot: false` even though their bids
+and asks contain the complete current book. This lets you identify the stored
+update that produced the materialized state.
 
 ```python
 from datetime import datetime, timedelta, timezone
@@ -102,16 +104,164 @@ with PolarisClient() as client:
     print(list(islice(snapshots, 2)))
 ```
 
+### Reconstruction lifecycle
+
+1. A snapshot initializes or replaces the complete book.
+2. A delta updates only its listed price levels.
+3. A zero-quantity update deletes its price level.
+4. A coverage gap or reconnect clears reconstructed state.
+5. Following deltas are skipped until another snapshot initializes the book.
+
+## Raw L2 updates
+
+`l2_updates()` and `l2Updates()` return the original snapshots and sparse
+deltas without constructing a complete book for every update. Use them for
+execution replay, custom sampling, or application-managed order book state.
+
+A v2 snapshot has `data.is_snapshot: true`; a v2 delta has
+`data.is_snapshot: false`:
+
+```json
+[
+  {
+    "collector_timestamp": 1704067200000,
+    "collector_sequence": 100,
+    "exchange_timestamp": 1704067199990,
+    "exchange_sequence": null,
+    "source": "binance",
+    "market": "BTC-USDT",
+    "type": "orderbook",
+    "data": {
+      "is_snapshot": true,
+      "bids": [[43250.0, 1.5], [43249.5, 2.0]],
+      "asks": [[43250.5, 1.2], [43251.0, 3.5]]
+    }
+  },
+  {
+    "collector_timestamp": 1704067200001,
+    "collector_sequence": 101,
+    "exchange_timestamp": 1704067199991,
+    "exchange_sequence": null,
+    "source": "binance",
+    "market": "BTC-USDT",
+    "type": "orderbook",
+    "data": {
+      "is_snapshot": false,
+      "bids": [[43250.0, 2.25]],
+      "asks": [[43251.0, 0.0]]
+    }
+  }
+]
+```
+
+## Build complete books on demand
+
+Use `OrderbookBuilder.update()` to maintain native book state without
+allocating a complete result after every update. Call `snapshot()` only when
+you need sorted bid and ask levels. Builder state is isolated by
+`(source, market)`.
+
+<CodeGroup>
+```python Python
+from polaris_data import OrderbookBuilder, PolarisClient
+
+books = OrderbookBuilder()
+
+with PolarisClient() as client:
+    for update in client.l2_updates(
+        source="binance",
+        market="BTC-USDT",
+        from_="2024-01-01T00:00:00Z",
+        to="2024-01-01T01:00:00Z",
+    ):
+        books.update(update)
+
+book = books.snapshot("binance", "BTC-USDT")
+if book is not None:
+    print(book["bids"][:5], book["asks"][:5])
+```
+
+```rust Rust
+use futures_util::StreamExt;
+use polaris_data::{HistoricalQuery, OrderbookBuilder, PolarisClient};
+
+let client = PolarisClient::builder().build()?;
+let mut updates = client
+    .l2_updates(HistoricalQuery {
+        source: "binance".into(),
+        market: "BTC-USDT".into(),
+        from: Some("2024-01-01T00:00:00Z".into()),
+        to: Some("2024-01-01T01:00:00Z".into()),
+        allow_gaps: false,
+        materialize_orderbooks: false,
+    })
+    .await?;
+let mut books = OrderbookBuilder::new();
+
+while let Some(update) = updates.next().await.transpose()? {
+    books.update(&update)?;
+}
+
+if let Some(book) = books.snapshot("binance", "BTC-USDT") {
+    println!("{} bids, {} asks", book.bids.len(), book.asks.len());
+}
+```
+
+```typescript TypeScript
+import { OrderbookBuilder, PolarisClient } from "polaris-data";
+
+await using client = new PolarisClient();
+const books = new OrderbookBuilder();
+const updates = await client.l2Updates({
+  source: "binance",
+  market: "BTC-USDT",
+  from: "2024-01-01T00:00:00Z",
+  to: "2024-01-01T01:00:00Z",
+});
+
+for (const update of updates) {
+  books.update(update);
+}
+
+const book = books.snapshot("binance", "BTC-USDT");
+if (book) console.log(book.bids.slice(0, 5), book.asks.slice(0, 5));
+```
+</CodeGroup>
+
+`update()` returns `false` for a delta received before its first snapshot.
+`snapshot(source, market)` returns `None` or `undefined` until that book has
+been initialized.
+
+### Builder methods
+
+| Method | Behavior |
+| --- | --- |
+| `update(event)` | Mutates book state without constructing a complete book |
+| `snapshot(source, market)` | Materializes the current sorted bids and asks |
+| `apply(event)` | Updates state and returns a complete book event |
+| `clear_book(source, market)` / `clearBook(source, market)` | Removes one book |
+| `clear()` | Removes all managed books |
+
+Use `update()` in high-frequency loops. Use `apply()` only when every update
+must immediately produce a complete book. When `apply()` materializes a v2
+delta, the output deliberately retains `data.is_snapshot: false`.
+
+<Warning>
+Do not carry reconstructed state across a known coverage gap. Keep
+`allow_gaps=False` for continuous books, or process each covered interval
+separately and clear the builder before the next interval.
+</Warning>
+
 ## How it works
 
-`client.l2_snapshots()` uses snapshot-first replay: it queries the `/snapshots` endpoint for historical data and reads from local cached files when available. The SDK handles pagination and data normalization automatically.
-
-For more details on snapshot-based queries, see [Snapshots](/reference/snapshots).
+Both L2 methods use snapshot-first historical replay. The SDK reads locally
+cached standardized shards when they cover the requested range and downloads
+missing coverage when needed. Raw update iteration stays bounded in memory.
 
 ## Related documentation
 
-- [L2 updates](/schemas/l2-updates) for raw snapshots, sparse deltas, and application-managed books
-- [Depth metrics](/schemas/depth-metrics) for derived liquidity metrics
 - [BBO](/schemas/bbo) if you only need top-of-book quotes
-- [Events](/schemas/events) if you need order book updates mixed with other event types
+- [Depth metrics](/schemas/depth-metrics) for derived liquidity metrics
+- [Events](/schemas/events) for order book updates mixed with other event types
+- [Snapshots](/reference/snapshots) for historical coverage and storage
 - [Authentication](/guides/authentication)

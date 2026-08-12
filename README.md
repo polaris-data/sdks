@@ -236,13 +236,22 @@ those fields requires one schema pass before batches are emitted.
 Exact `events()` and standardized `replay()` batches use UTC microsecond
 timestamps and preserve storage order without timestamp sorting. Every row has
 stable `replay_ordinal`, `source_file_ordinal`, and `source_row_ordinal` fields,
-plus nullable receive timestamp, sequence, and sequence scope fields. Common
-trade, order-book, and point payloads have typed columns. With raw order-book
+plus nullable legacy `timestamp` and v2 `collector_timestamp`,
+`collector_sequence`, `exchange_timestamp`, and `exchange_sequence` fields.
+Common trade, order-book, and point payloads have typed columns, including
+nullable `order_id`, `side`, and `is_snapshot`. With raw order-book
 updates, `event_json` preserves the complete source event, including unknown
 event types and venue-specific fields; with materialization enabled it contains
 the resulting complete-book event.
 Use `materialize_orderbooks=False` for execution replay so batches contain the
 initial snapshot and every ordered delta.
+
+Metadata-framed event schema v2 uses `collector_timestamp` for SDK filtering,
+bucketing, and replay timing while retaining nullable venue
+`exchange_timestamp` as provenance. Rust exposes this through
+`StandardEvent::V2` and the shared `timestamp()` accessor; Python preserves the
+v2 dictionary shape; TypeScript exports a structural legacy/v2 union. See the
+[schema v2 migration guide](https://docs.polaris.supply/guides/event-schema-v2-migration).
 
 For parameter details, response shapes, and end-to-end examples, see the
 [Python SDK docs](https://docs.polaris.supply/sdks/python).

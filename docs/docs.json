@@ -2,6 +2,12 @@
   "$schema": "https://mintlify.com/docs.json",
   "theme": "mint",
   "name": "Polaris",
+  "redirects": [
+    {
+      "source": "/schemas/l2-updates",
+      "destination": "/schemas/l2-snapshots#raw-l2-updates"
+    }
+  ],
   "colors": {
     "primary": "#0D63F3",
     "light": "#7BC3FF",
@@ -57,10 +63,10 @@
       {
         "group": "Data Schemas",
         "pages": [
+          "guides/event-schema-v2-migration",
           "schemas/events",
           "schemas/trades",
           "schemas/ohlcv",
-          "schemas/l2-updates",
           "schemas/l2-snapshots",
           "schemas/bbo",
           "schemas/funding-rates",

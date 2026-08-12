@@ -86,6 +86,50 @@ test("stream subscribes with token, deduplicates markets, and yields standard ev
   }
 });
 
+test("stream accepts v2 envelopes and fills outer identity", async () => {
+  const { server, url } = await startServer((socket) => {
+    socket.once("message", () => {
+      socket.send(JSON.stringify({
+        type: "ack",
+        request_id: "polaris-sdk-subscribe",
+        action: "subscribe",
+        changed: 1,
+        active_subscriptions: 1,
+      }));
+      socket.send(JSON.stringify({
+        source: "lighter",
+        market: "BTC-USD",
+        kind: {
+          type: "data",
+          stream: "standard",
+          event: {
+            collector_timestamp: 1786017601000,
+            collector_sequence: 7,
+            exchange_timestamp: null,
+            exchange_sequence: null,
+            type: "trade",
+            data: { order_id: null, price: 1, quantity: 2, side: null },
+          },
+        },
+      }));
+    });
+  });
+
+  try {
+    const { PolarisClient } = await import("../dist/node/index.js");
+    const client = new PolarisClient({ streamUrl: url });
+    const realtime = client.stream({ source: "lighter", markets: ["BTC-USD"] });
+    const received = (await realtime[Symbol.asyncIterator]().next()).value;
+    assert.equal(received.collector_timestamp, 1786017601000);
+    assert.equal(received.source, "lighter");
+    assert.equal(received.market, "BTC-USD");
+    realtime.close();
+    client.close();
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test("stream clears materialized orderbooks after an abnormal close", async () => {
   let connections = 0;
   const { server, url } = await startServer((socket) => {

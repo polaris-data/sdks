@@ -1,0 +1,110 @@
+---
+title: "Event schema v2 migration"
+sidebarTitle: "Schema v2 migration"
+description: "Update event consumers for collector-ordered v2 snapshots while continuing to read legacy data."
+keywords:
+  - event schema v2
+  - collector timestamp
+  - exchange timestamp
+  - migration
+---
+
+Event schema v2 records when a complete message reaches a Polaris collector and
+keeps the venue timestamp separately. SDK versions Rust `0.11.0`, Python
+`0.14.0`, and TypeScript `0.6.0` read both metadata-framed v2 snapshots and
+headerless legacy snapshots.
+
+## What changed
+
+V2 events replace the legacy `timestamp` envelope field with these fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `collector_timestamp` | integer | Complete-message arrival time at the collector, in Unix milliseconds |
+| `collector_sequence` | integer | Stored collector order within one snapshot; values can have gaps |
+| `exchange_timestamp` | integer or null | Venue-provided event time, in Unix milliseconds |
+| `exchange_sequence` | string or null | Exact venue-provided sequence identifier |
+
+Use `collector_timestamp` for historical filters, buckets, and replay timing.
+Treat `exchange_timestamp` as provenance: it can be null or regress relative to
+collector order. Iterate rows in the order returned by the SDK.
+
+Each v2 snapshot starts with a `metadata` record containing
+`data.schema_version: "v2"`. SDK readers consume this record; it is not returned
+from event, replay, trade, or order-book methods.
+
+## Match the event version
+
+<CodeGroup>
+```rust Rust
+use polaris_data::StandardEvent;
+
+match &event {
+    StandardEvent::Legacy(row) => println!("legacy venue time: {}", row.timestamp),
+    StandardEvent::V2(row) => {
+        println!("collector time: {}", row.collector_timestamp);
+        println!("exchange time: {:?}", row.exchange_timestamp);
+    }
+}
+
+// Shared SDK timing uses collector time for v2.
+println!("SDK timestamp: {}", event.timestamp());
+```
+
+```python Python
+if "collector_timestamp" in event:
+    sdk_timestamp = event["collector_timestamp"]
+    exchange_timestamp = event["exchange_timestamp"]
+else:
+    sdk_timestamp = event["timestamp"]
+    exchange_timestamp = event["timestamp"]
+```
+
+```typescript TypeScript
+if ("collector_timestamp" in event) {
+  const sdkTimestamp = event.collector_timestamp;
+  const exchangeTimestamp = event.exchange_timestamp;
+} else {
+  const sdkTimestamp = event.timestamp;
+  const exchangeTimestamp = event.timestamp;
+}
+```
+</CodeGroup>
+
+## Trades
+
+V2 trades add `data.order_id`, which is a string or `null`. `data.side` is the
+aggressor side and is `"buy"`, `"sell"`, or `null`; v2 does not emit
+`"unknown"` or `"none"`.
+
+## Order books
+
+V2 uses only `type: "orderbook"`. Read `data.is_snapshot` to distinguish a
+complete replacement from an absolute level update:
+
+- `true` replaces the complete book.
+- `false` updates the listed price levels; a zero quantity removes a level.
+
+Headerless legacy files continue to use `orderbook_delta`. When SDK
+materialization turns a v2 delta into a complete book, the output retains
+`is_snapshot: false` so you can identify the originating update.
+
+## Columnar Python output
+
+Exact event batches use one mixed-version schema. Legacy `timestamp` and the v2
+collector/exchange fields are nullable `timestamp[us, tz=UTC]` columns. The
+schema also includes nullable `collector_sequence`, `exchange_sequence`,
+`order_id`, `side`, and `is_snapshot` columns. Metadata is omitted, while
+`source_row_ordinal` counts it, so the first v2 data event has ordinal `1`.
+
+## Compatibility checklist
+
+- Upgrade before reading v2 snapshots.
+- Stop assuming every event has `timestamp`.
+- Use collector time for filters and derived calculations.
+- Do not sort replay rows by exchange timestamp.
+- Handle null exchange fields, trade order IDs, and aggressor sides.
+- Use `data.is_snapshot` for v2 order books.
+
+See [Events](/schemas/events), [Trades](/schemas/trades), and
+[L2 snapshots and updates](/schemas/l2-snapshots) for the complete SDK behavior.

@@ -18,11 +18,13 @@ use crate::{
     models::{
         BboQuery, BboQuote, CatalogAccess, CatalogInstrument, CatalogMarket, CatalogQuery,
         CatalogResponse, DepthMetricsRow, Diagnostic, DownloadManifestQuery,
-        DownloadManifestResponse, HistoricalQuery, HistoricalStream, ListSnapshotsQuery,
-        OhlcvOutput, OhlcvQuery, OrderbookData, OrderbookEvent, OrderbookLevel, PointSeriesData,
-        PointSeriesEvent, RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery,
-        ReplayStream, SnapshotEntry, StandardEvent, StreamQuery, TradeData, TradeEvent,
-        VolatilityBar, VolumeBar, VwapBar,
+        DownloadManifestResponse, HistoricalQuery, HistoricalStream, LegacyOrderbookEvent,
+        LegacyPointSeriesEvent, LegacyTradeData, LegacyTradeEvent, ListSnapshotsQuery, OhlcvOutput,
+        OhlcvQuery, OrderbookData, OrderbookDataV2, OrderbookEvent, OrderbookEventV2,
+        OrderbookLevel, PointSeriesData, PointSeriesEvent, PointSeriesEventV2, RawQuery,
+        RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, ReplayStream, SnapshotEntry,
+        StandardEvent, StreamQuery, TradeDataV2, TradeEvent, TradeEventV2, VolatilityBar,
+        VolumeBar, VwapBar,
     },
     ohlcv,
     orderbook::{BookUpdate, BookView},
@@ -317,18 +319,10 @@ impl PolarisClient {
         Ok(Box::pin(try_stream! {
             while let Some(event) = events.next().await {
                 let event = event?;
-                if event.event_type != "trade" {
+                if event.event_type() != "trade" {
                     continue;
                 }
-                let data: TradeData = serde_json::from_value(event.data)
-                    .map_err(|err| PolarisError::Decode(format!("invalid trade payload: {err}")))?;
-                yield TradeEvent {
-                    timestamp: event.timestamp,
-                    source: event.source,
-                    market: event.market,
-                    event_type: event.event_type,
-                    data,
-                };
+                yield Self::parse_trade(event)?;
             }
         }))
     }
@@ -782,7 +776,7 @@ impl PolarisClient {
 
     fn push_estimated_coverage_diagnostic(&self, source: &str, market: &str, files: usize) {
         let message = format!(
-            "Local snapshot coverage for '{source}/{market}' was inferred from {files} legacy file(s); completeness is estimated until exact coverage metadata is available"
+            "Local snapshot coverage for '{source}/{market}' was inferred from {files} file(s) without exact coverage metadata; completeness is estimated"
         );
         log::warn!("{message}");
         self.diagnostics
@@ -935,7 +929,7 @@ impl PolarisClient {
             while let Some(event) = events.next().await {
                 let event = event?;
                 if !matches!(
-                    event.event_type.as_str(),
+                    event.event_type(),
                     "orderbook" | "orderbook_delta" | "orderbook_snapshot" | "l2_snapshot"
                 ) {
                     continue;
@@ -962,7 +956,7 @@ impl PolarisClient {
             while let Some(event) = events.next().await {
                 let event = event?;
                 if matches!(
-                    event.event_type.as_str(),
+                    event.event_type(),
                     "orderbook" | "orderbook_delta" | "orderbook_snapshot" | "l2_snapshot"
                 ) {
                     yield event;
@@ -1002,7 +996,7 @@ impl PolarisClient {
             .await?;
         Ok(Box::pin(try_stream! {
             let mut orderbooks = OrderbookBuilder::new();
-            let mut pending: Option<(i64, BboQuote)> = None;
+            let mut buckets = std::collections::BTreeMap::<i64, BboQuote>::new();
             let mut last_quote: Option<BboQuote> = None;
             while let Some(record) = records.next().await {
                 let event = match record? {
@@ -1017,9 +1011,9 @@ impl PolarisClient {
                     continue;
                 }
                 let Some(mut quote) = orderbooks.best_bid_offer(
-                    &event.source,
-                    &event.market,
-                    event.timestamp,
+                    event.source(),
+                    event.market(),
+                    event.timestamp(),
                 ) else {
                     continue;
                 };
@@ -1041,15 +1035,9 @@ impl PolarisClient {
                 };
                 let bucket = quote.timestamp.div_euclid(width) * width;
                 quote.timestamp = bucket;
-                match pending.take() {
-                    Some((previous_bucket, previous)) if previous_bucket != bucket => {
-                        yield previous;
-                        pending = Some((bucket, quote));
-                    }
-                    _ => pending = Some((bucket, quote)),
-                }
+                buckets.insert(bucket, quote);
             }
-            if let Some((_, quote)) = pending {
+            for quote in buckets.into_values() {
                 yield quote;
             }
         }))
@@ -1061,7 +1049,7 @@ impl PolarisClient {
         mut query: HistoricalQuery,
     ) -> Result<HistoricalStream<PointSeriesEvent>, PolarisError> {
         query.materialize_orderbooks = false;
-        self.point_series(query, "funding_rate").await
+        self.point_series(query, &["funding_rate"]).await
     }
 
     /// Return standardized mark-price point-series events for a time range.
@@ -1070,19 +1058,19 @@ impl PolarisClient {
         mut query: HistoricalQuery,
     ) -> Result<HistoricalStream<PointSeriesEvent>, PolarisError> {
         query.materialize_orderbooks = false;
-        self.point_series(query, "mark_price").await
+        self.point_series(query, &["mark_price", "mark_px"]).await
     }
 
     async fn point_series(
         &self,
         query: HistoricalQuery,
-        expected_series: &'static str,
+        expected_series: &'static [&'static str],
     ) -> Result<HistoricalStream<PointSeriesEvent>, PolarisError> {
         let mut events = self.events(query).await?;
         Ok(Box::pin(try_stream! {
             while let Some(event) = events.next().await {
                 let event = event?;
-                if event.event_type == "point" {
+                if event.event_type() == "point" {
                     if let Some(point) = Self::try_parse_point_series(event, expected_series) {
                         yield point;
                     }
@@ -1131,7 +1119,7 @@ impl PolarisClient {
 
         while let Some(trade) = trades.next().await {
             let trade = trade?;
-            aggregator.add(trade.timestamp, trade.data.price, trade.data.quantity);
+            aggregator.add(trade.timestamp(), trade.price(), trade.quantity());
         }
 
         Ok(aggregator.finish())
@@ -1155,7 +1143,7 @@ impl PolarisClient {
 
         while let Some(trade) = trades.next().await {
             let trade = trade?;
-            aggregator.add(trade.timestamp, trade.data.price);
+            aggregator.add_trade(&trade);
         }
 
         Ok(aggregator.finish())
@@ -1205,9 +1193,9 @@ impl PolarisClient {
                 if orderbooks.update_state(&event)? != BookUpdate::Applied {
                     continue;
                 }
-                if let Some(view) = orderbooks.view(&event.source, &event.market) {
+                if let Some(view) = orderbooks.view(event.source(), event.market()) {
                     if let Some(metrics) = Self::derive_depth_metrics(
-                        event.timestamp,
+                        event.timestamp(),
                         view,
                         depth_pct,
                         slippage_notional,
@@ -1223,20 +1211,64 @@ impl PolarisClient {
     // Helper methods for data derivation
     // -----------------------------------------------------------------------
 
+    pub(crate) fn parse_trade(event: StandardEvent) -> Result<TradeEvent, PolarisError> {
+        match event {
+            StandardEvent::Legacy(event) => {
+                let data: LegacyTradeData = serde_json::from_value(event.data).map_err(|err| {
+                    PolarisError::Decode(format!("invalid legacy trade payload: {err}"))
+                })?;
+                Ok(TradeEvent::Legacy(LegacyTradeEvent {
+                    timestamp: event.timestamp,
+                    source: event.source,
+                    market: event.market,
+                    event_type: event.event_type,
+                    data,
+                }))
+            }
+            StandardEvent::V2(event) => {
+                let data: TradeDataV2 = serde_json::from_value(event.data).map_err(|err| {
+                    PolarisError::Decode(format!("invalid v2 trade payload: {err}"))
+                })?;
+                if data
+                    .side
+                    .as_deref()
+                    .is_some_and(|side| !matches!(side, "buy" | "sell"))
+                {
+                    return Err(PolarisError::Decode(
+                        "invalid v2 trade payload: data.side must be buy, sell, or null".to_owned(),
+                    ));
+                }
+                Ok(TradeEvent::V2(TradeEventV2 {
+                    collector_timestamp: event.collector_timestamp,
+                    collector_sequence: event.collector_sequence,
+                    exchange_timestamp: event.exchange_timestamp,
+                    exchange_sequence: event.exchange_sequence,
+                    source: event.source,
+                    market: event.market,
+                    event_type: event.event_type,
+                    data,
+                }))
+            }
+        }
+    }
+
     fn try_parse_orderbook(event: StandardEvent) -> Option<OrderbookEvent> {
-        let mut payload = event.data;
+        let mut payload = event.data().clone();
         if !payload.is_object() {
             payload = Value::Object(Default::default());
         }
         let object = payload.as_object_mut()?;
         for key in ["bids", "asks"] {
             if !object.contains_key(key) {
-                if let Some(value) = event.extra.get(key) {
+                if let Some(value) = event.extra().get(key) {
                     object.insert(key.to_owned(), value.clone());
                 }
             }
         }
-        let is_delta = event.event_type == "orderbook_delta";
+        let is_delta = match &event {
+            StandardEvent::Legacy(_) => event.event_type() == "orderbook_delta",
+            StandardEvent::V2(_) => !object.get("is_snapshot")?.as_bool()?,
+        };
         let bids = match object.get("bids") {
             Some(value) => parse_orderbook_levels(value)?,
             None if is_delta => Vec::new(),
@@ -1247,36 +1279,71 @@ impl PolarisClient {
             None if is_delta => Vec::new(),
             None => return None,
         };
-        let extra = object
-            .iter()
-            .filter(|(key, _)| key.as_str() != "bids" && key.as_str() != "asks")
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect();
-        let data = OrderbookData { bids, asks, extra };
-        Some(OrderbookEvent {
-            timestamp: event.timestamp,
-            source: event.source,
-            market: event.market,
-            event_type: event.event_type,
-            data,
-        })
+        let mut extra = object.clone();
+        extra.remove("bids");
+        extra.remove("asks");
+        match event {
+            StandardEvent::Legacy(event) => Some(OrderbookEvent::Legacy(LegacyOrderbookEvent {
+                timestamp: event.timestamp,
+                source: event.source,
+                market: event.market,
+                event_type: event.event_type,
+                data: OrderbookData {
+                    bids,
+                    asks,
+                    extra: extra.into_iter().collect(),
+                },
+            })),
+            StandardEvent::V2(event) => {
+                let is_snapshot = extra.remove("is_snapshot")?.as_bool()?;
+                Some(OrderbookEvent::V2(OrderbookEventV2 {
+                    collector_timestamp: event.collector_timestamp,
+                    collector_sequence: event.collector_sequence,
+                    exchange_timestamp: event.exchange_timestamp,
+                    exchange_sequence: event.exchange_sequence,
+                    source: event.source,
+                    market: event.market,
+                    event_type: event.event_type,
+                    data: OrderbookDataV2 {
+                        is_snapshot,
+                        bids,
+                        asks,
+                        extra: extra.into_iter().collect(),
+                    },
+                }))
+            }
+        }
     }
 
-    fn try_parse_point_series(
+    pub(crate) fn try_parse_point_series(
         event: StandardEvent,
-        expected_series: &str,
+        expected_series: &[&str],
     ) -> Option<PointSeriesEvent> {
-        let data: PointSeriesData = serde_json::from_value(event.data).ok()?;
-        if data.series_name != expected_series {
+        let data: PointSeriesData = serde_json::from_value(event.data().clone()).ok()?;
+        if !expected_series.contains(&data.series_name.as_str()) {
             return None;
         }
-        Some(PointSeriesEvent {
-            timestamp: event.timestamp,
-            source: event.source,
-            market: event.market,
-            event_type: event.event_type,
-            data,
-        })
+        match event {
+            StandardEvent::Legacy(event) => {
+                Some(PointSeriesEvent::Legacy(LegacyPointSeriesEvent {
+                    timestamp: event.timestamp,
+                    source: event.source,
+                    market: event.market,
+                    event_type: event.event_type,
+                    data,
+                }))
+            }
+            StandardEvent::V2(event) => Some(PointSeriesEvent::V2(PointSeriesEventV2 {
+                collector_timestamp: event.collector_timestamp,
+                collector_sequence: event.collector_sequence,
+                exchange_timestamp: event.exchange_timestamp,
+                exchange_sequence: event.exchange_sequence,
+                source: event.source,
+                market: event.market,
+                event_type: event.event_type,
+                data,
+            })),
+        }
     }
 
     fn derive_depth_metrics(
@@ -1957,14 +2024,15 @@ impl VolatilityAggregator {
         self.points.push((timestamp, price));
     }
 
-    fn finish(self) -> Vec<VolatilityBar> {
-        let mut points = self.points.clone();
-        points.sort_by_key(|(ts, _)| *ts);
+    fn add_trade(&mut self, trade: &TradeEvent) {
+        self.add(trade.timestamp(), trade.price());
+    }
 
+    fn finish(self) -> Vec<VolatilityBar> {
         let mut buckets: std::collections::HashMap<i64, VolatilityBucket> =
             std::collections::HashMap::new();
 
-        for (timestamp, price) in points {
+        for (timestamp, price) in self.points {
             let bucket = (timestamp / self.interval_ms) * self.interval_ms;
             let state = buckets.entry(bucket).or_insert_with(|| VolatilityBucket {
                 timestamp: bucket,

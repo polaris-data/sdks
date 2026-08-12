@@ -70,7 +70,7 @@ export interface CatalogMarket {
 // Standardised event envelope
 // ---------------------------------------------------------------------------
 
-export interface StandardEvent extends Record<string, unknown> {
+export interface LegacyStandardEvent extends Record<string, unknown> {
   timestamp: number;
   source: string;
   market: string;
@@ -78,42 +78,81 @@ export interface StandardEvent extends Record<string, unknown> {
   data: Record<string, unknown>;
 }
 
-export interface TradeData {
+export interface StandardEventV2 extends Record<string, unknown> {
+  collector_timestamp: number;
+  collector_sequence: number;
+  exchange_timestamp: number | null;
+  exchange_sequence: string | null;
+  source: string;
+  market: string;
+  type: string;
+  data: Record<string, unknown>;
+}
+
+export type StandardEvent = LegacyStandardEvent | StandardEventV2;
+
+export interface LegacyTradeData {
   price: number;
   quantity: number;
   side: string;
   [key: string]: unknown;
 }
 
-export interface TradeEvent extends StandardEvent {
-  type: "trade";
-  data: TradeData;
+export interface TradeDataV2 {
+  order_id: string | null;
+  price: number;
+  quantity: number;
+  side: "buy" | "sell" | null;
+  [key: string]: unknown;
 }
+
+export interface LegacyTradeEvent extends LegacyStandardEvent {
+  type: "trade";
+  data: LegacyTradeData;
+}
+
+export interface TradeEventV2 extends StandardEventV2 {
+  type: "trade";
+  data: TradeDataV2;
+}
+
+export type TradeEvent = LegacyTradeEvent | TradeEventV2;
 
 export interface PointSeriesData extends Record<string, unknown> {
   series: string;
+  value: number;
 }
 
-export interface PointSeriesEvent extends StandardEvent {
+export interface PointSeriesDataV2 extends Record<string, unknown> {
+  series: string;
+  value: string;
+}
+
+export interface LegacyPointSeriesEvent extends LegacyStandardEvent {
   type: "point";
   data: PointSeriesData;
 }
 
-export interface FundingRateData extends PointSeriesData {
+export interface PointSeriesEventV2 extends StandardEventV2 {
+  type: "point";
+  data: PointSeriesDataV2;
+}
+
+export type PointSeriesEvent = LegacyPointSeriesEvent | PointSeriesEventV2;
+
+export interface FundingRateData extends Record<string, unknown> {
   series: "funding_rate";
+  value: number | string;
 }
 
-export interface FundingRateEvent extends PointSeriesEvent {
-  data: FundingRateData;
+export type FundingRateEvent = PointSeriesEvent & { data: FundingRateData };
+
+export interface MarkPriceData extends Record<string, unknown> {
+  series: "mark_price" | "mark_px";
+  value: number | string;
 }
 
-export interface MarkPriceData extends PointSeriesData {
-  series: "mark_price";
-}
-
-export interface MarkPriceEvent extends PointSeriesEvent {
-  data: MarkPriceData;
-}
+export type MarkPriceEvent = PointSeriesEvent & { data: MarkPriceData };
 
 export type OrderbookLevel =
   | [number | string, number | string, ...unknown[]]
@@ -133,9 +172,22 @@ export interface OrderbookSides {
 export interface OrderbookData
   extends Record<string, unknown>, Partial<OrderbookSides> {}
 
-export interface OrderbookEvent extends StandardEvent, Partial<OrderbookSides> {
+export interface OrderbookDataV2 extends OrderbookData {
+  is_snapshot: boolean;
+  bids: OrderbookLevel[];
+  asks: OrderbookLevel[];
+}
+
+export interface LegacyOrderbookEvent extends LegacyStandardEvent, Partial<OrderbookSides> {
   data: OrderbookData;
 }
+
+export interface OrderbookEventV2 extends StandardEventV2 {
+  type: "orderbook";
+  data: OrderbookDataV2;
+}
+
+export type OrderbookEvent = LegacyOrderbookEvent | OrderbookEventV2;
 
 export interface BboQuote {
   timestamp: number;
