@@ -56,12 +56,15 @@ Batch size never changes ordering or resets order-book state.
 
 Headerless snapshots return the legacy envelope with `timestamp`. Metadata-led
 v2 snapshots return `collector_timestamp`, `collector_sequence`, nullable
-`exchange_timestamp`, and nullable `exchange_sequence` instead. SDK filters and
-derived calculations use legacy `timestamp` or v2 `collector_timestamp`.
+`exchange_timestamp`, and nullable `exchange_sequence` instead. For v2 events,
+prefer `collector_timestamp` anywhere you previously used the legacy
+`timestamp` field. It is the canonical SDK time for range filters, replay,
+bucketing, and derived calculations.
 
-Exchange time is venue provenance and may be null or regress. Preserve the
-order returned by the SDK. See [Event schema v2 migration](/guides/event-schema-v2-migration)
-for version-matching examples in every language.
+Do not substitute `exchange_timestamp` for that purpose. Exchange time is venue
+provenance and may be null or regress. Preserve the order returned by the SDK.
+See [Event schema v2 migration](/guides/event-schema-v2-migration) for
+version-matching examples in every language.
 
 ## Common event types
 
