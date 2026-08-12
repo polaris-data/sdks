@@ -318,7 +318,23 @@ function parseServerMessage(data: unknown): ParsedMessage {
     throw new StreamProtocolError("Standard realtime stream received an invalid data message");
   }
   const event = value.kind.event as unknown as StandardEvent;
-  if (typeof event.timestamp !== "number" || typeof event.type !== "string" || !isObject(event.data)) {
+  const isV2 = [
+    "collector_timestamp",
+    "collector_sequence",
+    "exchange_timestamp",
+    "exchange_sequence",
+  ].every((field) => field in event);
+  const isLegacy = "timestamp" in event && typeof event.timestamp === "number";
+  const validV2 = isV2 &&
+    "collector_timestamp" in event && typeof event.collector_timestamp === "number" &&
+    typeof event.collector_sequence === "number" &&
+    (event.exchange_timestamp === null || typeof event.exchange_timestamp === "number") &&
+    (event.exchange_sequence === null || typeof event.exchange_sequence === "string");
+  if (
+    (!isLegacy && !validV2) ||
+    typeof event.type !== "string" ||
+    !isObject(event.data)
+  ) {
     throw new StreamProtocolError("Invalid standardized realtime event");
   }
   if (!event.source) event.source = typeof value.source === "string" ? value.source : "";

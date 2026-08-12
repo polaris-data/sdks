@@ -4,15 +4,17 @@ use arrow_array::{
     ArrayRef, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
     TimestampMillisecondArray,
     builder::{
-        Float64Builder, LargeStringBuilder, ListBuilder, StringDictionaryBuilder, StructBuilder,
-        TimestampMicrosecondBuilder, UInt32Builder, UInt64Builder,
+        BooleanBuilder, Float64Builder, LargeStringBuilder, ListBuilder, StringBuilder,
+        StringDictionaryBuilder, StructBuilder, TimestampMicrosecondBuilder, UInt32Builder,
+        UInt64Builder,
     },
     types::Int32Type,
 };
 use arrow_pyarrow::{IntoPyArrow, ToPyArrow};
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 use polaris_data::{
-    BboQuote, DepthMetricsRow, ExactReplayEvent, PointSeriesEvent, PolarisError, TradeEvent,
+    BboQuote, DepthMetricsRow, ExactReplayEvent, PointSeriesEvent, PolarisError, StandardEvent,
+    TradeEvent,
     blocking::{ExactReplayIterator, HistoricalIterator, PreparedHistoricalReplay},
 };
 use pyo3::{prelude::*, types::PyAny};
@@ -137,7 +139,7 @@ impl NativeColumnar {
         market: String,
         batch_size: usize,
     ) -> Result<Self, PolarisError> {
-        let extensions = infer_extensions(plan.trades(), |row| &row.data.extra)?;
+        let extensions = infer_extensions(plan.trades(), TradeEvent::extra)?;
         let schema = trade_schema(&extensions);
         Ok(Self {
             iterator: Some(ColumnarIterator::Trades {
@@ -159,7 +161,7 @@ impl NativeColumnar {
         value_name: &'static str,
         batch_size: usize,
     ) -> Result<Self, PolarisError> {
-        let extensions = infer_extensions(plan.point_series(series_name), |row| &row.data.extra)?;
+        let extensions = infer_extensions(plan.point_series(series_name), |row| &row.data().extra)?;
         let schema = point_schema(value_name, &extensions);
         Ok(Self {
             iterator: Some(ColumnarIterator::Points {
@@ -367,10 +369,11 @@ fn level_list_type() -> DataType {
 
 fn event_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
-        exact_timestamp_field("timestamp", false),
-        exact_timestamp_field("receive_timestamp", true),
-        Field::new("sequence", DataType::UInt64, true),
-        Field::new("sequence_scope", dictionary_type(), true),
+        exact_timestamp_field("timestamp", true),
+        exact_timestamp_field("collector_timestamp", true),
+        Field::new("collector_sequence", DataType::UInt64, true),
+        exact_timestamp_field("exchange_timestamp", true),
+        Field::new("exchange_sequence", DataType::Utf8, true),
         Field::new("replay_ordinal", DataType::UInt64, false),
         Field::new("source_file_ordinal", DataType::UInt32, false),
         Field::new("source_row_ordinal", DataType::UInt64, false),
@@ -379,7 +382,9 @@ fn event_schema() -> SchemaRef {
         Field::new("type", dictionary_type(), false),
         Field::new("trade_price", DataType::Float64, true),
         Field::new("trade_quantity", DataType::Float64, true),
-        Field::new("trade_side", dictionary_type(), true),
+        Field::new("order_id", DataType::Utf8, true),
+        Field::new("side", dictionary_type(), true),
+        Field::new("is_snapshot", DataType::Boolean, true),
         Field::new("bids", level_list_type(), true),
         Field::new("asks", level_list_type(), true),
         Field::new("point_series", dictionary_type(), true),
@@ -472,60 +477,7 @@ fn identity<'a>(value: &'a str, fallback: &'a str) -> &'a str {
 }
 
 fn event_data(row: &ExactReplayEvent) -> Option<&serde_json::Map<String, Value>> {
-    row.event.data.as_object()
-}
-
-fn unsigned_value(value: &Value) -> Option<u64> {
-    value
-        .as_u64()
-        .or_else(|| value.as_i64().and_then(|value| u64::try_from(value).ok()))
-        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
-}
-
-fn sequence(row: &ExactReplayEvent) -> Option<u64> {
-    row.event
-        .extra
-        .get("sequence")
-        .or_else(|| row.event.extra.get("nonce"))
-        .or_else(|| event_data(row).and_then(|data| data.get("sequence")))
-        .or_else(|| event_data(row).and_then(|data| data.get("nonce")))
-        .and_then(unsigned_value)
-}
-
-fn sequence_scope(row: &ExactReplayEvent) -> Option<&str> {
-    row.event
-        .extra
-        .get("sequence_scope")
-        .or_else(|| row.event.extra.get("nonce_scope"))
-        .or_else(|| event_data(row).and_then(|data| data.get("sequence_scope")))
-        .or_else(|| event_data(row).and_then(|data| data.get("nonce_scope")))
-        .and_then(Value::as_str)
-}
-
-fn timestamp_micros(value: &Value, explicitly_micros: bool) -> Option<i64> {
-    let value = value
-        .as_i64()
-        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))?;
-    if explicitly_micros || value.unsigned_abs() >= 100_000_000_000_000 {
-        Some(value)
-    } else {
-        Some(value.saturating_mul(1_000))
-    }
-}
-
-fn receive_timestamp(row: &ExactReplayEvent) -> Option<i64> {
-    [
-        ("receive_timestamp_us", true),
-        ("receive_timestamp", false),
-        ("received_timestamp", false),
-    ]
-    .into_iter()
-    .find_map(|(key, explicitly_micros)| {
-        row.event
-            .extra
-            .get(key)
-            .and_then(|value| timestamp_micros(value, explicitly_micros))
-    })
+    row.event.data().as_object()
 }
 
 fn data_number(row: &ExactReplayEvent, key: &str) -> Option<f64> {
@@ -563,7 +515,7 @@ fn parse_level(value: &Value) -> Option<(f64, f64)> {
 fn event_levels(row: &ExactReplayEvent, side: &str) -> Option<Vec<(f64, f64)>> {
     let values = event_data(row)
         .and_then(|data| data.get(side))
-        .or_else(|| row.event.extra.get(side))?
+        .or_else(|| row.event.extra().get(side))?
         .as_array()?;
     values.iter().map(parse_level).collect()
 }
@@ -679,9 +631,10 @@ fn optional_typed_value<T>(
 
 struct EventBatchBuilder {
     timestamp: TimestampMicrosecondBuilder,
-    receive_timestamp: TimestampMicrosecondBuilder,
-    sequence: UInt64Builder,
-    sequence_scope: StringDictionaryBuilder<Int32Type>,
+    collector_timestamp: TimestampMicrosecondBuilder,
+    collector_sequence: UInt64Builder,
+    exchange_timestamp: TimestampMicrosecondBuilder,
+    exchange_sequence: StringBuilder,
     replay_ordinal: UInt64Builder,
     source_file_ordinal: UInt32Builder,
     source_row_ordinal: UInt64Builder,
@@ -690,7 +643,9 @@ struct EventBatchBuilder {
     event_type: StringDictionaryBuilder<Int32Type>,
     trade_price: Float64Builder,
     trade_quantity: Float64Builder,
-    trade_side: StringDictionaryBuilder<Int32Type>,
+    order_id: StringBuilder,
+    side: StringDictionaryBuilder<Int32Type>,
+    is_snapshot: BooleanBuilder,
     bids: LevelListBuilder,
     asks: LevelListBuilder,
     point_series: StringDictionaryBuilder<Int32Type>,
@@ -703,9 +658,10 @@ impl EventBatchBuilder {
     fn new(capacity: usize) -> Self {
         Self {
             timestamp: TimestampMicrosecondBuilder::with_capacity(capacity),
-            receive_timestamp: TimestampMicrosecondBuilder::with_capacity(capacity),
-            sequence: UInt64Builder::with_capacity(capacity),
-            sequence_scope: StringDictionaryBuilder::new(),
+            collector_timestamp: TimestampMicrosecondBuilder::with_capacity(capacity),
+            collector_sequence: UInt64Builder::with_capacity(capacity),
+            exchange_timestamp: TimestampMicrosecondBuilder::with_capacity(capacity),
+            exchange_sequence: StringBuilder::with_capacity(capacity, capacity * 16),
             replay_ordinal: UInt64Builder::with_capacity(capacity),
             source_file_ordinal: UInt32Builder::with_capacity(capacity),
             source_row_ordinal: UInt64Builder::with_capacity(capacity),
@@ -714,7 +670,9 @@ impl EventBatchBuilder {
             event_type: StringDictionaryBuilder::new(),
             trade_price: Float64Builder::with_capacity(capacity),
             trade_quantity: Float64Builder::with_capacity(capacity),
-            trade_side: StringDictionaryBuilder::new(),
+            order_id: StringBuilder::with_capacity(capacity, capacity * 16),
+            side: StringDictionaryBuilder::new(),
+            is_snapshot: BooleanBuilder::with_capacity(capacity),
             bids: level_list_builder(),
             asks: level_list_builder(),
             point_series: StringDictionaryBuilder::new(),
@@ -725,27 +683,53 @@ impl EventBatchBuilder {
     }
 
     fn append(&mut self, row: ExactReplayEvent, source: &str, market: &str) {
-        self.timestamp.append_value(row.timestamp_us);
-        self.receive_timestamp
-            .append_option(receive_timestamp(&row));
-        self.sequence.append_option(sequence(&row));
-        self.sequence_scope.append_option(sequence_scope(&row));
+        match &row.event {
+            StandardEvent::Legacy(_) => {
+                self.timestamp.append_value(row.timestamp_us);
+                self.collector_timestamp.append_null();
+                self.collector_sequence.append_null();
+                self.exchange_timestamp.append_null();
+                self.exchange_sequence.append_null();
+            }
+            StandardEvent::V2(event) => {
+                self.timestamp.append_null();
+                self.collector_timestamp
+                    .append_value(event.collector_timestamp.saturating_mul(1_000));
+                self.collector_sequence
+                    .append_value(event.collector_sequence);
+                self.exchange_timestamp.append_option(
+                    event
+                        .exchange_timestamp
+                        .map(|value| value.saturating_mul(1_000)),
+                );
+                self.exchange_sequence
+                    .append_option(event.exchange_sequence.as_deref());
+            }
+        }
         self.replay_ordinal.append_value(row.replay_ordinal);
         self.source_file_ordinal
             .append_value(row.source_file_ordinal);
         self.source_row_ordinal.append_value(row.source_row_ordinal);
         self.source
-            .append_value(identity(&row.event.source, source));
+            .append_value(identity(row.event.source(), source));
         self.market
-            .append_value(identity(&row.event.market, market));
-        self.event_type.append_value(&row.event.event_type);
-        let is_trade = row.event.event_type == "trade";
+            .append_value(identity(row.event.market(), market));
+        self.event_type.append_value(row.event.event_type());
+        let is_trade = row.event.event_type() == "trade";
         self.trade_price
             .append_option(is_trade.then(|| data_number(&row, "price")).flatten());
         self.trade_quantity
             .append_option(is_trade.then(|| data_number(&row, "quantity")).flatten());
-        self.trade_side
+        self.order_id
+            .append_option(is_trade.then(|| data_string(&row, "order_id")).flatten());
+        self.side
             .append_option(is_trade.then(|| data_string(&row, "side")).flatten());
+        self.is_snapshot.append_option(match &row.event {
+            StandardEvent::V2(_) if row.event.event_type() == "orderbook" => event_data(&row)
+                .and_then(|data| data.get("is_snapshot"))
+                .and_then(Value::as_bool),
+            _ => None,
+        });
         append_levels(&mut self.bids, &row, "bids");
         append_levels(&mut self.asks, &row, "asks");
         self.point_series.append_option(data_string(&row, "series"));
@@ -757,9 +741,10 @@ impl EventBatchBuilder {
     fn finish(mut self, schema: SchemaRef) -> Result<RecordBatch, PolarisError> {
         let columns: Vec<ArrayRef> = vec![
             Arc::new(self.timestamp.finish().with_timezone(UTC)),
-            Arc::new(self.receive_timestamp.finish().with_timezone(UTC)),
-            Arc::new(self.sequence.finish()),
-            Arc::new(self.sequence_scope.finish()),
+            Arc::new(self.collector_timestamp.finish().with_timezone(UTC)),
+            Arc::new(self.collector_sequence.finish()),
+            Arc::new(self.exchange_timestamp.finish().with_timezone(UTC)),
+            Arc::new(self.exchange_sequence.finish()),
             Arc::new(self.replay_ordinal.finish()),
             Arc::new(self.source_file_ordinal.finish()),
             Arc::new(self.source_row_ordinal.finish()),
@@ -768,7 +753,9 @@ impl EventBatchBuilder {
             Arc::new(self.event_type.finish()),
             Arc::new(self.trade_price.finish()),
             Arc::new(self.trade_quantity.finish()),
-            Arc::new(self.trade_side.finish()),
+            Arc::new(self.order_id.finish()),
+            Arc::new(self.side.finish()),
+            Arc::new(self.is_snapshot.finish()),
             Arc::new(self.bids.finish()),
             Arc::new(self.asks.finish()),
             Arc::new(self.point_series.finish()),
@@ -805,24 +792,21 @@ fn build_trade_batch(
     market: &str,
     extensions: &[ExtensionField],
 ) -> Result<RecordBatch, PolarisError> {
-    validate_extension_keys(rows, extensions, |row| &row.data.extra)?;
+    validate_extension_keys(rows, extensions, TradeEvent::extra)?;
     let mut columns = vec![
-        timestamps(rows.iter().map(|row| row.timestamp)),
-        dictionary(rows.iter().map(|row| Some(identity(&row.source, source))))?,
-        dictionary(rows.iter().map(|row| Some(identity(&row.market, market))))?,
+        timestamps(rows.iter().map(TradeEvent::timestamp)),
+        dictionary(rows.iter().map(|row| Some(identity(row.source(), source))))?,
+        dictionary(rows.iter().map(|row| Some(identity(row.market(), market))))?,
         Arc::new(Float64Array::from_iter_values(
-            rows.iter().map(|row| row.data.price),
+            rows.iter().map(TradeEvent::price),
         )),
         Arc::new(Float64Array::from_iter_values(
-            rows.iter().map(|row| row.data.quantity),
+            rows.iter().map(TradeEvent::quantity),
         )),
-        dictionary(
-            rows.iter()
-                .map(|row| (!row.data.side.is_empty()).then_some(row.data.side.as_str())),
-        )?,
+        dictionary(rows.iter().map(TradeEvent::side))?,
     ];
     for field in extensions {
-        columns.push(extension_array(rows, field, |row| &row.data.extra)?);
+        columns.push(extension_array(rows, field, TradeEvent::extra)?);
     }
     RecordBatch::try_new(schema, columns).map_err(|error| PolarisError::Decode(error.to_string()))
 }
@@ -835,17 +819,17 @@ fn build_point_batch(
     _value_name: &str,
     extensions: &[ExtensionField],
 ) -> Result<RecordBatch, PolarisError> {
-    validate_extension_keys(rows, extensions, |row| &row.data.extra)?;
+    validate_extension_keys(rows, extensions, |row| &row.data().extra)?;
     let mut columns = vec![
-        timestamps(rows.iter().map(|row| row.timestamp)),
-        dictionary(rows.iter().map(|row| Some(identity(&row.source, source))))?,
-        dictionary(rows.iter().map(|row| Some(identity(&row.market, market))))?,
+        timestamps(rows.iter().map(PointSeriesEvent::timestamp)),
+        dictionary(rows.iter().map(|row| Some(identity(row.source(), source))))?,
+        dictionary(rows.iter().map(|row| Some(identity(row.market(), market))))?,
         Arc::new(Float64Array::from_iter_values(
-            rows.iter().map(|row| row.data.value),
+            rows.iter().map(|row| row.data().value),
         )),
     ];
     for field in extensions {
-        columns.push(extension_array(rows, field, |row| &row.data.extra)?);
+        columns.push(extension_array(rows, field, |row| &row.data().extra)?);
     }
     RecordBatch::try_new(schema, columns).map_err(|error| PolarisError::Decode(error.to_string()))
 }

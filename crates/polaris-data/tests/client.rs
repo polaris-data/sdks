@@ -307,7 +307,7 @@ async fn events_download_snapshots_and_reuse_local_cache() {
 
     assert_eq!(first.len(), 1);
     assert_eq!(second.len(), 1);
-    assert_eq!(first[0].event_type, "trade");
+    assert_eq!(first[0].event_type(), "trade");
     let sidecar = root
         .path()
         .join("data/standard/binance/BTC-USDT/2024-01-01")
@@ -359,7 +359,7 @@ async fn legacy_midnight_shard_replays_without_remote_coverage_lookup() {
     .expect("local rows");
 
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].timestamp, 1_704_067_200_012_i64);
+    assert_eq!(rows[0].timestamp(), 1_704_067_200_012_i64);
     assert!(
         server
             .received_requests()
@@ -415,12 +415,12 @@ async fn l2_updates_returns_raw_snapshots_and_deltas() {
         .expect("rows");
 
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].event_type, "orderbook");
-    assert_eq!(rows[0].data["bids"], json!([[100.0, 2.0]]));
-    assert_eq!(rows[0].data["asks"], json!([[101.0, 3.0]]));
-    assert_eq!(rows[1].event_type, "orderbook_delta");
-    assert_eq!(rows[1].data["bids"], json!([[100.0, 4.0]]));
-    assert!(rows[1].data.get("asks").is_none());
+    assert_eq!(rows[0].event_type(), "orderbook");
+    assert_eq!(rows[0].data()["bids"], json!([[100.0, 2.0]]));
+    assert_eq!(rows[0].data()["asks"], json!([[101.0, 3.0]]));
+    assert_eq!(rows[1].event_type(), "orderbook_delta");
+    assert_eq!(rows[1].data()["bids"], json!([[100.0, 4.0]]));
+    assert!(rows[1].data().get("asks").is_none());
 
     let mut books = polaris_data::OrderbookBuilder::new();
     assert_eq!(
@@ -428,7 +428,7 @@ async fn l2_updates_returns_raw_snapshots_and_deltas() {
             .apply(rows[0].clone())
             .expect("snapshot")
             .expect("complete snapshot")
-            .event_type,
+            .event_type(),
         "orderbook"
     );
     assert_eq!(
@@ -436,7 +436,7 @@ async fn l2_updates_returns_raw_snapshots_and_deltas() {
             .apply(rows[1].clone())
             .expect("delta")
             .expect("complete update")
-            .event_type,
+            .event_type(),
         "orderbook"
     );
     assert!(

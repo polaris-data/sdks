@@ -144,13 +144,18 @@ For historical event queries, `standard=True` is the default on `replay(...)`. P
 
 For exact execution replay, request `output="batches"` and
 `materialize_orderbooks=False`. These batches retain every standardized event
-in stored capture order, use microsecond timestamps, and include stable replay,
-file, and row ordinals. Nullable receive timestamp, sequence, and sequence-scope
-columns expose venue ordering metadata when present. Typed trade, order-book,
-and point columns support compiled consumers. With raw order-book updates,
+in stored capture order and include stable replay, file, and row ordinals.
+Nullable legacy `timestamp` and v2 collector/exchange columns use microsecond
+Arrow timestamps. Typed columns include nullable `order_id`, `side`, and
+`is_snapshot`. With raw order-book updates,
 `event_json` preserves the complete source event and unknown payloads; with
 materialization enabled it contains the resulting complete-book event. Raw
 `standard=False` replay remains iterator-only.
+
+Iterator dictionaries preserve their stored envelope. Check
+`"collector_timestamp" in event` to identify v2; use that value for SDK time
+and treat `exchange_timestamp` as nullable venue provenance. See
+[Event schema v2 migration](/guides/event-schema-v2-migration).
 
 Orderbooks are reconstructed by default across `stream`, `replay`, `events`, and
 `l2_snapshots`. `orderbook` replaces the complete state, `orderbook_delta`

@@ -10,7 +10,10 @@ use tokio_tungstenite::{
 };
 use url::Url;
 
-use crate::{OrderbookBuilder, PolarisError, RealtimeStream, StandardEvent, StreamQuery};
+use crate::{
+    LegacyStandardEvent, OrderbookBuilder, PolarisError, RealtimeStream, StandardEvent,
+    StandardEventV2, StreamQuery,
+};
 
 const MAX_SUBSCRIPTIONS: usize = 1_000;
 const PING_INTERVAL: Duration = Duration::from_secs(30);
@@ -350,19 +353,53 @@ fn parse_server_message(text: &str) -> Result<ServerMessage, PolarisError> {
                 .get("event")
                 .cloned()
                 .ok_or_else(|| protocol_error(None, "standard data message omitted its event"))?;
-            let mut event: StandardEvent =
-                serde_json::from_value(event_value).map_err(|error| {
-                    protocol_error(None, format!("invalid standard realtime event: {error}"))
-                })?;
-            if event.source.is_empty() {
-                event.source = value
+            let event_object = event_value
+                .as_object()
+                .ok_or_else(|| protocol_error(None, "standard realtime event was not an object"))?;
+            let is_v2 = [
+                "collector_timestamp",
+                "collector_sequence",
+                "exchange_timestamp",
+                "exchange_sequence",
+            ]
+            .into_iter()
+            .all(|field| event_object.contains_key(field));
+            let is_legacy = event_object
+                .get("timestamp")
+                .and_then(Value::as_i64)
+                .is_some();
+            if !is_v2 && !is_legacy {
+                return Err(protocol_error(
+                    None,
+                    "standard realtime event matched neither the legacy nor v2 envelope",
+                ));
+            }
+            if !event_object.get("type").is_some_and(Value::is_string)
+                || !event_object.get("data").is_some_and(Value::is_object)
+            {
+                return Err(protocol_error(
+                    None,
+                    "standard realtime event requires string type and object data",
+                ));
+            }
+            let mut event = if is_v2 {
+                serde_json::from_value::<StandardEventV2>(event_value).map(StandardEvent::V2)
+            } else {
+                serde_json::from_value::<LegacyStandardEvent>(event_value)
+                    .map(StandardEvent::Legacy)
+            }
+            .map_err(|error| {
+                protocol_error(None, format!("invalid standard realtime event: {error}"))
+            })?;
+            if event.source().is_empty() {
+                *event.source_mut() = value
                     .get("source")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_owned();
             }
-            if event.market.is_empty() {
-                event.market = value
+            if event.market().is_empty() {
+                *event.market_mut() = value
                     .get("market")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
@@ -446,9 +483,41 @@ mod tests {
         let ServerMessage::Data(event) = parse_server_message(message).unwrap() else {
             panic!("expected data");
         };
-        assert_eq!(event.source, "afx");
-        assert_eq!(event.market, "AAPLUSDC");
-        assert_eq!(event.event_type, "trade");
+        assert_eq!(event.source(), "afx");
+        assert_eq!(event.market(), "AAPLUSDC");
+        assert_eq!(event.event_type(), "trade");
+    }
+
+    #[test]
+    fn parses_v2_standard_realtime_event() {
+        let message = json!({
+            "source": "lighter",
+            "market": "BTC-USD",
+            "kind": {
+                "type": "data",
+                "stream": "standard",
+                "event": {
+                    "collector_timestamp": 1_786_000_000_123_i64,
+                    "collector_sequence": 42,
+                    "exchange_timestamp": null,
+                    "exchange_sequence": null,
+                    "type": "trade",
+                    "data": {
+                        "order_id": null,
+                        "price": 100.0,
+                        "quantity": 1.0,
+                        "side": null
+                    }
+                }
+            }
+        });
+        let ServerMessage::Data(event) = parse_server_message(&message.to_string()).unwrap() else {
+            panic!("expected data event");
+        };
+        assert!(matches!(event, StandardEvent::V2(_)));
+        assert_eq!(event.timestamp(), 1_786_000_000_123);
+        assert_eq!(event.source(), "lighter");
+        assert_eq!(event.market(), "BTC-USD");
     }
 
     #[tokio::test]
@@ -509,9 +578,9 @@ mod tests {
         .await
         .unwrap();
         let event = events.next().await.unwrap().unwrap();
-        assert_eq!(event.source, "binance");
-        assert_eq!(event.market, "BTC-USDT");
-        assert_eq!(event.event_type, "trade");
+        assert_eq!(event.source(), "binance");
+        assert_eq!(event.market(), "BTC-USDT");
+        assert_eq!(event.event_type(), "trade");
         server.await.unwrap();
     }
 
@@ -600,9 +669,9 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
-        assert_eq!(first.event_type, "orderbook");
+        assert_eq!(first.event_type(), "orderbook");
         assert_eq!(
-            second.data["bids"],
+            second.data()["bids"],
             json!([{"price": 90.0, "quantity": 2.0}])
         );
         server.await.unwrap();

@@ -104,6 +104,23 @@ reconnects, with deltas skipped until a new snapshot. Use `l2Updates(...)` for
 raw snapshots and deltas, then feed selected updates into the exported
 `OrderbookBuilder` for application-managed books.
 
+## Match event schema versions
+
+`StandardEvent` is the structural `LegacyStandardEvent | StandardEventV2`
+union. Check for `collector_timestamp` before reading version-specific fields:
+
+```typescript
+if ("collector_timestamp" in event) {
+  console.log(event.collector_timestamp, event.exchange_timestamp);
+} else {
+  console.log(event.timestamp);
+}
+```
+
+SDK filters and derivations use collector time for v2. Exchange time is
+nullable venue provenance and may regress. See
+[Event schema v2 migration](/guides/event-schema-v2-migration).
+
 ## Discover a market before you query it
 
 Use `catalog(...)` to find the exact Polaris market ID for a venue.

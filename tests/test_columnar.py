@@ -170,27 +170,135 @@ def test_exact_event_batches_preserve_precision_order_and_unknown_payloads(tmp_p
         exact_timestamp,
         exact_timestamp + 1,
     ]
-    assert table.column("receive_timestamp").cast(pa.int64()).to_pylist() == [
-        exact_timestamp + 10,
-        None,
-        None,
-    ]
-    assert table.column("sequence").to_pylist() == [7, None, None]
-    assert table.column("sequence_scope").to_pylist() == [
-        "book-channel-1",
-        None,
-        None,
-    ]
+    assert table.column("collector_timestamp").cast(pa.int64()).to_pylist() == [None] * 3
+    assert table.column("collector_sequence").to_pylist() == [None] * 3
+    assert table.column("exchange_timestamp").cast(pa.int64()).to_pylist() == [None] * 3
+    assert table.column("exchange_sequence").to_pylist() == [None] * 3
     assert table.column("replay_ordinal").to_pylist() == [0, 1, 2]
     assert table.column("source_file_ordinal").to_pylist() == [0, 0, 0]
     assert table.column("source_row_ordinal").to_pylist() == [0, 1, 2]
     assert table.column("trade_price").to_pylist() == [100.0, None, None]
+    assert table.column("order_id").to_pylist() == [None, None, None]
+    assert table.column("side").to_pylist() == ["buy", None, None]
+    assert table.column("is_snapshot").to_pylist() == [None, None, None]
     assert table.column("bids").to_pylist() == [
         None,
         [{"price": 99.5, "quantity": 3.0}],
         None,
     ]
     assert [json.loads(value) for value in table.column("event_json").to_pylist()] == rows
+
+
+def test_v2_exact_batches_use_mixed_envelope_schema_and_metadata_ordinal(tmp_path) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "events" / "schema-v2.jsonl"
+    rows = [json.loads(line) for line in fixture.read_text().splitlines()]
+    key = f"standard-lighter-BTC-USD-{DAY}-000000"
+    path = tmp_path / "data" / "standard" / "lighter" / "BTC-USD" / DAY / f"{key}.jsonl.zst"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zstandard.open(path, "wt", encoding="utf-8") as output:
+        output.write(fixture.read_text())
+    path.with_name(path.name + ".coverage.json").write_text(
+        json.dumps({
+            "version": 1,
+            "key": key,
+            "start_us": START_MS * 1_000,
+            "end_us": (START_MS + 120_000) * 1_000,
+        })
+    )
+
+    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
+        table = pa.Table.from_batches(list(client.events(
+            source="lighter",
+            market="BTC-USD",
+            from_=START_MS * 1_000,
+            to=(START_MS + 1_000) * 1_000,
+            output="batches",
+            materialize_orderbooks=False,
+        )))
+        filtered = list(client.events(
+            source="lighter",
+            market="BTC-USD",
+            from_=(START_MS + 150) * 1_000,
+            to=(START_MS + 250) * 1_000,
+            materialize_orderbooks=False,
+        ))
+        trades = list(client.trades(
+            source="lighter",
+            market="BTC-USD",
+            from_=START_MS * 1_000,
+            to=(START_MS + 1_000) * 1_000,
+        ))
+        interval_bbo = list(client.bbo(
+            source="lighter",
+            market="BTC-USD",
+            from_=START_MS * 1_000,
+            to=(START_MS + 120_000) * 1_000,
+            interval="1m",
+        ))
+
+    selected_rows = rows[1:7] + [rows[8]]
+    assert table.num_rows == 7
+    assert table.column("timestamp").cast(pa.int64()).to_pylist() == [None] * 7
+    assert table.column("collector_timestamp").cast(pa.int64()).to_pylist() == [
+        (START_MS + 100) * 1_000,
+        (START_MS + 300) * 1_000,
+        (START_MS + 200) * 1_000,
+        (START_MS + 400) * 1_000,
+        (START_MS + 500) * 1_000,
+        (START_MS + 450) * 1_000,
+        (START_MS + 550) * 1_000,
+    ]
+    assert table.column("collector_sequence").to_pylist() == [7, 9, 15, 21, 22, 25, 31]
+    assert table.column("exchange_timestamp").cast(pa.int64()).to_pylist() == [
+        (START_MS - 1_000) * 1_000,
+        None,
+        (START_MS - 2_000) * 1_000,
+        None,
+        (START_MS - 3_000) * 1_000,
+        (START_MS - 4_000) * 1_000,
+        (START_MS - 5_000) * 1_000,
+    ]
+    assert table.column("exchange_sequence").to_pylist() == [
+        "book-1", None, "trade-1", None, "trade-2", "trade-3", "book-3",
+    ]
+    assert table.column("source_row_ordinal").to_pylist() == [1, 2, 3, 4, 5, 6, 8]
+    assert table.column("order_id").to_pylist() == [None, None, None, None, "order-2", None, None]
+    assert table.column("side").to_pylist() == [None, None, None, None, "buy", "sell", None]
+    assert table.column("is_snapshot").to_pylist() == [True, False, None, None, None, None, False]
+    assert [json.loads(value) for value in table.column("event_json").to_pylist()] == selected_rows
+    assert [row["type"] for row in filtered] == ["trade"]
+    assert "timestamp" not in filtered[0]
+    assert filtered[0]["collector_timestamp"] == START_MS + 200
+    assert trades == [rows[3], rows[5], rows[6]]
+    assert [row["timestamp"] for row in interval_bbo] == [START_MS, START_MS + 60_000]
+    assert [row["bid_quantity"] for row in interval_bbo] == [7.0, 6.0]
+
+
+def test_shared_headerless_legacy_fixture_preserves_native_rows(tmp_path) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "events" / "legacy-v1.jsonl"
+    rows = [json.loads(line) for line in fixture.read_text().splitlines()]
+    key = f"standard-lighter-BTC-USD-{DAY}-000000"
+    path = tmp_path / "data" / "standard" / "lighter" / "BTC-USD" / DAY / f"{key}.jsonl.zst"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zstandard.open(path, "wt", encoding="utf-8") as output:
+        output.write(fixture.read_text())
+    path.with_name(path.name + ".coverage.json").write_text(json.dumps({
+        "version": 1,
+        "key": key,
+        "start_us": START_MS * 1_000,
+        "end_us": (START_MS + 1_000) * 1_000,
+    }))
+
+    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
+        decoded = list(client.events(
+            source="lighter",
+            market="BTC-USD",
+            from_=START_MS * 1_000,
+            to=(START_MS + 1_000) * 1_000,
+            materialize_orderbooks=False,
+        ))
+
+    assert decoded == rows
 
 
 def test_raw_replay_rejects_columnar_output() -> None:

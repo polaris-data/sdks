@@ -27,8 +27,7 @@ export class OrderbookBuilder {
   }
 
   apply(event: StandardEvent): StandardEvent | undefined {
-    const isSnapshot = SNAPSHOT_TYPES.has(event.type);
-    const isDelta = event.type === "orderbook_delta";
+    const { isSnapshot, isDelta } = classifyOrderbook(event);
     if (!isSnapshot && !isDelta) return event;
     if (!this.update(event)) return undefined;
 
@@ -47,8 +46,7 @@ export class OrderbookBuilder {
 
   /** Update book state without constructing a complete orderbook. */
   update(event: StandardEvent): boolean {
-    const isSnapshot = SNAPSHOT_TYPES.has(event.type);
-    const isDelta = event.type === "orderbook_delta";
+    const { isSnapshot, isDelta } = classifyOrderbook(event);
     if (!isSnapshot && !isDelta) return false;
     if (!isObject(event.data) && !Array.isArray(event.bids) && !Array.isArray(event.asks)) {
       throw new PolarisError("Invalid orderbook payload: data must be an object");
@@ -85,6 +83,20 @@ export class OrderbookBuilder {
       asks: canonicalLevels(state.asks, "ask"),
     };
   }
+}
+
+function classifyOrderbook(event: StandardEvent): { isSnapshot: boolean; isDelta: boolean } {
+  if ("collector_timestamp" in event) {
+    if (event.type !== "orderbook") return { isSnapshot: false, isDelta: false };
+    if (typeof event.data.is_snapshot !== "boolean") {
+      throw new PolarisError("Invalid v2 orderbook payload: data.is_snapshot must be a boolean");
+    }
+    return { isSnapshot: event.data.is_snapshot, isDelta: !event.data.is_snapshot };
+  }
+  return {
+    isSnapshot: SNAPSHOT_TYPES.has(event.type),
+    isDelta: event.type === "orderbook_delta",
+  };
 }
 
 function parseSide(

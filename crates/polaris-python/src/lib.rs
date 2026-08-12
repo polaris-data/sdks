@@ -12,7 +12,7 @@ use pyo3::{
     create_exception,
     exceptions::PyException,
     prelude::*,
-    types::{PyAny, PyDict, PyList, PyModule},
+    types::{PyAny, PyModule},
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -144,7 +144,9 @@ fn prune_empty_event_identity(value: &mut Value) {
             }
         }
         Value::Object(object) => {
-            let is_event = object.contains_key("timestamp") && object.contains_key("type");
+            let is_event = (object.contains_key("timestamp")
+                || object.contains_key("collector_timestamp"))
+                && object.contains_key("type");
             if is_event {
                 for key in ["source", "market"] {
                     if object.get(key).is_some_and(|value| value == "") {
@@ -178,70 +180,31 @@ fn to_python<'py, T: Serialize>(py: Python<'py>, value: &T) -> PyResult<Bound<'p
     Ok(pythonize::pythonize(py, &value)?)
 }
 
-fn json_value_to_python<'py>(
-    py: Python<'py>,
-    value: &Value,
-    omit_empty_side: bool,
-) -> PyResult<Bound<'py, PyAny>> {
-    match value {
-        Value::Null => Ok(py.None().into_bound(py)),
-        Value::Bool(value) => Ok(value.into_pyobject(py)?.to_owned().into_any()),
-        Value::Number(value) => {
-            if let Some(value) = value.as_i64() {
-                Ok(value.into_pyobject(py)?.into_any())
-            } else if let Some(value) = value.as_u64() {
-                Ok(value.into_pyobject(py)?.into_any())
-            } else if let Some(value) = value.as_f64() {
-                Ok(value.into_pyobject(py)?.into_any())
-            } else {
-                Err(pyo3::exceptions::PyValueError::new_err(
-                    "invalid JSON number",
-                ))
-            }
-        }
-        Value::String(value) => Ok(value.into_pyobject(py)?.into_any()),
-        Value::Array(values) => {
-            let output = PyList::empty(py);
-            for value in values {
-                output.append(json_value_to_python(py, value, false)?)?;
-            }
-            Ok(output.into_any())
-        }
-        Value::Object(values) => {
-            let output = PyDict::new(py);
-            for (key, value) in values {
-                if omit_empty_side && key == "side" && value.as_str() == Some("") {
-                    continue;
-                }
-                output.set_item(key, json_value_to_python(py, value, false)?)?;
-            }
-            Ok(output.into_any())
-        }
-    }
-}
-
 fn standard_event_to_python<'py>(
     py: Python<'py>,
     event: &StandardEvent,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let output = PyDict::new(py);
-    output.set_item("timestamp", event.timestamp)?;
-    if !event.source.is_empty() {
-        output.set_item("source", &event.source)?;
+    let mut value = serde_json::to_value(event)
+        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
+    if let Value::Object(object) = &mut value {
+        for key in ["source", "market"] {
+            if object.get(key).is_some_and(|value| value == "") {
+                object.remove(key);
+            }
+        }
+        if object.get("type").is_some_and(|value| value == "") {
+            object.remove("type");
+        }
+        if object.get("data").is_some_and(Value::is_null) {
+            object.remove("data");
+        }
+        if let Some(Value::Object(data)) = object.get_mut("data") {
+            if data.get("side").is_some_and(|value| value == "") {
+                data.remove("side");
+            }
+        }
     }
-    if !event.market.is_empty() {
-        output.set_item("market", &event.market)?;
-    }
-    if !event.event_type.is_empty() {
-        output.set_item("type", &event.event_type)?;
-    }
-    if !event.data.is_null() {
-        output.set_item("data", json_value_to_python(py, &event.data, true)?)?;
-    }
-    for (key, value) in &event.extra {
-        output.set_item(key, json_value_to_python(py, value, false)?)?;
-    }
-    Ok(output.into_any())
+    Ok(pythonize::pythonize(py, &value)?)
 }
 
 #[pyclass(module = "polaris_data._native")]
@@ -1128,7 +1091,7 @@ fn next_l2_event<'py>(
         match py.detach(|| iterator.next()) {
             Some(Ok(event))
                 if matches!(
-                    event.event_type.as_str(),
+                    event.event_type(),
                     "orderbook" | "orderbook_delta" | "l2_snapshot" | "orderbook_snapshot"
                 ) =>
             {

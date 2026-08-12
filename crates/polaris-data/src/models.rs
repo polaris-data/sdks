@@ -287,7 +287,7 @@ pub struct DownloadManifestEntry {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct StandardEvent {
+pub struct LegacyStandardEvent {
     pub timestamp: i64,
     #[serde(default)]
     pub source: String,
@@ -302,7 +302,118 @@ pub struct StandardEvent {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TradeData {
+pub struct StandardEventV2 {
+    pub collector_timestamp: i64,
+    pub collector_sequence: u64,
+    pub exchange_timestamp: Option<i64>,
+    pub exchange_sequence: Option<String>,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub market: String,
+    #[serde(default, rename = "type")]
+    pub event_type: String,
+    #[serde(default)]
+    pub data: Value,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StandardEvent {
+    Legacy(LegacyStandardEvent),
+    V2(StandardEventV2),
+}
+
+impl StandardEvent {
+    pub fn timestamp(&self) -> i64 {
+        match self {
+            Self::Legacy(event) => event.timestamp,
+            Self::V2(event) => event.collector_timestamp,
+        }
+    }
+
+    pub fn source(&self) -> &str {
+        match self {
+            Self::Legacy(event) => &event.source,
+            Self::V2(event) => &event.source,
+        }
+    }
+
+    pub fn market(&self) -> &str {
+        match self {
+            Self::Legacy(event) => &event.market,
+            Self::V2(event) => &event.market,
+        }
+    }
+
+    pub fn event_type(&self) -> &str {
+        match self {
+            Self::Legacy(event) => &event.event_type,
+            Self::V2(event) => &event.event_type,
+        }
+    }
+
+    pub fn data(&self) -> &Value {
+        match self {
+            Self::Legacy(event) => &event.data,
+            Self::V2(event) => &event.data,
+        }
+    }
+
+    pub fn data_mut(&mut self) -> &mut Value {
+        match self {
+            Self::Legacy(event) => &mut event.data,
+            Self::V2(event) => &mut event.data,
+        }
+    }
+
+    pub(crate) fn source_mut(&mut self) -> &mut String {
+        match self {
+            Self::Legacy(event) => &mut event.source,
+            Self::V2(event) => &mut event.source,
+        }
+    }
+
+    pub(crate) fn market_mut(&mut self) -> &mut String {
+        match self {
+            Self::Legacy(event) => &mut event.market,
+            Self::V2(event) => &mut event.market,
+        }
+    }
+
+    pub(crate) fn event_type_mut(&mut self) -> &mut String {
+        match self {
+            Self::Legacy(event) => &mut event.event_type,
+            Self::V2(event) => &mut event.event_type,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn extra(&self) -> &BTreeMap<String, Value> {
+        match self {
+            Self::Legacy(event) => &event.extra,
+            Self::V2(event) => &event.extra,
+        }
+    }
+
+    pub(crate) fn extra_mut(&mut self) -> &mut BTreeMap<String, Value> {
+        match self {
+            Self::Legacy(event) => &mut event.extra,
+            Self::V2(event) => &mut event.extra,
+        }
+    }
+
+    pub(crate) fn set_legacy_timestamp(&mut self, timestamp: i64) {
+        if let Self::Legacy(event) = self {
+            event.timestamp = timestamp;
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LegacyTradeData {
     pub price: f64,
     pub quantity: f64,
     #[serde(default)]
@@ -312,13 +423,107 @@ pub struct TradeData {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TradeEvent {
+pub struct TradeDataV2 {
+    pub order_id: Option<String>,
+    pub price: f64,
+    pub quantity: f64,
+    pub side: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LegacyTradeEvent {
     pub timestamp: i64,
     pub source: String,
     pub market: String,
     #[serde(rename = "type")]
     pub event_type: String,
-    pub data: TradeData,
+    pub data: LegacyTradeData,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TradeEventV2 {
+    pub collector_timestamp: i64,
+    pub collector_sequence: u64,
+    pub exchange_timestamp: Option<i64>,
+    pub exchange_sequence: Option<String>,
+    pub source: String,
+    pub market: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub data: TradeDataV2,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TradeEvent {
+    Legacy(LegacyTradeEvent),
+    V2(TradeEventV2),
+}
+
+impl TradeEvent {
+    pub fn is_v2(&self) -> bool {
+        matches!(self, Self::V2(_))
+    }
+
+    pub fn timestamp(&self) -> i64 {
+        match self {
+            Self::Legacy(event) => event.timestamp,
+            Self::V2(event) => event.collector_timestamp,
+        }
+    }
+
+    pub fn price(&self) -> f64 {
+        match self {
+            Self::Legacy(event) => event.data.price,
+            Self::V2(event) => event.data.price,
+        }
+    }
+
+    pub fn quantity(&self) -> f64 {
+        match self {
+            Self::Legacy(event) => event.data.quantity,
+            Self::V2(event) => event.data.quantity,
+        }
+    }
+
+    pub fn source(&self) -> &str {
+        match self {
+            Self::Legacy(event) => &event.source,
+            Self::V2(event) => &event.source,
+        }
+    }
+
+    pub fn market(&self) -> &str {
+        match self {
+            Self::Legacy(event) => &event.market,
+            Self::V2(event) => &event.market,
+        }
+    }
+
+    pub fn side(&self) -> Option<&str> {
+        match self {
+            Self::Legacy(event) => {
+                (!event.data.side.is_empty()).then_some(event.data.side.as_str())
+            }
+            Self::V2(event) => event.data.side.as_deref(),
+        }
+    }
+
+    pub fn order_id(&self) -> Option<&str> {
+        match self {
+            Self::Legacy(event) => event.data.extra.get("order_id").and_then(Value::as_str),
+            Self::V2(event) => event.data.order_id.as_deref(),
+        }
+    }
+
+    pub fn extra(&self) -> &BTreeMap<String, Value> {
+        match self {
+            Self::Legacy(event) => &event.data.extra,
+            Self::V2(event) => &event.data.extra,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -372,13 +577,42 @@ pub struct OrderbookLevel {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct OrderbookEvent {
+pub struct LegacyOrderbookEvent {
     pub timestamp: i64,
     pub source: String,
     pub market: String,
     #[serde(rename = "type")]
     pub event_type: String,
     pub data: OrderbookData,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OrderbookDataV2 {
+    pub is_snapshot: bool,
+    pub bids: Vec<OrderbookLevel>,
+    pub asks: Vec<OrderbookLevel>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OrderbookEventV2 {
+    pub collector_timestamp: i64,
+    pub collector_sequence: u64,
+    pub exchange_timestamp: Option<i64>,
+    pub exchange_sequence: Option<String>,
+    pub source: String,
+    pub market: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub data: OrderbookDataV2,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OrderbookEvent {
+    Legacy(LegacyOrderbookEvent),
+    V2(OrderbookEventV2),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -400,7 +634,7 @@ pub struct BboQuote {
 
 // Point series types
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct PointSeriesEvent {
+pub struct LegacyPointSeriesEvent {
     pub timestamp: i64,
     pub source: String,
     pub market: String,
@@ -410,12 +644,74 @@ pub struct PointSeriesEvent {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PointSeriesEventV2 {
+    pub collector_timestamp: i64,
+    pub collector_sequence: u64,
+    pub exchange_timestamp: Option<i64>,
+    pub exchange_sequence: Option<String>,
+    pub source: String,
+    pub market: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub data: PointSeriesData,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PointSeriesEvent {
+    Legacy(LegacyPointSeriesEvent),
+    V2(PointSeriesEventV2),
+}
+
+impl PointSeriesEvent {
+    pub fn timestamp(&self) -> i64 {
+        match self {
+            Self::Legacy(event) => event.timestamp,
+            Self::V2(event) => event.collector_timestamp,
+        }
+    }
+
+    pub fn source(&self) -> &str {
+        match self {
+            Self::Legacy(event) => &event.source,
+            Self::V2(event) => &event.source,
+        }
+    }
+
+    pub fn market(&self) -> &str {
+        match self {
+            Self::Legacy(event) => &event.market,
+            Self::V2(event) => &event.market,
+        }
+    }
+
+    pub fn data(&self) -> &PointSeriesData {
+        match self {
+            Self::Legacy(event) => &event.data,
+            Self::V2(event) => &event.data,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PointSeriesData {
     #[serde(rename = "series")]
     pub series_name: String,
+    #[serde(deserialize_with = "deserialize_f64_from_number_or_string")]
     pub value: f64,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+fn deserialize_f64_from_number_or_string<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+        .ok_or_else(|| serde::de::Error::custom("expected a number or numeric string"))
 }
 
 // Aggregated bar types

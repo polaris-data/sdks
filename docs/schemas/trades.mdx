@@ -61,10 +61,14 @@ Trade events use the standard event envelope with `type: "trade"` and the follow
 
 - `data.price`: matched execution price
 - `data.quantity`: executed size in base units
-- `data.side`: aggressor side, one of `buy`, `sell`, or `unknown`
+- `data.order_id`: v2 venue order or execution ID, as a string or `null`
+- `data.side`: aggressor side; v2 uses `buy`, `sell`, or `null`
 
-Iterator timestamps are UTC milliseconds since the Unix epoch. Columnar output
-uses `timestamp[ms, tz=UTC]`; query boundary integers remain epoch microseconds.
+Legacy iterator rows use `timestamp`; v2 rows use `collector_timestamp` for SDK
+timing and retain nullable `exchange_timestamp` as venue provenance. Columnar
+trade output uses the SDK timestamp as `timestamp[ms, tz=UTC]`; query boundary
+integers remain epoch microseconds. See the
+[schema v2 migration guide](/guides/event-schema-v2-migration) for matching examples.
 
 ## Example
 

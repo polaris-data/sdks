@@ -50,9 +50,10 @@ coverage without a network request.
 
 ## Return value
 
-Python and Rust return single-pass streams. TypeScript returns an array. Each
-row retains its original `orderbook`, `orderbook_snapshot`, `l2_snapshot`, or
-`orderbook_delta` type.
+Python and Rust return single-pass streams. TypeScript returns an array. Legacy
+rows retain their original `orderbook`, `orderbook_snapshot`, `l2_snapshot`, or
+`orderbook_delta` type. V2 uses only `type: "orderbook"` and distinguishes rows
+with `data.is_snapshot`.
 
 An initial snapshot contains both sides of the book. A delta contains only
 changed levels:
@@ -82,9 +83,10 @@ changed levels:
 ]
 ```
 
-A snapshot replaces both sides. A delta replaces the quantity at each listed
+A v2 snapshot has `data.is_snapshot: true`; a v2 delta has
+`data.is_snapshot: false`. A snapshot replaces both sides. A delta replaces the quantity at each listed
 price, and quantity zero removes that price. A delta can omit an unchanged
-side.
+side in legacy data; v2 provides both side arrays.
 
 ## Build complete books on demand
 
@@ -184,6 +186,10 @@ highest price.
 
 Use `update()` in high-frequency loops. Use `apply()` only when every update
 must immediately produce a complete book.
+
+Materializing a v2 delta replaces its bids and asks with the complete current
+book but deliberately keeps `data.is_snapshot: false`. This lets downstream
+consumers identify the stored row that produced the materialized state.
 
 <Warning>
 Do not carry reconstructed state across a known coverage gap. Keep

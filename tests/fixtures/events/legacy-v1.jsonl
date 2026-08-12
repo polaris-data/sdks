@@ -1,0 +1,4 @@
+{"timestamp":1704067200100,"source":"lighter","market":"BTC-USD","type":"orderbook","data":{"bids":[[100,2]],"asks":[[101,3]]}}
+{"timestamp":1704067200200,"source":"lighter","market":"BTC-USD","type":"orderbook_delta","data":{"bids":[[100,4]],"asks":[[101,0],[102,5]]}}
+{"timestamp":1704067200300,"source":"lighter","market":"BTC-USD","type":"trade","data":{"price":100.5,"quantity":1.25,"side":"buy"}}
+{"timestamp":1704067200400,"source":"lighter","market":"BTC-USD","type":"point","data":{"series":"mark_price","value":100.75}}

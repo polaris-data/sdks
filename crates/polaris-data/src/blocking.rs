@@ -18,10 +18,9 @@ use tokio::runtime::{Handle, Runtime};
 use crate::{
     BboQuery, BboQuote, CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic,
     DownloadManifestQuery, DownloadManifestResponse, HistoricalQuery, HistoricalStream,
-    ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OrderbookEvent, PointSeriesData, PointSeriesEvent,
-    PolarisError, RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery,
-    SnapshotEntry, StandardEvent, StreamQuery, TimeInput, TradeData, TradeEvent, VolatilityBar,
-    VolumeBar, VwapBar,
+    ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OrderbookEvent, PointSeriesEvent, PolarisError,
+    RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, SnapshotEntry,
+    StandardEvent, StreamQuery, TimeInput, TradeEvent, VolatilityBar, VolumeBar, VwapBar,
     replay::{LocalExactReplayIterator, LocalReplayIterator},
 };
 
@@ -321,7 +320,7 @@ impl PolarisClient {
         let updates = self.events(query)?.filter_map(|event| match event {
             Ok(event)
                 if matches!(
-                    event.event_type.as_str(),
+                    event.event_type(),
                     "orderbook" | "orderbook_delta" | "orderbook_snapshot" | "l2_snapshot"
                 ) =>
             {
@@ -442,19 +441,8 @@ impl PreparedHistoricalReplay {
 
     pub fn trades(&self) -> HistoricalIterator<TradeEvent> {
         let trades = self.events().filter_map(|event| match event {
-            Ok(event) if event.event_type != "trade" => None,
-            Ok(event) => {
-                let data = serde_json::from_value::<TradeData>(event.data).map_err(|error| {
-                    PolarisError::Decode(format!("invalid trade payload: {error}"))
-                });
-                Some(data.map(|data| TradeEvent {
-                    timestamp: event.timestamp,
-                    source: event.source,
-                    market: event.market,
-                    event_type: event.event_type,
-                    data,
-                }))
-            }
+            Ok(event) if event.event_type() != "trade" => None,
+            Ok(event) => Some(crate::client::PolarisClient::parse_trade(event)),
             Err(error) => Some(Err(error)),
         });
         HistoricalIterator::direct(trades)
@@ -465,20 +453,12 @@ impl PreparedHistoricalReplay {
         expected_series: &'static str,
     ) -> HistoricalIterator<PointSeriesEvent> {
         let points = self.events().filter_map(move |event| match event {
-            Ok(event) if event.event_type != "point" => None,
-            Ok(event) => {
-                let data: PointSeriesData = serde_json::from_value(event.data).ok()?;
-                if data.series_name != expected_series {
-                    return None;
-                }
-                Some(Ok(PointSeriesEvent {
-                    timestamp: event.timestamp,
-                    source: event.source,
-                    market: event.market,
-                    event_type: event.event_type,
-                    data,
-                }))
-            }
+            Ok(event) if event.event_type() != "point" => None,
+            Ok(event) => crate::client::PolarisClient::try_parse_point_series(
+                event,
+                std::slice::from_ref(&expected_series),
+            )
+            .map(Ok),
             Err(error) => Some(Err(error)),
         });
         HistoricalIterator::direct(points)

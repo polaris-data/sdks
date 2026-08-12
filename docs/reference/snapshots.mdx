@@ -193,6 +193,16 @@ Response shape:
 
 After download, decompress the `.jsonl.zst` file locally and use it as the canonical normalized event source. You can derive trade-only views, local OHLCV bars, and narrower event subsets without repeating the original API request.
 
+New snapshots use event schema v2. Their first nonblank JSONL record has
+`type: "metadata"` and `data.schema_version: "v2"`; SDK readers consume this
+framing row instead of returning it as a market event. Headerless snapshots
+remain legacy and continue to use `timestamp` and `orderbook_delta`.
+
+V2 data rows use `collector_timestamp` for replay timing and retain nullable
+`exchange_timestamp` for venue provenance. Do not sort files by exchange time.
+See [Event schema v2 migration](/guides/event-schema-v2-migration) before
+parsing downloaded files directly.
+
 ## Next steps
 
 - Read [Download](/reference/download) to fetch a bulk day manifest or a single snapshot file.

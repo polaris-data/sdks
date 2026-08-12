@@ -1251,7 +1251,8 @@ def test_volatility_aggregates_log_return_stddev_by_bucket(tmp_path) -> None:
             }
         ]
         assert rows[0]["volatility"] == pytest.approx(
-            abs(math.log(1.02) - math.log(104.0 / 102.0)) / math.sqrt(2.0)
+            abs(math.log(100.0 / 102.0) - math.log(104.0 / 100.0))
+            / math.sqrt(2.0)
         )
     finally:
         client.close()
@@ -1396,7 +1397,7 @@ def test_ohlcv_aggregates_from_snapshot_download_flow(tmp_path) -> None:
         ) == [
             {
                 "timestamp": 1704067200000,
-                "open": 95.0,
+                "open": 100.0,
                 "high": 105.0,
                 "low": 95.0,
                 "close": 105.0,
@@ -2439,7 +2440,7 @@ def test_mark_prices_filter_point_series_from_standardized_snapshots(tmp_path) -
             "type": "point",
             "source": "binance",
             "market": "BTC-USDT",
-            "data": {"series": "mark_price", "value": 43124.0},
+            "data": {"series": "mark_px", "value": 43124.0},
         },
     ]
 

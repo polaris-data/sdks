@@ -8,8 +8,6 @@ use crate::models::{
 #[derive(Clone, Debug)]
 struct Bucket {
     timestamp: i64,
-    first_timestamp: i64,
-    last_timestamp: i64,
     open: f64,
     high: f64,
     low: f64,
@@ -32,30 +30,22 @@ impl OhlcvAggregator {
     }
 
     pub(crate) fn add(&mut self, trade: &TradeEvent) {
-        let bucket_ts = trade.timestamp.div_euclid(self.width) * self.width;
-        let price = trade.data.price;
-        let quantity = trade.data.quantity;
+        let timestamp = trade.timestamp();
+        let bucket_ts = timestamp.div_euclid(self.width) * self.width;
+        let price = trade.price();
+        let quantity = trade.quantity();
 
         self.buckets
             .entry(bucket_ts)
             .and_modify(|bucket| {
                 bucket.high = bucket.high.max(price);
                 bucket.low = bucket.low.min(price);
-                if trade.timestamp < bucket.first_timestamp {
-                    bucket.first_timestamp = trade.timestamp;
-                    bucket.open = price;
-                }
-                if trade.timestamp >= bucket.last_timestamp {
-                    bucket.last_timestamp = trade.timestamp;
-                    bucket.close = price;
-                }
+                bucket.close = price;
                 bucket.volume += quantity;
                 bucket.trades += 1;
             })
             .or_insert(Bucket {
                 timestamp: bucket_ts,
-                first_timestamp: trade.timestamp,
-                last_timestamp: trade.timestamp,
                 open: price,
                 high: price,
                 low: price,

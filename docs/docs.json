@@ -57,6 +57,7 @@
       {
         "group": "Data Schemas",
         "pages": [
+          "guides/event-schema-v2-migration",
           "schemas/events",
           "schemas/trades",
           "schemas/ohlcv",
