@@ -31,11 +31,6 @@ def to_iso8601(value: TimeInput) -> str:
     raise TypeError(f"Unsupported time input type: {type(value)!r}")
 
 
-def bool_to_query(value: bool) -> str:
-    """Serialize booleans to lowercase query-string values."""
-    return "true" if value else "false"
-
-
 def to_datetime(value: TimeInput) -> datetime:
     """Convert TimeInput to datetime object in UTC."""
     if isinstance(value, str):

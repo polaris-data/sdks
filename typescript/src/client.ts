@@ -20,7 +20,6 @@ import type {
   OrderbookEvent,
   StandardEvent,
   TradeEvent,
-  PaginatedResponse,
   PolarisClientOptions,
   PropammQuoteLadderEvent,
   RawQueryOptions,
@@ -1358,31 +1357,6 @@ export class BasePolarisClient {
       }
     }
     return url.toString();
-  }
-
-  // -----------------------------------------------------------------------
-  // Internals – pagination
-  // -----------------------------------------------------------------------
-
-  private async _paginateAll<T = Json>(
-    path: string,
-    baseParams: Record<string, string>,
-    auth: AuthMode,
-  ): Promise<T[]> {
-    const items: T[] = [];
-    let cursor: string | undefined;
-
-    do {
-      const params = cursor ? { ...baseParams, cursor } : { ...baseParams };
-      const res = await this._getJson<PaginatedResponse<T>>(path, {
-        params,
-        auth,
-      });
-      items.push(...res.data);
-      cursor = res.next_cursor ?? undefined;
-    } while (cursor);
-
-    return items;
   }
 
   // -----------------------------------------------------------------------

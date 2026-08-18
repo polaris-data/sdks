@@ -69,35 +69,6 @@ export function datesInRange(fromMs: number, toMs: number): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// hoursInRange
-// ---------------------------------------------------------------------------
-
-/**
- * Return UTC hour buckets that intersect `[fromMs, toMs)`.
- */
-export function hoursInRange(
-  fromMs: number,
-  toMs: number,
-): Array<{ date: string; hour: number }> {
-  if (toMs <= fromMs) return [];
-
-  const hours: Array<{ date: string; hour: number }> = [];
-  const start = new Date(Math.floor(fromMs / 3_600_000) * 3_600_000);
-  const end = new Date(Math.floor((toMs - 1) / 3_600_000) * 3_600_000);
-
-  const cur = new Date(start);
-  while (cur <= end) {
-    hours.push({
-      date: formatUtcDate(cur),
-      hour: cur.getUTCHours(),
-    });
-    cur.setUTCHours(cur.getUTCHours() + 1);
-  }
-
-  return hours;
-}
-
-// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 

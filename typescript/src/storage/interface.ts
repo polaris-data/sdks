@@ -52,36 +52,3 @@ export interface IStorage {
    */
   ensureLayout(root: string): Promise<StorageLayout>;
 }
-
-// ---------------------------------------------------------------------------
-// Shared Utilities
-// ---------------------------------------------------------------------------
-
-/**
- * Read a text file and return its contents as a string.
- * Convenience wrapper around readFile() + TextDecoder.
- */
-export async function readTextFile(storage: IStorage, path: string): Promise<string> {
-  const data = await storage.readFile(path);
-  return new TextDecoder().decode(data);
-}
-
-/**
- * Write a text file.
- * Convenience wrapper around writeFile() + TextEncoder.
- */
-export async function writeTextFile(storage: IStorage, path: string, text: string): Promise<void> {
-  const data = new TextEncoder().encode(text);
-  await storage.writeFile(path, data);
-}
-
-/**
- * Check if a directory exists and create it if it doesn't.
- * Convenience wrapper around exists() + mkdir().
- */
-export async function ensureDir(storage: IStorage, path: string): Promise<void> {
-  const exists = await storage.exists(path);
-  if (!exists) {
-    await storage.mkdir(path);
-  }
-}
