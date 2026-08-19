@@ -30,7 +30,6 @@ if TYPE_CHECKING:
 
 DEFAULT_BASE_URL = "https://api.polaris.supply"
 DEFAULT_TIMEOUT = 30.0
-DEFAULT_NETWORK_CHUNK_SIZE = 8 * 1024 * 1024
 DEFAULT_BATCH_SIZE = 65_536
 OutputFormat = Literal["iterator", "batches", "dataframe"]
 
@@ -113,7 +112,6 @@ class PolarisClient:
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = DEFAULT_TIMEOUT,
         dataset_root: str | os.PathLike[str] | None = None,
-        dataset_download_dir: str | os.PathLike[str] | None = None,
         replay_cache_enabled: bool = True,
         replay_cache_dir: str | os.PathLike[str] | None = None,
         stream_url: str | None = None,
@@ -121,19 +119,14 @@ class PolarisClient:
         self.api_key = api_key or os.getenv("POLARIS_API_KEY")
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        explicit_root = self._resolve_explicit_root(
-            dataset_root=dataset_root,
-            dataset_download_dir=dataset_download_dir,
-        )
         self._native = _native.NativeClient(
             self.api_key,
             self.base_url,
             timeout,
-            explicit_root,
+            Path(dataset_root).expanduser() if dataset_root is not None else None,
             stream_url,
         )
         self.dataset_root = Path(self._native.dataset_root)
-        self.dataset_download_dir = self.dataset_root
         self.replay_cache_enabled = replay_cache_enabled
         self.replay_cache_dir = (
             Path(replay_cache_dir).expanduser()
@@ -142,28 +135,6 @@ class PolarisClient:
         )
         self._closed = False
         self._streams: set[RealtimeStream] = set()
-
-    @staticmethod
-    def _resolve_explicit_root(
-        *,
-        dataset_root: str | os.PathLike[str] | None,
-        dataset_download_dir: str | os.PathLike[str] | None,
-    ) -> Path | None:
-        if dataset_root is None:
-            return (
-                Path(dataset_download_dir).expanduser()
-                if dataset_download_dir is not None
-                else None
-            )
-
-        root = Path(dataset_root).expanduser()
-        if dataset_download_dir is not None:
-            legacy_root = Path(dataset_download_dir).expanduser()
-            if legacy_root != root:
-                raise ValueError(
-                    "dataset_root and dataset_download_dir must match when both are provided"
-                )
-        return root
 
     def close(self) -> None:
         if not self._closed:
@@ -412,8 +383,6 @@ class PolarisClient:
         to: TimeInput | None = None,
         standard: bool = True,
         allow_gaps: bool = False,
-        chunk_size: int | None = None,
-        timeout: float | None = None,
         parallel: bool | int = False,
         materialize_orderbooks: bool = True,
         output: Literal["iterator"] = "iterator",
@@ -430,8 +399,6 @@ class PolarisClient:
         to: TimeInput | None = None,
         standard: Literal[True] = True,
         allow_gaps: bool = False,
-        chunk_size: int | None = None,
-        timeout: float | None = None,
         parallel: bool | int = False,
         materialize_orderbooks: bool = True,
         output: Literal["batches"],
@@ -448,8 +415,6 @@ class PolarisClient:
         to: TimeInput | None = None,
         standard: Literal[True] = True,
         allow_gaps: bool = False,
-        chunk_size: int | None = None,
-        timeout: float | None = None,
         parallel: bool | int = False,
         materialize_orderbooks: bool = True,
         output: Literal["dataframe"],
@@ -465,20 +430,12 @@ class PolarisClient:
         to: TimeInput | None = None,
         standard: bool = True,
         allow_gaps: bool = False,
-        chunk_size: int | None = None,
-        timeout: float | None = None,
         parallel: bool | int = False,
         materialize_orderbooks: bool = True,
         output: OutputFormat = "iterator",
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        del timeout
         self._validate_columnar_output(output, batch_size)
-        effective_chunk_size = (
-            chunk_size if chunk_size is not None else DEFAULT_NETWORK_CHUNK_SIZE
-        )
-        if effective_chunk_size <= 0:
-            raise ValueError("chunk_size must be > 0")
         from_text = self._time(from_)
         to_text = self._time(to)
         if parallel and (from_text is None or to_text is None):

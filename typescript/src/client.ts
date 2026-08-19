@@ -22,7 +22,6 @@ import type {
   TradeEvent,
   PolarisClientOptions,
   PropammQuoteLadderEvent,
-  RawQueryOptions,
   ReplayOptions,
   SnapshotDownloadManifest,
   SnapshotDownloadManifestOptions,
@@ -599,23 +598,6 @@ export class BasePolarisClient {
         "replay({ standard: false }) is not supported by the TypeScript SDK. Use snapshot-backed replay instead.",
       );
     }
-  }
-
-  // -----------------------------------------------------------------------
-  // Raw (API-only, not snapshot-first)
-  // -----------------------------------------------------------------------
-
-  /**
-   * Raw endpoint access is intentionally disabled in the TypeScript SDK.
-   *
-   * Historical data access is snapshot-first: discover files via
-   * `GET /snapshots` and fetch artifacts via `GET /download`.
-   */
-  async raw(options: RawQueryOptions): Promise<Json[]> {
-    void options;
-    throw new PolarisError(
-      "Direct /raw access is not supported by the TypeScript SDK. Use snapshot-backed methods or download snapshots via GET /download.",
-    );
   }
 
   // -----------------------------------------------------------------------

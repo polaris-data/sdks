@@ -89,7 +89,6 @@ Use it to inspect available data, query historical market data, and open realtim
 | --- | --- | --- |
 | `replay(opts)` | Async iterator of historical events | Backfills and replay-style processing without materializing everything up front |
 | `stream(opts)` | Closeable async iterable of realtime events | Open-ended normalized market data for one source and up to 1,000 markets |
-| `raw(opts)` | Throws `PolarisError` in the TypeScript SDK | Reserved for parity with other SDKs; TypeScript historical access remains snapshot-first |
 | `getSnapshotDownloadUrls(opts)` | Daily bulk manifest with pre-signed snapshot URLs | Bulk historical downloads for a single `source` / `market` / UTC `date` |
 
 ### Standardized Data Schemas
@@ -397,7 +396,6 @@ try {
 | `NotFoundError` | 404 | Resource not found |
 | `RateLimitedError` | 429 | Too many requests; check `resetAt` |
 | `StreamDecodeError` | — | Failed to decode a streamed response |
-| `DownloadNotAllowedError` | — | Server policy blocks the download |
 
 All errors extend `PolarisError` which extends `Error`.
 
@@ -422,7 +420,6 @@ import type {
 
   // Catalog
   CatalogResponse,
-  CatalogSource,
   CatalogMarket,
 } from "polaris-data";
 ```

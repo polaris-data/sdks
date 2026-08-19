@@ -75,29 +75,6 @@ def _write_propamm_fixture(
     )
 
 
-def test_client_uses_deprecated_dataset_root_environment_fallback(
-    tmp_path, monkeypatch
-) -> None:
-    preferred_root = tmp_path / "preferred"
-    legacy_root = tmp_path / "legacy"
-    monkeypatch.setenv("POLARIS_ROOT", str(preferred_root))
-    monkeypatch.setenv("POLARIS_DATASET_DOWNLOAD_DIR", str(legacy_root))
-
-    client = PolarisClient(base_url="http://127.0.0.1:1")
-    try:
-        assert client.dataset_root == preferred_root
-        assert client.dataset_download_dir == preferred_root
-    finally:
-        client.close()
-
-    monkeypatch.delenv("POLARIS_ROOT")
-    client = PolarisClient(base_url="http://127.0.0.1:1")
-    try:
-        assert client.dataset_root == legacy_root
-    finally:
-        client.close()
-
-
 def make_client(
     handler,
     *,

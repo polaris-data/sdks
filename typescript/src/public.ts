@@ -6,7 +6,6 @@ export {
   StreamDecodeError,
   StreamConnectionError,
   StreamProtocolError,
-  DownloadNotAllowedError,
 } from "./errors";
 
 export { OhlcvAggregator } from "./aggregator";
@@ -17,9 +16,7 @@ export type {
   TimeInput,
   FetchLike,
   AuthMode,
-  PaginatedResponse,
   CatalogResponse,
-  CatalogSource,
   CatalogInstrument,
   CatalogMarket,
   LegacyStandardEvent,
@@ -67,7 +64,6 @@ export type {
   CatalogOptions,
   HistoricalQueryOptions,
   L2UpdatesOptions,
-  RawQueryOptions,
   OhlcvOptions,
   VolumeOptions,
   VwapOptions,

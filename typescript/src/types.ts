@@ -19,27 +19,11 @@ export type FetchLike = typeof globalThis.fetch;
 export type AuthMode = "none" | "if-available" | "required";
 
 // ---------------------------------------------------------------------------
-// Paginated envelope – returned by /raw, /snapshots
-// ---------------------------------------------------------------------------
-
-export interface PaginatedResponse<T = Record<string, unknown>> {
-  data: T[];
-  next_cursor: string | null;
-  has_more: boolean;
-}
-
-// ---------------------------------------------------------------------------
 // Catalog – GET /catalog
 // ---------------------------------------------------------------------------
 
 export interface CatalogResponse {
   updatedAt: string;
-  markets: CatalogMarket[];
-}
-
-/** Grouped source view retained for compatibility with older SDK examples. */
-export interface CatalogSource {
-  id: string;
   markets: CatalogMarket[];
 }
 
@@ -421,16 +405,6 @@ export interface ListSnapshotsOptions {
   from?: TimeInput;
   to?: TimeInput;
   limit?: number;
-}
-
-/** Options for the /raw endpoint shape. `from`/`to` are optional. */
-export interface RawQueryOptions {
-  source: string;
-  market: string;
-  from?: TimeInput;
-  to?: TimeInput;
-  limit?: number;
-  format?: string;
 }
 
 export interface OhlcvOptions extends HistoricalQueryOptions {

@@ -246,25 +246,7 @@ fn parse_side(
 }
 
 fn parse_level(value: &Value) -> Result<OrderbookLevel, PolarisError> {
-    let (price, quantity) = if let Some(values) = value.as_array() {
-        if values.len() < 2 {
-            return Err(PolarisError::Decode(
-                "invalid orderbook level: expected [price, quantity]".to_owned(),
-            ));
-        }
-        (parse_number(&values[0]), parse_number(&values[1]))
-    } else if let Some(object) = value.as_object() {
-        let quantity = object
-            .get("quantity")
-            .or_else(|| object.get("size"))
-            .or_else(|| object.get("amount"));
-        (
-            object.get("price").and_then(parse_number),
-            quantity.and_then(parse_number),
-        )
-    } else {
-        (None, None)
-    };
+    let (price, quantity) = parse_level_tuple(value);
 
     let price = price.ok_or_else(|| {
         PolarisError::Decode("invalid orderbook level: price must be numeric".to_owned())
@@ -280,7 +262,27 @@ fn parse_level(value: &Value) -> Result<OrderbookLevel, PolarisError> {
     Ok(OrderbookLevel { price, quantity })
 }
 
-fn parse_number(value: &Value) -> Option<f64> {
+pub(crate) fn parse_level_tuple(value: &Value) -> (Option<f64>, Option<f64>) {
+    if let Some(values) = value.as_array() {
+        return (
+            values.first().and_then(parse_number),
+            values.get(1).and_then(parse_number),
+        );
+    }
+    if let Some(object) = value.as_object() {
+        let quantity = object
+            .get("quantity")
+            .or_else(|| object.get("size"))
+            .or_else(|| object.get("amount"));
+        return (
+            object.get("price").and_then(parse_number),
+            quantity.and_then(parse_number),
+        );
+    }
+    (None, None)
+}
+
+pub(crate) fn parse_number(value: &Value) -> Option<f64> {
     value
         .as_f64()
         .or_else(|| value.as_str().and_then(|text| text.parse().ok()))

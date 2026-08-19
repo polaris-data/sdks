@@ -82,11 +82,3 @@ export class StreamProtocolError extends PolarisError {
     this.code = code;
   }
 }
-
-// ---------------------------------------------------------------------------
-// Download blocked by server policy
-// ---------------------------------------------------------------------------
-
-export class DownloadNotAllowedError extends PolarisError {
-  override readonly name: string = "DownloadNotAllowedError";
-}

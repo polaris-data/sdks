@@ -12,14 +12,10 @@ import pytest
 import polaris_data
 from polaris_data import (
     AccessDeniedError,
-    BulkDownloadManifest,
-    BulkDownloadSnapshotEntry,
     CatalogAccess,
     CatalogInstrument,
     CatalogMarketEntry,
     CatalogResponse,
-    DownloadNotAllowedError,
-    LocalSnapshotEntry,
     NotFoundError,
     OrderbookBuilder,
     PolarisClient,
@@ -49,16 +45,12 @@ def _parameters(callable_: object) -> list[tuple[str, inspect._ParameterKind, ob
 def test_top_level_exports_are_stable() -> None:
     assert polaris_data.__all__ == [
         "AccessDeniedError",
-        "BulkDownloadManifest",
-        "BulkDownloadSnapshotEntry",
         "CatalogAccess",
         "CatalogInstrument",
         "CatalogMarketEntry",
         "CatalogResponse",
         "NotFoundError",
         "OrderbookBuilder",
-        "DownloadNotAllowedError",
-        "LocalSnapshotEntry",
         "PolarisClient",
         "PolarisError",
         "PropammQuote",
@@ -82,7 +74,6 @@ def test_client_constructor_signature_and_defaults_are_stable() -> None:
         ("base_url", positional, "https://api.polaris.supply"),
         ("timeout", positional, 30.0),
         ("dataset_root", positional, None),
-        ("dataset_download_dir", positional, None),
         ("replay_cache_enabled", positional, True),
         ("replay_cache_dir", positional, None),
         ("stream_url", positional, None),
@@ -117,8 +108,6 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("to", keyword_only, None),
         ("standard", keyword_only, True),
         ("allow_gaps", keyword_only, False),
-        ("chunk_size", keyword_only, None),
-        ("timeout", keyword_only, None),
         ("parallel", keyword_only, False),
         ("materialize_orderbooks", keyword_only, True),
         ("output", keyword_only, "iterator"),
@@ -298,14 +287,6 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
         "updatedAt": str,
     }
     assert get_type_hints(CatalogMarketEntry)["symbol"] is str
-    assert get_type_hints(BulkDownloadManifest) == {
-        "source": str,
-        "market": str,
-        "date": str,
-        "total": int,
-        "total_bytes": int,
-        "snapshots": list[BulkDownloadSnapshotEntry],
-    }
     assert get_type_hints(PropammQuote) == {
         "amount_in": str,
         "amount_out": str,
@@ -316,7 +297,6 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
     assert event_hints["data"] is PropammQuoteLadderData
     assert JSONDict == dict[str, Any]
     assert is_dataclass(SnapshotEntry)
-    assert is_dataclass(LocalSnapshotEntry)
     assert [field.name for field in fields(SnapshotEntry)] == [
         "key",
         "source",
@@ -337,7 +317,6 @@ def test_error_hierarchy_is_stable() -> None:
         StreamDecodeError,
         StreamConnectionError,
         StreamProtocolError,
-        DownloadNotAllowedError,
     ]:
         assert error.__bases__ == (PolarisError,)
 

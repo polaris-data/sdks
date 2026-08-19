@@ -54,7 +54,3 @@ class StreamProtocolError(PolarisError):
 
 class AccessDeniedError(PolarisError):
     """Raised when the requested data requires authentication the client does not have."""
-
-
-class DownloadNotAllowedError(PolarisError):
-    """Raised when file downloads are disabled by client configuration."""

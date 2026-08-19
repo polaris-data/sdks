@@ -27,7 +27,7 @@ use crate::{
         TradeDataV2, TradeEvent, TradeEventV2, VolatilityBar, VolumeBar, VwapBar,
     },
     ohlcv,
-    orderbook::{BookUpdate, BookView},
+    orderbook::{BookUpdate, BookView, parse_level_tuple},
     realtime, replay,
     storage::{
         LocalSnapshotFile, SnapshotCoverage, StorageLayout, acquire_sync_lock, data_file_path,
@@ -2155,35 +2155,12 @@ fn parse_orderbook_levels(value: &Value) -> Option<Vec<OrderbookLevel>> {
     let rows = value.as_array()?;
     let mut levels = Vec::new();
     for row in rows {
-        let (price, quantity) = if let Some(values) = row.as_array() {
-            (
-                values.first().and_then(parse_number),
-                values.get(1).and_then(parse_number),
-            )
-        } else if let Some(object) = row.as_object() {
-            (
-                object.get("price").and_then(parse_number),
-                object
-                    .get("quantity")
-                    .or_else(|| object.get("size"))
-                    .and_then(parse_number),
-            )
-        } else {
-            (None, None)
-        };
+        let (price, quantity) = parse_level_tuple(row);
         if let (Some(price), Some(quantity)) = (price, quantity) {
             levels.push(OrderbookLevel { price, quantity });
         }
     }
     Some(levels)
-}
-
-fn parse_number(value: &Value) -> Option<f64> {
-    match value {
-        Value::Number(number) => number.as_f64(),
-        Value::String(text) => text.parse().ok(),
-        _ => None,
-    }
 }
 
 fn micros_to_iso8601(value: i64) -> Result<String, PolarisError> {

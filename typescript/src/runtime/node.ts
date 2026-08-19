@@ -34,9 +34,6 @@ export const nodeRuntime: PolarisRuntime = {
   resolveRoot(explicit) {
     if (explicit) return explicit;
     if (process.env.POLARIS_ROOT) return process.env.POLARIS_ROOT;
-    if (process.env.POLARIS_DATASET_DOWNLOAD_DIR) {
-      return process.env.POLARIS_DATASET_DOWNLOAD_DIR;
-    }
     return defaultRoot();
   },
 

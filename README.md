@@ -435,7 +435,6 @@ Compatible materialized day files, when present, are stored under:
 
 Pass `dataset_root=...` to `PolarisClient(...)` to override the root explicitly.
 `POLARIS_ROOT` overrides the shared root globally.
-`POLARIS_DATASET_DOWNLOAD_DIR` is still accepted as a deprecated compatibility override.
 
 ## Snapshot-first replay
 
