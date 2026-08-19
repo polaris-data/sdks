@@ -110,7 +110,7 @@ class _PropammQuoteLadderValuesRequired(TypedDict):
     transaction_hash: str
     transaction_index: int
     router: str
-    oracle: str | None
+    oracle: Optional[str]
     token_in: str
     token_out: str
     token_in_decimals: int
@@ -130,8 +130,8 @@ class PropammQuoteLadderData(TypedDict):
 class PropammQuoteLadderEvent(TypedDict):
     collector_timestamp: int
     collector_sequence: int
-    exchange_timestamp: int | None
-    exchange_sequence: str | None
+    exchange_timestamp: Optional[int]
+    exchange_sequence: Optional[str]
     source: str
     market: str
     type: Literal["record"]
