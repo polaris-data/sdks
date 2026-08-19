@@ -154,6 +154,39 @@ export interface MarkPriceData extends Record<string, unknown> {
 
 export type MarkPriceEvent = PointSeriesEvent & { data: MarkPriceData };
 
+export interface PropammQuote {
+  amount_in: string;
+  amount_out: string;
+}
+
+export interface PropammQuoteLadderValues {
+  event_id: string;
+  chain_id: number;
+  block_number: number;
+  block_hash: string;
+  parent_hash: string;
+  transaction_hash: string;
+  transaction_index: number;
+  router: string;
+  oracle: string | null;
+  pool?: string;
+  token_in: string;
+  token_out: string;
+  token_in_decimals: number;
+  token_out_decimals: number;
+  quotes: PropammQuote[];
+}
+
+export interface PropammQuoteLadderData extends Record<string, unknown> {
+  series: "quote_ladder";
+  values: PropammQuoteLadderValues;
+}
+
+export interface PropammQuoteLadderEvent extends StandardEventV2 {
+  type: "record";
+  data: PropammQuoteLadderData;
+}
+
 export type OrderbookLevel =
   | [number | string, number | string, ...unknown[]]
   | {

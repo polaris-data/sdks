@@ -569,6 +569,71 @@ pub type ReplayStream = HistoricalStream<StandardEvent>;
 pub type RawReplayStream = Pin<Box<dyn Stream<Item = Result<Value, PolarisError>> + Send>>;
 pub type RealtimeStream = Pin<Box<dyn Stream<Item = Result<StandardEvent, PolarisError>> + Send>>;
 
+// PropAMM quote-ladder types
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PropammQuote {
+    pub amount_in: String,
+    pub amount_out: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PropammQuoteLadderValues {
+    pub event_id: String,
+    pub chain_id: u64,
+    pub block_number: u64,
+    pub block_hash: String,
+    pub parent_hash: String,
+    pub transaction_hash: String,
+    pub transaction_index: u64,
+    pub router: String,
+    pub oracle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<String>,
+    pub token_in: String,
+    pub token_out: String,
+    pub token_in_decimals: u8,
+    pub token_out_decimals: u8,
+    pub quotes: Vec<PropammQuote>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PropammQuoteLadderData {
+    #[serde(rename = "series")]
+    pub series_name: String,
+    pub values: PropammQuoteLadderValues,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PropammQuoteLadderEvent {
+    pub collector_timestamp: i64,
+    pub collector_sequence: u64,
+    pub exchange_timestamp: Option<i64>,
+    pub exchange_sequence: Option<String>,
+    pub source: String,
+    pub market: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub data: PropammQuoteLadderData,
+}
+
+impl PropammQuoteLadderEvent {
+    pub fn timestamp(&self) -> i64 {
+        self.collector_timestamp
+    }
+
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    pub fn market(&self) -> &str {
+        &self.market
+    }
+
+    pub fn data(&self) -> &PropammQuoteLadderData {
+        &self.data
+    }
+}
+
 // Orderbook-related types
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OrderbookLevel {

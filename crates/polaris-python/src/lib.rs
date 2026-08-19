@@ -5,7 +5,8 @@ mod columnar;
 use polaris_data::{
     BboQuery, BboQuote, DepthMetricsRow, HistoricalQuery, ListSnapshotsQuery, OhlcvFormat,
     OhlcvInterval, OhlcvOutput, OhlcvQuery, OrderbookBuilder, PointSeriesEvent, PolarisError,
-    RawQuery, RawReplayQuery, ReplayQuery, StandardEvent, StreamQuery, TimeInput, TradeEvent,
+    PropammQuoteLadderEvent, RawQuery, RawReplayQuery, ReplayQuery, StandardEvent, StreamQuery,
+    TimeInput, TradeEvent,
     blocking::{self, RawReplayCacheConfig},
 };
 use pyo3::{
@@ -856,6 +857,55 @@ impl NativeClient {
         )
     }
 
+    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
+    fn propamm_quote_ladders<'py>(
+        &self,
+        py: Python<'py>,
+        source: String,
+        market: String,
+        from_: Option<String>,
+        to: Option<String>,
+        allow_gaps: bool,
+    ) -> PyResult<NativeHistorical> {
+        let iterator = py
+            .detach(|| {
+                self.inner
+                    .propamm_quote_ladders(historical_query(source, market, from_, to, allow_gaps))
+            })
+            .map_err(native_error)?;
+        Ok(NativeHistorical::new(
+            NativeHistoricalIterator::PropammQuoteLadders(iterator),
+        ))
+    }
+
+    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, batch_size=65_536))]
+    fn propamm_quote_ladders_columnar(
+        &self,
+        py: Python<'_>,
+        source: String,
+        market: String,
+        from_: Option<String>,
+        to: Option<String>,
+        allow_gaps: bool,
+        batch_size: usize,
+    ) -> PyResult<NativeColumnar> {
+        validate_batch_size(batch_size)?;
+        let identity_source = source.clone();
+        let identity_market = market.clone();
+        py.detach(|| {
+            let mut query = historical_query(source, market, from_, to, allow_gaps);
+            query.materialize_orderbooks = false;
+            let plan = self.inner.prepare_historical(query)?;
+            Ok(NativeColumnar::propamm_quote_ladders(
+                plan,
+                identity_source,
+                identity_market,
+                batch_size,
+            ))
+        })
+        .map_err(native_error)
+    }
+
     #[pyo3(signature = (source, market, interval, from_=None, to=None, allow_gaps=false))]
     fn volume<'py>(
         &self,
@@ -1050,6 +1100,7 @@ enum NativeHistoricalIterator {
     Trades(blocking::HistoricalIterator<TradeEvent>),
     Bbo(blocking::HistoricalIterator<BboQuote>),
     Points(blocking::HistoricalIterator<PointSeriesEvent>),
+    PropammQuoteLadders(blocking::HistoricalIterator<PropammQuoteLadderEvent>),
     Depth(blocking::HistoricalIterator<DepthMetricsRow>),
 }
 
@@ -1120,6 +1171,9 @@ impl NativeHistorical {
             NativeHistoricalIterator::Trades(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Bbo(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Points(iterator) => next_historical(py, iterator),
+            NativeHistoricalIterator::PropammQuoteLadders(iterator) => {
+                next_historical(py, iterator)
+            }
             NativeHistoricalIterator::Depth(iterator) => next_historical(py, iterator),
         };
         if matches!(result, Ok(None)) {

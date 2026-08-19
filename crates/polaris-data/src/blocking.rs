@@ -19,8 +19,9 @@ use crate::{
     BboQuery, BboQuote, CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic,
     DownloadManifestQuery, DownloadManifestResponse, HistoricalQuery, HistoricalStream,
     ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OrderbookEvent, PointSeriesEvent, PolarisError,
-    RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, SnapshotEntry,
-    StandardEvent, StreamQuery, TimeInput, TradeEvent, VolatilityBar, VolumeBar, VwapBar,
+    PropammQuoteLadderEvent, RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream,
+    ReplayQuery, SnapshotEntry, StandardEvent, StreamQuery, TimeInput, TradeEvent, VolatilityBar,
+    VolumeBar, VwapBar,
     replay::{LocalExactReplayIterator, LocalReplayIterator},
 };
 
@@ -361,6 +362,14 @@ impl PolarisClient {
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 
+    pub fn propamm_quote_ladders(
+        &self,
+        query: HistoricalQuery,
+    ) -> Result<HistoricalIterator<PropammQuoteLadderEvent>, PolarisError> {
+        let stream = self.run(self.inner.propamm_quote_ladders(query))?;
+        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
+    }
+
     pub fn volume(&self, query: OhlcvQuery) -> Result<Vec<VolumeBar>, PolarisError> {
         self.run(self.inner.volume(query))
     }
@@ -462,6 +471,33 @@ impl PreparedHistoricalReplay {
             Err(error) => Some(Err(error)),
         });
         HistoricalIterator::direct(points)
+    }
+
+    pub fn propamm_quote_ladders(&self) -> HistoricalIterator<PropammQuoteLadderEvent> {
+        let ladders = self.events().filter_map(|event| match event {
+            Ok(event) => match crate::client::PolarisClient::parse_propamm_quote_ladder(event) {
+                Ok(Some(ladder)) => Some(Ok(ladder)),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            },
+            Err(error) => Some(Err(error)),
+        });
+        HistoricalIterator::direct(ladders)
+    }
+
+    #[doc(hidden)]
+    pub fn exact_propamm_quote_ladders(&self) -> ExactReplayIterator {
+        let ladders = self.exact_events().filter_map(|row| match row {
+            Ok(row) => {
+                match crate::client::PolarisClient::parse_propamm_quote_ladder(row.event.clone()) {
+                    Ok(Some(_)) => Some(Ok(row)),
+                    Ok(None) => None,
+                    Err(error) => Some(Err(error)),
+                }
+            }
+            Err(error) => Some(Err(error)),
+        });
+        HistoricalIterator::direct(ladders)
     }
 }
 

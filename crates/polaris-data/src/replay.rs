@@ -439,6 +439,8 @@ struct SnapshotEventReader {
     buffer: Vec<u8>,
     pending: Option<Vec<u8>>,
     schema: SnapshotSchema,
+    metadata_source: Option<String>,
+    metadata_market: Option<String>,
     from_us: i64,
     to_us: i64,
     source_file_ordinal: u32,
@@ -478,6 +480,8 @@ impl SnapshotEventReader {
             buffer: Vec::with_capacity(8 * 1024),
             pending: None,
             schema: SnapshotSchema::Legacy,
+            metadata_source: None,
+            metadata_market: None,
             from_us,
             to_us,
             source_file_ordinal,
@@ -530,6 +534,16 @@ impl SnapshotEventReader {
                     )));
                 }
                 self.schema = SnapshotSchema::V2;
+                self.metadata_source = value
+                    .get("source")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned);
+                self.metadata_market = value
+                    .get("market")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned);
                 self.next_row_ordinal = 1;
             } else {
                 self.pending = Some(self.buffer.clone());
@@ -624,7 +638,17 @@ impl Iterator for SnapshotEventReader {
                             self.path.display()
                         ))));
                     }
-                    serde_json::from_value::<StandardEventV2>(value).and_then(|event| {
+                    serde_json::from_value::<StandardEventV2>(value).and_then(|mut event| {
+                        if event.source.is_empty() {
+                            if let Some(source) = &self.metadata_source {
+                                event.source.clone_from(source);
+                            }
+                        }
+                        if event.market.is_empty() {
+                            if let Some(market) = &self.metadata_market {
+                                event.market.clone_from(market);
+                            }
+                        }
                         validate_v2_event(&event).map_err(serde::de::Error::custom)?;
                         Ok(StandardEvent::V2(event))
                     })
@@ -764,6 +788,8 @@ mod tests {
 
     const LEGACY_FIXTURE: &str = include_str!("../../../tests/fixtures/events/legacy-v1.jsonl");
     const V2_FIXTURE: &str = include_str!("../../../tests/fixtures/events/schema-v2.jsonl");
+    const PROPAMM_FIXTURE: &str =
+        include_str!("../../../tests/fixtures/events/propamm-fermiswap-v2.jsonl");
 
     #[tokio::test]
     async fn materialization_clears_across_known_coverage_gaps() {
@@ -878,6 +904,27 @@ mod tests {
         .unwrap();
         assert_eq!(after_out_of_range.len(), 1);
         assert_eq!(after_out_of_range[0].source_row_ordinal, 8);
+    }
+
+    #[test]
+    fn v2_reader_inherits_market_from_metadata_without_changing_exact_json() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("propamm.jsonl");
+        std::fs::write(&path, PROPAMM_FIXTURE).unwrap();
+
+        let rows = ReplayFileIterator::new(vec![path], i64::MIN, i64::MAX, true)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row.event.market() == "ethereum"));
+        assert!(
+            !rows[1]
+                .event_json
+                .as_deref()
+                .unwrap()
+                .contains("\"market\"")
+        );
     }
 
     #[test]

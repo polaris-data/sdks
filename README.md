@@ -212,6 +212,7 @@ Use it to inspect available data, query historical market data, and open realtim
 | `l2_updates(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of raw orderbook snapshots and deltas | High-throughput application-managed books |
 | `funding_rates(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Perpetual funding studies and carry modeling |
 | `mark_prices(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Basis analysis, mark tracking, and liquidation-related research |
+| `propamm_quote_ladders(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, exact Arrow batches, or Pandas DataFrame | PropAMM execution-quote analysis with full-precision Ethereum amounts |
 | `ohlcv(source=..., market=..., from_=None, to=None, interval=..., format=None, allow_gaps=False)` | Aggregated OHLCV bars | Charting, bar-based strategies, and downstream TA workflows |
 | `volume(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False)` | Bucketed trade volume series | Volume profiling and participation analysis |
 | `vwap(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False)` | Bucketed VWAP series | Execution benchmarking and price smoothing |
@@ -232,6 +233,21 @@ Pandas DataFrame. Typed-series output flattens fields, uses UTC millisecond
 timestamps, and dictionary-encodes source, market, and side. Venue-specific
 trade and point fields appear as sorted `extra.<name>` columns; discovering
 those fields requires one schema pass before batches are emitted.
+
+PropAMM quote ladders retain their complete v2 record envelope. Quote amounts
+remain decimal strings so values across the full Ethereum `uint256` range are
+lossless; `oracle` may be `None`, and Metric records additionally include
+`pool`:
+
+```python
+for event in client.propamm_quote_ladders(
+    source="metric",
+    market="ethereum",
+    from_="2024-01-01T00:00:00Z",
+    to="2024-01-01T01:00:00Z",
+):
+    print(event["data"]["values"]["quotes"])
+```
 
 Exact `events()` and standardized `replay()` batches use UTC microsecond
 timestamps and preserve storage order without timestamp sorting. Every row has
@@ -423,7 +439,7 @@ Pass `dataset_root=...` to `PolarisClient(...)` to override the root explicitly.
 
 ## Snapshot-first replay
 
-For standardized historical data, `replay(...)`, `events(...)`, `trades(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, `l2_updates(...)`, `volume(...)`, and default/tradingview `ohlcv(...)` now prefer `/snapshots` plus daily bulk `/download?source=...&market=...&date=...&mode=json` manifests, and reuse local snapshot files when they already exist:
+For standardized historical data, `replay(...)`, `events(...)`, `trades(...)`, `propamm_quote_ladders(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, `l2_updates(...)`, `volume(...)`, and default/tradingview `ohlcv(...)` now prefer `/snapshots` plus daily bulk `/download?source=...&market=...&date=...&mode=json` manifests, and reuse local snapshot files when they already exist:
 
 ```python
 from polaris_data import PolarisClient
@@ -438,7 +454,7 @@ with PolarisClient(api_key="polaris_key_your_key") as client:
         print(row)
 ```
 
-If the requested standardized range cannot be satisfied from available standardized snapshots, `replay(...)`, `events(...)`, `trades(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, `l2_updates(...)`, `volume(...)`, and `ohlcv(...)` raise by default instead of falling back. Pass `allow_gaps=True` on standardized methods to return only covered data and receive a warning with the missing intervals.
+If the requested standardized range cannot be satisfied from available standardized snapshots, `replay(...)`, `events(...)`, `trades(...)`, `propamm_quote_ladders(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, `l2_updates(...)`, `volume(...)`, and `ohlcv(...)` raise by default instead of falling back. Pass `allow_gaps=True` on standardized methods to return only covered data and receive a warning with the missing intervals.
 
 ## Error handling
 
