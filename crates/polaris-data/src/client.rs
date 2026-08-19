@@ -21,10 +21,10 @@ use crate::{
         DownloadManifestResponse, HistoricalQuery, HistoricalStream, LegacyOrderbookEvent,
         LegacyPointSeriesEvent, LegacyTradeData, LegacyTradeEvent, ListSnapshotsQuery, OhlcvOutput,
         OhlcvQuery, OrderbookData, OrderbookDataV2, OrderbookEvent, OrderbookEventV2,
-        OrderbookLevel, PointSeriesData, PointSeriesEvent, PointSeriesEventV2, RawQuery,
-        RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, ReplayStream, SnapshotEntry,
-        StandardEvent, StreamQuery, TradeDataV2, TradeEvent, TradeEventV2, VolatilityBar,
-        VolumeBar, VwapBar,
+        OrderbookLevel, PointSeriesData, PointSeriesEvent, PointSeriesEventV2,
+        PropammQuoteLadderData, PropammQuoteLadderEvent, RawQuery, RawReplayQuery, RawReplayStream,
+        RealtimeStream, ReplayQuery, ReplayStream, SnapshotEntry, StandardEvent, StreamQuery,
+        TradeDataV2, TradeEvent, TradeEventV2, VolatilityBar, VolumeBar, VwapBar,
     },
     ohlcv,
     orderbook::{BookUpdate, BookView},
@@ -1061,6 +1061,22 @@ impl PolarisClient {
         self.point_series(query, &["mark_price", "mark_px"]).await
     }
 
+    /// Return standardized PropAMM quote-ladder records for a time range.
+    pub async fn propamm_quote_ladders(
+        &self,
+        mut query: HistoricalQuery,
+    ) -> Result<HistoricalStream<PropammQuoteLadderEvent>, PolarisError> {
+        query.materialize_orderbooks = false;
+        let mut events = self.events(query).await?;
+        Ok(Box::pin(try_stream! {
+            while let Some(event) = events.next().await {
+                if let Some(ladder) = Self::parse_propamm_quote_ladder(event?)? {
+                    yield ladder;
+                }
+            }
+        }))
+    }
+
     async fn point_series(
         &self,
         query: HistoricalQuery,
@@ -1344,6 +1360,56 @@ impl PolarisClient {
                 data,
             })),
         }
+    }
+
+    pub(crate) fn parse_propamm_quote_ladder(
+        event: StandardEvent,
+    ) -> Result<Option<PropammQuoteLadderEvent>, PolarisError> {
+        if event.event_type() != "record"
+            || event.data().get("series").and_then(Value::as_str) != Some("quote_ladder")
+        {
+            return Ok(None);
+        }
+        let StandardEvent::V2(event) = event else {
+            return Ok(None);
+        };
+        let values = event
+            .data
+            .get("values")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                PolarisError::Decode(
+                    "invalid PropAMM quote-ladder payload: values must be an object".to_owned(),
+                )
+            })?;
+        if !values.contains_key("oracle") {
+            return Err(PolarisError::Decode(
+                "invalid PropAMM quote-ladder payload: oracle is required".to_owned(),
+            ));
+        }
+        if values.get("pool").is_some_and(|value| !value.is_string()) {
+            return Err(PolarisError::Decode(
+                "invalid PropAMM quote-ladder payload: pool must be a string when present"
+                    .to_owned(),
+            ));
+        }
+        let data =
+            serde_json::from_value::<PropammQuoteLadderData>(event.data).map_err(|error| {
+                PolarisError::Decode(format!("invalid PropAMM quote-ladder payload: {error}"))
+            })?;
+        if data.series_name != "quote_ladder" {
+            return Ok(None);
+        }
+        Ok(Some(PropammQuoteLadderEvent {
+            collector_timestamp: event.collector_timestamp,
+            collector_sequence: event.collector_sequence,
+            exchange_timestamp: event.exchange_timestamp,
+            exchange_sequence: event.exchange_sequence,
+            source: event.source,
+            market: event.market,
+            event_type: event.event_type,
+            data,
+        }))
     }
 
     fn derive_depth_metrics(

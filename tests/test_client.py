@@ -40,6 +40,41 @@ def _raw_replay_cache_path(directory: Path) -> Path:
     )
 
 
+def _write_propamm_fixture(
+    root: Path,
+    source: str,
+    fixture_name: str,
+    *,
+    mutate=None,
+) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "events" / fixture_name
+    rows = [json.loads(line) for line in fixture.read_text().splitlines()]
+    if mutate is not None:
+        mutate(rows)
+    key = f"standard-{source}-ethereum-2024-01-01-000000"
+    path = (
+        root
+        / "data"
+        / "standard"
+        / source
+        / "ethereum"
+        / "2024-01-01"
+        / f"{key}.jsonl.zst"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_zstd_ndjson(rows))
+    path.with_name(path.name + ".coverage.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "key": key,
+                "start_us": 1_704_067_200_000_000,
+                "end_us": 1_704_070_800_000_000,
+            }
+        )
+    )
+
+
 def test_client_uses_deprecated_dataset_root_environment_fallback(
     tmp_path, monkeypatch
 ) -> None:
@@ -1904,6 +1939,66 @@ def test_local_events_and_replay_convert_standard_events_without_intermediate_tr
         }
         assert list(client.events(**kwargs)) == expected
         assert list(client.replay(**kwargs)) == expected
+    finally:
+        client.close()
+
+
+def test_propamm_quote_ladders_are_typed_and_preserve_uint256_strings(tmp_path) -> None:
+    _write_propamm_fixture(
+        tmp_path,
+        "fermiswap",
+        "propamm-fermiswap-v2.jsonl",
+    )
+    _write_propamm_fixture(tmp_path, "metric", "propamm-metric-v2.jsonl")
+    client = PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1")
+    try:
+        kwargs = {
+            "market": "ethereum",
+            "from_": "2024-01-01T00:00:00Z",
+            "to": "2024-01-01T01:00:00Z",
+        }
+        fermi = list(
+            client.propamm_quote_ladders(source="fermiswap", **kwargs)
+        )
+        metric = list(client.propamm_quote_ladders(source="metric", **kwargs))
+    finally:
+        client.close()
+
+    assert len(fermi) == 1
+    assert fermi[0]["market"] == "ethereum"
+    assert fermi[0]["data"]["values"]["oracle"] is None
+    assert "pool" not in fermi[0]["data"]["values"]
+    assert fermi[0]["data"]["values"]["quotes"][0]["amount_in"] == str(
+        2**256 - 1
+    )
+    assert metric[0]["data"]["values"]["pool"] == "0xpool"
+
+
+@pytest.mark.parametrize("output", ["iterator", "batches"])
+def test_propamm_quote_ladders_reject_malformed_matching_records(
+    tmp_path, output
+) -> None:
+    def invalidate(rows: list[dict]) -> None:
+        rows[-1]["data"]["values"]["quotes"][0]["amount_in"] = 10
+
+    _write_propamm_fixture(
+        tmp_path,
+        "fermiswap",
+        "propamm-fermiswap-v2.jsonl",
+        mutate=invalidate,
+    )
+    client = PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1")
+    try:
+        with pytest.raises(StreamDecodeError, match="quote-ladder payload"):
+            list(
+                client.propamm_quote_ladders(
+                    source="fermiswap",
+                    market="ethereum",
+                    from_="2024-01-01T00:00:00Z",
+                    to="2024-01-01T01:00:00Z",
+                    output=output,
+                )
+            )
     finally:
         client.close()
 

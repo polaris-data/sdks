@@ -24,6 +24,10 @@ from polaris_data import (
     OrderbookBuilder,
     PolarisClient,
     PolarisError,
+    PropammQuote,
+    PropammQuoteLadderData,
+    PropammQuoteLadderEvent,
+    PropammQuoteLadderValues,
     RateLimitedError,
     RealtimeStream,
     SnapshotEntry,
@@ -57,6 +61,10 @@ def test_top_level_exports_are_stable() -> None:
         "LocalSnapshotEntry",
         "PolarisClient",
         "PolarisError",
+        "PropammQuote",
+        "PropammQuoteLadderData",
+        "PropammQuoteLadderEvent",
+        "PropammQuoteLadderValues",
         "RateLimitedError",
         "RealtimeStream",
         "SnapshotEntry",
@@ -158,6 +166,7 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         PolarisClient.trades,
         PolarisClient.funding_rates,
         PolarisClient.mark_prices,
+        PolarisClient.propamm_quote_ladders,
     ]
     for method in historical_methods:
         assert _parameters(method) == [
@@ -259,6 +268,9 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
     assert inspect.signature(PolarisClient.replay).return_annotation == (
         "Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
     )
+    assert inspect.signature(PolarisClient.propamm_quote_ladders).return_annotation == (
+        "Iterator[PropammQuoteLadderEvent] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
+    )
     for method in [
         PolarisClient.l2_snapshots,
         PolarisClient.l2_updates,
@@ -294,6 +306,14 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
         "total_bytes": int,
         "snapshots": list[BulkDownloadSnapshotEntry],
     }
+    assert get_type_hints(PropammQuote) == {
+        "amount_in": str,
+        "amount_out": str,
+    }
+    assert get_type_hints(PropammQuoteLadderData)["values"] is PropammQuoteLadderValues
+    event_hints = get_type_hints(PropammQuoteLadderEvent)
+    assert event_hints["market"] is str
+    assert event_hints["data"] is PropammQuoteLadderData
     assert JSONDict == dict[str, Any]
     assert is_dataclass(SnapshotEntry)
     assert is_dataclass(LocalSnapshotEntry)

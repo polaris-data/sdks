@@ -102,6 +102,7 @@ Use it to inspect available data, query historical market data, and open realtim
 | `l2Updates(opts)` | Array of raw orderbook snapshots and deltas | High-throughput application-managed books |
 | `fundingRates(opts)` | Array of funding-rate point series rows | Perpetual funding studies and carry modeling |
 | `markPrices(opts)` | Array of mark-price point series rows | Basis analysis, mark tracking, and liquidation-related research |
+| `propammQuoteLadders(opts)` | Array of typed PropAMM quote-ladder events | Full-precision Ethereum execution-quote analysis |
 | `ohlcv(opts)` | Aggregated OHLCV bars | Charting, bar-based strategies, and downstream TA workflows |
 | `ohlcvTradingView(opts)` | TradingView-shaped OHLCV payload | Feeding TradingView-compatible chart consumers directly |
 | `volume(opts)` | Bucketed trade volume series | Volume profiling and participation analysis |
@@ -229,6 +230,23 @@ const marks = await client.markPrices({
 
 console.log(funding.length, marks.length);
 ```
+
+### PropAMM quote ladders
+
+```ts
+const ladders = await client.propammQuoteLadders({
+  source: "metric",
+  market: "ethereum",
+  from: "2024-01-01T00:00:00Z",
+  to: "2024-01-01T01:00:00Z",
+});
+
+console.log(ladders[0].data.values.quotes);
+```
+
+Quote amounts remain decimal strings so the full Ethereum `uint256` range is
+preserved. `oracle` is nullable and Metric records include the optional `pool`
+address.
 
 ### Replay (streaming from local snapshots)
 
@@ -411,7 +429,7 @@ import type {
 
 ## Snapshot-first architecture
 
-Standardised historical data (`events`, `trades`, `l2Snapshots`, `l2Updates`, `fundingRates`, `markPrices`, `bbo`, `depthMetrics`, `ohlcv`, `volume`, `vwap`, `volatility`, and `replay`) uses a **snapshot-first** approach:
+Standardised historical data (`events`, `trades`, `l2Snapshots`, `l2Updates`, `fundingRates`, `markPrices`, `propammQuoteLadders`, `bbo`, `depthMetrics`, `ohlcv`, `volume`, `vwap`, `volatility`, and `replay`) uses a **snapshot-first** approach:
 
 1. Hourly `.jsonl.zst` snapshot files are discovered via `GET /snapshots` and downloaded via `GET /download` on first access.
 2. Subsequent calls for the same date range read from the local cache — no network round-trips.

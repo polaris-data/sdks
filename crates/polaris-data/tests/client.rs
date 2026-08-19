@@ -27,6 +27,19 @@ async fn collect_stream<T>(stream: HistoricalStream<T>) -> Result<Vec<T>, Polari
     stream.collect::<Vec<_>>().await.into_iter().collect()
 }
 
+fn write_propamm_fixture(root: &TempDir, source: &str, fixture: &str) {
+    let key = format!("standard-{source}-ethereum-2024-01-01-000000");
+    let path = root.path().join(format!(
+        "data/standard/{source}/ethereum/2024-01-01/{key}.jsonl.zst"
+    ));
+    std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture directory");
+    std::fs::write(
+        path,
+        zstd::stream::encode_all(fixture.as_bytes(), 0).expect("compressed fixture"),
+    )
+    .expect("fixture");
+}
+
 fn zstd_ndjson(lines: &[serde_json::Value]) -> Vec<u8> {
     let body = lines
         .iter()
@@ -317,6 +330,76 @@ async fn events_download_snapshots_and_reuse_local_cache() {
             .expect("valid sidecar");
     assert_eq!(metadata["start_us"], 1_704_067_200_000_000_i64);
     assert_eq!(metadata["end_us"], 1_704_070_800_000_000_i64);
+}
+
+#[tokio::test]
+async fn propamm_quote_ladders_are_typed_and_inherit_metadata_market() {
+    const MAX_UINT256: &str =
+        "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+    let server = MockServer::start().await;
+    let root = TempDir::new().expect("tempdir");
+    write_propamm_fixture(
+        &root,
+        "fermiswap",
+        include_str!("../../../tests/fixtures/events/propamm-fermiswap-v2.jsonl"),
+    );
+    write_propamm_fixture(
+        &root,
+        "metric",
+        include_str!("../../../tests/fixtures/events/propamm-metric-v2.jsonl"),
+    );
+    let client = build_client(&server, &root);
+    let query = |source: &str| HistoricalQuery {
+        source: source.to_owned(),
+        market: "ethereum".to_owned(),
+        from: Some("2024-01-01T00:00:00Z".into()),
+        to: Some("2024-01-01T01:00:00Z".into()),
+        allow_gaps: false,
+        materialize_orderbooks: true,
+    };
+
+    let fermi = collect_stream(
+        client
+            .propamm_quote_ladders(query("fermiswap"))
+            .await
+            .expect("fermiswap stream"),
+    )
+    .await
+    .expect("fermiswap rows");
+    let metric = collect_stream(
+        client
+            .propamm_quote_ladders(query("metric"))
+            .await
+            .expect("metric stream"),
+    )
+    .await
+    .expect("metric rows");
+
+    assert_eq!(fermi.len(), 1);
+    assert_eq!(fermi[0].market(), "ethereum");
+    assert_eq!(fermi[0].data().values.quotes[0].amount_in, MAX_UINT256);
+    assert_eq!(fermi[0].data().values.oracle, None);
+    assert_eq!(fermi[0].data().values.pool, None);
+    assert_eq!(metric.len(), 1);
+    assert_eq!(metric[0].data().values.pool.as_deref(), Some("0xpool"));
+
+    let root_path = root.path().to_owned();
+    let blocking_rows = std::thread::spawn(move || {
+        let client = blocking::PolarisClient::builder()
+            .base_url("http://127.0.0.1:1")
+            .dataset_root(root_path)
+            .build()
+            .expect("blocking client");
+        client
+            .propamm_quote_ladders(query("fermiswap"))
+            .expect("blocking ladders")
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .join()
+    .expect("blocking thread")
+    .expect("blocking rows");
+    assert_eq!(blocking_rows.len(), 1);
+    assert_eq!(blocking_rows[0].market(), "ethereum");
 }
 
 #[tokio::test]

@@ -21,7 +21,7 @@ from .errors import (
     StreamProtocolError,
     UnauthorizedError,
 )
-from .models import CatalogResponse, JSONDict, SnapshotEntry
+from .models import CatalogResponse, JSONDict, PropammQuoteLadderEvent, SnapshotEntry
 from .utils import TimeInput, to_iso8601
 
 if TYPE_CHECKING:
@@ -878,6 +878,71 @@ class PolarisClient:
         )
 
     @overload
+    def propamm_quote_ladders(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        allow_gaps: bool = False,
+        output: Literal["iterator"] = "iterator",
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> Iterator[PropammQuoteLadderEvent]: ...
+
+    @overload
+    def propamm_quote_ladders(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        allow_gaps: bool = False,
+        output: Literal["batches"],
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> Iterator[pyarrow.RecordBatch]: ...
+
+    @overload
+    def propamm_quote_ladders(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        allow_gaps: bool = False,
+        output: Literal["dataframe"],
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> pandas.DataFrame: ...
+
+    def propamm_quote_ladders(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        allow_gaps: bool = False,
+        output: OutputFormat = "iterator",
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> (
+        Iterator[PropammQuoteLadderEvent]
+        | Iterator[pyarrow.RecordBatch]
+        | pandas.DataFrame
+    ):
+        return self._typed_historical(
+            "propamm_quote_ladders",
+            source,
+            market,
+            from_,
+            to,
+            allow_gaps,
+            output,
+            batch_size,
+        )
+
+    @overload
     def bbo(
         self,
         *,
@@ -986,7 +1051,7 @@ class PolarisClient:
 
     def _typed_historical(
         self,
-        method: Literal["funding_rates", "mark_prices"],
+        method: Literal["funding_rates", "mark_prices", "propamm_quote_ladders"],
         source: str,
         market: str,
         from_: TimeInput | None,

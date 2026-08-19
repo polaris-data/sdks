@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Optional, TypedDict, Union
+from typing import Any, Literal, Optional, TypedDict, Union
 
 JSONDict = dict[str, Any]
 CatalogInstrumentValue = Optional[Union[str, int, float]]
@@ -94,3 +94,45 @@ class LocalSnapshotEntry:
     start: datetime | None
     end: datetime | None
     hour: int | None = None
+
+
+class PropammQuote(TypedDict):
+    amount_in: str
+    amount_out: str
+
+
+class _PropammQuoteLadderValuesRequired(TypedDict):
+    event_id: str
+    chain_id: int
+    block_number: int
+    block_hash: str
+    parent_hash: str
+    transaction_hash: str
+    transaction_index: int
+    router: str
+    oracle: str | None
+    token_in: str
+    token_out: str
+    token_in_decimals: int
+    token_out_decimals: int
+    quotes: list[PropammQuote]
+
+
+class PropammQuoteLadderValues(_PropammQuoteLadderValuesRequired, total=False):
+    pool: str
+
+
+class PropammQuoteLadderData(TypedDict):
+    series: Literal["quote_ladder"]
+    values: PropammQuoteLadderValues
+
+
+class PropammQuoteLadderEvent(TypedDict):
+    collector_timestamp: int
+    collector_sequence: int
+    exchange_timestamp: int | None
+    exchange_sequence: str | None
+    source: str
+    market: str
+    type: Literal["record"]
+    data: PropammQuoteLadderData

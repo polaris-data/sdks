@@ -22,6 +22,7 @@ import type {
   TradeEvent,
   PaginatedResponse,
   PolarisClientOptions,
+  PropammQuoteLadderEvent,
   RawQueryOptions,
   ReplayOptions,
   SnapshotDownloadManifest,
@@ -64,7 +65,7 @@ import { OrderbookBuilder } from "./orderbook";
 // SDK version – bumped manually during releases
 // ---------------------------------------------------------------------------
 
-const VERSION = "0.6.0";
+const VERSION = "0.6.1";
 
 // ---------------------------------------------------------------------------
 // Internal shorthand
@@ -398,6 +399,28 @@ export class BasePolarisClient {
       isMarkPriceEvent,
     )) {
       result.push(event);
+    }
+
+    return result;
+  }
+
+  /**
+   * Return standardized PropAMM quote-ladder record events for a time range.
+   */
+  async propammQuoteLadders(
+    options: HistoricalQueryOptions,
+  ): Promise<PropammQuoteLadderEvent[]> {
+    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
+    const result: PropammQuoteLadderEvent[] = [];
+
+    for await (const event of this._readSnapshotEvents(
+      options.source,
+      options.market,
+      fromMs,
+      toMs,
+    )) {
+      const ladder = parsePropammQuoteLadderEvent(event);
+      if (ladder) result.push(ladder);
     }
 
     return result;
@@ -1779,6 +1802,59 @@ function isMarkPriceEvent(event: Json): event is MarkPriceEvent {
   return ["mark_price", "mark_px"].includes(pointSeriesName(event) ?? "");
 }
 
+function parsePropammQuoteLadderEvent(
+  event: Json,
+): PropammQuoteLadderEvent | undefined {
+  if (
+    event.type !== "record" ||
+    !isRecord(event.data) ||
+    event.data.series !== "quote_ladder"
+  ) {
+    return undefined;
+  }
+
+  const values = event.data.values;
+  const integerFields = [
+    "chain_id",
+    "block_number",
+    "transaction_index",
+    "token_in_decimals",
+    "token_out_decimals",
+  ] as const;
+  const stringFields = [
+    "event_id",
+    "block_hash",
+    "parent_hash",
+    "transaction_hash",
+    "router",
+    "token_in",
+    "token_out",
+  ] as const;
+  const valid =
+    isRecord(values) &&
+    integerFields.every(
+      (field) =>
+        typeof values[field] === "number" &&
+        Number.isSafeInteger(values[field]) &&
+        (values[field] as number) >= 0,
+    ) &&
+    stringFields.every((field) => typeof values[field] === "string") &&
+    (values.oracle === null || typeof values.oracle === "string") &&
+    (!("pool" in values) || typeof values.pool === "string") &&
+    Array.isArray(values.quotes) &&
+    values.quotes.every(
+      (quote) =>
+        isRecord(quote) &&
+        typeof quote.amount_in === "string" &&
+        typeof quote.amount_out === "string",
+    );
+
+  if (!valid) {
+    throw new PolarisError("Invalid PropAMM quote-ladder payload");
+  }
+  return event as unknown as PropammQuoteLadderEvent;
+}
+
 function isOrderbookEvent(event: Json): event is OrderbookEvent {
   return (
     ["orderbook", "orderbook_delta", "orderbook_snapshot", "l2_snapshot"].includes(
@@ -2120,6 +2196,14 @@ function decodeSnapshotLines(lines: string[], filePath: string): StandardEvent[]
   }
 
   const isV2 = first.type === "metadata";
+  const metadataSource =
+    typeof first.source === "string" && first.source.length > 0
+      ? first.source
+      : undefined;
+  const metadataMarket =
+    typeof first.market === "string" && first.market.length > 0
+      ? first.market
+      : undefined;
   if (isV2) {
     const version = isRecord(first.data) ? first.data.schema_version : undefined;
     if (typeof version !== "string") {
@@ -2146,8 +2230,17 @@ function decodeSnapshotLines(lines: string[], filePath: string): StandardEvent[]
       throw new PolarisError(`Invalid v2 NDJSON row in '${filePath}': expected an object`);
     }
     if (isV2) {
-      validateV2Event(value, filePath);
-      result.push(value as StandardEvent);
+      const event = {
+        ...value,
+        ...((typeof value.source !== "string" || value.source.length === 0) && metadataSource
+          ? { source: metadataSource }
+          : {}),
+        ...((typeof value.market !== "string" || value.market.length === 0) && metadataMarket
+          ? { market: metadataMarket }
+          : {}),
+      };
+      validateV2Event(event, filePath);
+      result.push(event as StandardEvent);
     } else {
       const timestamp = normalizeTimestampMs(value.timestamp);
       if (timestamp === undefined) continue;

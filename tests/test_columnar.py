@@ -274,6 +274,68 @@ def test_v2_exact_batches_use_mixed_envelope_schema_and_metadata_ordinal(tmp_pat
     assert [row["bid_quantity"] for row in interval_bbo] == [7.0, 6.0]
 
 
+def test_propamm_quote_ladder_exact_batches_and_dataframe_are_filtered(tmp_path) -> None:
+    fixture = (
+        Path(__file__).parent
+        / "fixtures"
+        / "events"
+        / "propamm-fermiswap-v2.jsonl"
+    )
+    source = "fermiswap"
+    market = "ethereum"
+    key = f"standard-{source}-{market}-{DAY}-000000"
+    path = (
+        tmp_path
+        / "data"
+        / "standard"
+        / source
+        / market
+        / DAY
+        / f"{key}.jsonl.zst"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zstandard.open(path, "wt", encoding="utf-8") as output:
+        output.write(fixture.read_text())
+    path.with_name(path.name + ".coverage.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "key": key,
+                "start_us": START_MS * 1_000,
+                "end_us": (START_MS + 3_600_000) * 1_000,
+            }
+        )
+    )
+    kwargs = {
+        "source": source,
+        "market": market,
+        "from_": START_MS * 1_000,
+        "to": (START_MS + 3_600_000) * 1_000,
+    }
+
+    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
+        batches = list(
+            client.propamm_quote_ladders(
+                **kwargs,
+                output="batches",
+                batch_size=1,
+            )
+        )
+        dataframe = client.propamm_quote_ladders(**kwargs, output="dataframe")
+
+    assert [batch.num_rows for batch in batches] == [1]
+    table = pa.Table.from_batches(batches)
+    assert table.column("market").to_pylist() == ["ethereum"]
+    assert table.column("type").to_pylist() == ["record"]
+    raw_event = json.loads(table.column("event_json")[0].as_py())
+    assert "market" not in raw_event
+    assert raw_event["data"]["values"]["quotes"][0]["amount_in"] == str(
+        2**256 - 1
+    )
+    assert len(dataframe) == 1
+    assert dataframe.iloc[0]["market"] == "ethereum"
+
+
 def test_shared_headerless_legacy_fixture_preserves_native_rows(tmp_path) -> None:
     fixture = Path(__file__).parent / "fixtures" / "events" / "legacy-v1.jsonl"
     rows = [json.loads(line) for line in fixture.read_text().splitlines()]
@@ -541,7 +603,17 @@ def test_empty_dataframe_preserves_schema_and_dtypes(tmp_path) -> None:
     assert isinstance(frame.dtypes["source"], pd.CategoricalDtype)
 
 
-@pytest.mark.parametrize("method", ["trades", "funding_rates", "mark_prices", "bbo", "depth_metrics"])
+@pytest.mark.parametrize(
+    "method",
+    [
+        "trades",
+        "funding_rates",
+        "mark_prices",
+        "propamm_quote_ladders",
+        "bbo",
+        "depth_metrics",
+    ],
+)
 def test_columnar_options_are_validated_before_query(method) -> None:
     with PolarisClient(base_url="http://127.0.0.1:1") as client:
         with pytest.raises(ValueError, match="output must be one of"):

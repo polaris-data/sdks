@@ -146,3 +146,63 @@ test("v2 decoder consumes metadata and materializes unified books without changi
   );
   client.close();
 });
+
+test("PropAMM quote ladders inherit metadata market, filter records, and validate payloads", async () => {
+  const { PolarisClient } = await import("../dist/node/index.js");
+  const fermiFixture = await readFile(
+    new URL("../../tests/fixtures/events/propamm-fermiswap-v2.jsonl", import.meta.url),
+    "utf8",
+  );
+  const metricFixture = await readFile(
+    new URL("../../tests/fixtures/events/propamm-metric-v2.jsonl", import.meta.url),
+    "utf8",
+  );
+  const client = new PolarisClient({ baseUrl: "https://api.example" });
+  const fermi = client._decodeSnapshotLines(
+    fermiFixture.trim().split("\n"),
+    "propamm-fermiswap-v2.jsonl",
+  );
+  const metric = client._decodeSnapshotLines(
+    metricFixture.trim().split("\n"),
+    "propamm-metric-v2.jsonl",
+  );
+
+  assert.deepEqual(fermi.map(({ market }) => market), ["ethereum", "ethereum"]);
+  assert.equal("market" in JSON.parse(fermiFixture.trim().split("\n")[2]), false);
+
+  client._resolveHistoricalRange = async () => ({
+    fromMs: 1704067200000,
+    toMs: 1704067201000,
+  });
+  client._readSnapshotEvents = async function* (source) {
+    for (const row of source === "metric" ? metric : fermi) yield structuredClone(row);
+  };
+
+  const fermiLadders = await client.propammQuoteLadders({
+    source: "fermiswap",
+    market: "ethereum",
+  });
+  const metricLadders = await client.propammQuoteLadders({
+    source: "metric",
+    market: "ethereum",
+  });
+  assert.equal(fermiLadders.length, 1);
+  assert.equal(
+    fermiLadders[0].data.values.quotes[0].amount_in,
+    (2n ** 256n - 1n).toString(),
+  );
+  assert.equal(fermiLadders[0].data.values.oracle, null);
+  assert.equal("pool" in fermiLadders[0].data.values, false);
+  assert.equal(metricLadders[0].data.values.pool, "0xpool");
+
+  const malformed = structuredClone(fermi);
+  malformed[1].data.values.quotes[0].amount_in = 10;
+  client._readSnapshotEvents = async function* () {
+    for (const row of malformed) yield row;
+  };
+  await assert.rejects(
+    client.propammQuoteLadders({ source: "fermiswap", market: "ethereum" }),
+    /Invalid PropAMM quote-ladder payload/,
+  );
+  client.close();
+});

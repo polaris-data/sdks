@@ -20,6 +20,10 @@ from .models import (
     CatalogMarketEntry,
     CatalogResponse,
     LocalSnapshotEntry,
+    PropammQuote,
+    PropammQuoteLadderData,
+    PropammQuoteLadderEvent,
+    PropammQuoteLadderValues,
     SnapshotEntry,
 )
 
@@ -37,6 +41,10 @@ __all__ = [
     "LocalSnapshotEntry",
     "PolarisClient",
     "PolarisError",
+    "PropammQuote",
+    "PropammQuoteLadderData",
+    "PropammQuoteLadderEvent",
+    "PropammQuoteLadderValues",
     "RateLimitedError",
     "RealtimeStream",
     "SnapshotEntry",
@@ -46,4 +54,4 @@ __all__ = [
     "UnauthorizedError",
 ]
 
-__version__ = "0.14.0"
+__version__ = "0.14.1"

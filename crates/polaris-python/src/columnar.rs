@@ -133,6 +133,23 @@ impl NativeColumnar {
         }
     }
 
+    pub(crate) fn propamm_quote_ladders(
+        plan: PreparedHistoricalReplay,
+        source: String,
+        market: String,
+        batch_size: usize,
+    ) -> Self {
+        Self {
+            iterator: Some(ColumnarIterator::Events {
+                iterator: plan.exact_propamm_quote_ladders(),
+                source,
+                market,
+            }),
+            schema: event_schema(),
+            batch_size,
+        }
+    }
+
     pub(crate) fn trades(
         plan: PreparedHistoricalReplay,
         source: String,
