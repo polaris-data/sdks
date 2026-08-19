@@ -20,10 +20,8 @@ import type {
   OrderbookEvent,
   StandardEvent,
   TradeEvent,
-  PaginatedResponse,
   PolarisClientOptions,
   PropammQuoteLadderEvent,
-  RawQueryOptions,
   ReplayOptions,
   SnapshotDownloadManifest,
   SnapshotDownloadManifestOptions,
@@ -600,23 +598,6 @@ export class BasePolarisClient {
         "replay({ standard: false }) is not supported by the TypeScript SDK. Use snapshot-backed replay instead.",
       );
     }
-  }
-
-  // -----------------------------------------------------------------------
-  // Raw (API-only, not snapshot-first)
-  // -----------------------------------------------------------------------
-
-  /**
-   * Raw endpoint access is intentionally disabled in the TypeScript SDK.
-   *
-   * Historical data access is snapshot-first: discover files via
-   * `GET /snapshots` and fetch artifacts via `GET /download`.
-   */
-  async raw(options: RawQueryOptions): Promise<Json[]> {
-    void options;
-    throw new PolarisError(
-      "Direct /raw access is not supported by the TypeScript SDK. Use snapshot-backed methods or download snapshots via GET /download.",
-    );
   }
 
   // -----------------------------------------------------------------------
@@ -1358,31 +1339,6 @@ export class BasePolarisClient {
       }
     }
     return url.toString();
-  }
-
-  // -----------------------------------------------------------------------
-  // Internals – pagination
-  // -----------------------------------------------------------------------
-
-  private async _paginateAll<T = Json>(
-    path: string,
-    baseParams: Record<string, string>,
-    auth: AuthMode,
-  ): Promise<T[]> {
-    const items: T[] = [];
-    let cursor: string | undefined;
-
-    do {
-      const params = cursor ? { ...baseParams, cursor } : { ...baseParams };
-      const res = await this._getJson<PaginatedResponse<T>>(path, {
-        params,
-        auth,
-      });
-      items.push(...res.data);
-      cursor = res.next_cursor ?? undefined;
-    } while (cursor);
-
-    return items;
   }
 
   // -----------------------------------------------------------------------

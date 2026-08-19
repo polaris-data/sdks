@@ -27,7 +27,7 @@ use crate::{
         TradeDataV2, TradeEvent, TradeEventV2, VolatilityBar, VolumeBar, VwapBar,
     },
     ohlcv,
-    orderbook::{BookUpdate, BookView},
+    orderbook::{BookUpdate, BookView, parse_level_tuple},
     realtime, replay,
     storage::{
         LocalSnapshotFile, SnapshotCoverage, StorageLayout, acquire_sync_lock, data_file_path,
@@ -1130,7 +1130,7 @@ impl PolarisClient {
             })
             .await?;
 
-        let interval_ms = interval_to_ms(query.interval.as_str())?;
+        let interval_ms = ohlcv::interval_to_millis(query.interval);
         let mut aggregator = VwapAggregator::new(interval_ms);
 
         while let Some(trade) = trades.next().await {
@@ -1154,7 +1154,7 @@ impl PolarisClient {
             })
             .await?;
 
-        let interval_ms = interval_to_ms(query.interval.as_str())?;
+        let interval_ms = ohlcv::interval_to_millis(query.interval);
         let mut aggregator = VolatilityAggregator::new(interval_ms);
 
         while let Some(trade) = trades.next().await {
@@ -2151,65 +2151,16 @@ struct VolatilityBucket {
 // Helper functions
 // ===========================================================================
 
-fn interval_to_ms(interval: &str) -> Result<i64, PolarisError> {
-    let re = regex::Regex::new(r"^(\d+)(ms|s|m|h)$").unwrap();
-    let captures = re.captures(interval).ok_or_else(|| {
-        PolarisError::InvalidResponse(format!("Invalid interval format: {interval}"))
-    })?;
-
-    let amount: u64 = captures[1].parse().map_err(|_| {
-        PolarisError::InvalidResponse(format!("Invalid interval amount: {interval}"))
-    })?;
-
-    let unit = &captures[2];
-    let milliseconds = match unit {
-        "ms" => amount,
-        "s" => amount * 1_000,
-        "m" => amount * 60_000,
-        "h" => amount * 3_600_000,
-        _ => {
-            return Err(PolarisError::InvalidResponse(format!(
-                "Invalid interval unit: {unit}"
-            )));
-        }
-    };
-
-    Ok(milliseconds as i64)
-}
-
 fn parse_orderbook_levels(value: &Value) -> Option<Vec<OrderbookLevel>> {
     let rows = value.as_array()?;
     let mut levels = Vec::new();
     for row in rows {
-        let (price, quantity) = if let Some(values) = row.as_array() {
-            (
-                values.first().and_then(parse_number),
-                values.get(1).and_then(parse_number),
-            )
-        } else if let Some(object) = row.as_object() {
-            (
-                object.get("price").and_then(parse_number),
-                object
-                    .get("quantity")
-                    .or_else(|| object.get("size"))
-                    .and_then(parse_number),
-            )
-        } else {
-            (None, None)
-        };
+        let (price, quantity) = parse_level_tuple(row);
         if let (Some(price), Some(quantity)) = (price, quantity) {
             levels.push(OrderbookLevel { price, quantity });
         }
     }
     Some(levels)
-}
-
-fn parse_number(value: &Value) -> Option<f64> {
-    match value {
-        Value::Number(number) => number.as_f64(),
-        Value::String(text) => text.parse().ok(),
-        _ => None,
-    }
 }
 
 fn micros_to_iso8601(value: i64) -> Result<String, PolarisError> {

@@ -3,7 +3,6 @@
 from .client import OrderbookBuilder, PolarisClient, RealtimeStream
 from .errors import (
     AccessDeniedError,
-    DownloadNotAllowedError,
     NotFoundError,
     PolarisError,
     RateLimitedError,
@@ -13,13 +12,10 @@ from .errors import (
     UnauthorizedError,
 )
 from .models import (
-    BulkDownloadManifest,
-    BulkDownloadSnapshotEntry,
     CatalogAccess,
     CatalogInstrument,
     CatalogMarketEntry,
     CatalogResponse,
-    LocalSnapshotEntry,
     PropammQuote,
     PropammQuoteLadderData,
     PropammQuoteLadderEvent,
@@ -29,16 +25,12 @@ from .models import (
 
 __all__ = [
     "AccessDeniedError",
-    "BulkDownloadManifest",
-    "BulkDownloadSnapshotEntry",
     "CatalogAccess",
     "CatalogInstrument",
     "CatalogMarketEntry",
     "CatalogResponse",
     "NotFoundError",
     "OrderbookBuilder",
-    "DownloadNotAllowedError",
-    "LocalSnapshotEntry",
     "PolarisClient",
     "PolarisError",
     "PropammQuote",

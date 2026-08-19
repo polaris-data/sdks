@@ -83,9 +83,6 @@ pub(crate) fn resolve_root(explicit: Option<PathBuf>) -> Result<PathBuf, Polaris
     if let Ok(root) = env::var("POLARIS_ROOT") {
         return Ok(expand_home(PathBuf::from(root)));
     }
-    if let Ok(root) = env::var("POLARIS_DATASET_DOWNLOAD_DIR") {
-        return Ok(expand_home(PathBuf::from(root)));
-    }
 
     let base_dirs = BaseDirs::new().ok_or_else(|| {
         PolarisError::InvalidResponse("failed to resolve platform data directory".to_owned())
