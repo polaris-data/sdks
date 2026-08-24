@@ -16,7 +16,7 @@ use serde_json::Value;
 use tokio::runtime::{Handle, Runtime};
 
 use crate::{
-    BboQuery, BboQuote, CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic,
+    BboQuery, BboQuote, CatalogCount, CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic,
     DownloadManifestQuery, DownloadManifestResponse, HistoricalQuery, HistoricalStream,
     ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OrderbookEvent, PointSeriesEvent, PolarisError,
     PropammQuoteLadderEvent, RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream,
@@ -161,6 +161,10 @@ impl PolarisClient {
 
     pub fn catalog(&self, query: CatalogQuery) -> Result<CatalogResponse, PolarisError> {
         self.run(self.inner.catalog(query))
+    }
+
+    pub fn count(&self) -> Result<CatalogCount, PolarisError> {
+        self.run(self.inner.count())
     }
 
     pub fn download_manifest(

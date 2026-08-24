@@ -13,6 +13,7 @@ import polaris_data
 from polaris_data import (
     AccessDeniedError,
     CatalogAccess,
+    CatalogCount,
     CatalogInstrument,
     CatalogMarketEntry,
     CatalogResponse,
@@ -46,6 +47,7 @@ def test_top_level_exports_are_stable() -> None:
     assert polaris_data.__all__ == [
         "AccessDeniedError",
         "CatalogAccess",
+        "CatalogCount",
         "CatalogInstrument",
         "CatalogMarketEntry",
         "CatalogResponse",
@@ -246,10 +248,10 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
         == "JSONDict | None"
     )
     assert inspect.signature(PolarisClient.health).return_annotation == "JSONDict"
-    assert (
-        inspect.signature(PolarisClient.catalog).return_annotation
-        == "CatalogResponse | JSONDict"
+    assert inspect.signature(PolarisClient.catalog).return_annotation == (
+        "CatalogResponse | JSONDict"
     )
+    assert inspect.signature(PolarisClient.count).return_annotation == "CatalogCount"
     assert (
         inspect.signature(PolarisClient.list_snapshots).return_annotation
         == "list[SnapshotEntry]"
@@ -285,6 +287,12 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
     assert get_type_hints(CatalogResponse) == {
         "markets": list[CatalogMarketEntry],
         "updatedAt": str,
+    }
+    assert get_type_hints(CatalogCount) == {
+        "updatedAt": str,
+        "sources": int,
+        "markets": int,
+        "by_source": dict[str, int],
     }
     assert get_type_hints(CatalogMarketEntry)["symbol"] is str
     assert get_type_hints(PropammQuote) == {

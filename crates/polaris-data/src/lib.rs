@@ -15,12 +15,12 @@ pub use builder::PolarisClientBuilder;
 pub use client::{PolarisClient, decode_ndjson_file};
 pub use errors::PolarisError;
 pub use models::{
-    BboQuery, BboQuote, CatalogAccess, CatalogInstrument, CatalogMarket, CatalogQuery,
-    CatalogResponse, DepthMetricsRow, Diagnostic, DownloadManifestEntry, DownloadManifestQuery,
-    DownloadManifestResponse, HistoricalQuery, HistoricalStream, LegacyOrderbookEvent,
-    LegacyPointSeriesEvent, LegacyStandardEvent, LegacyTradeData, LegacyTradeEvent,
-    ListSnapshotsQuery, OhlcvBar, OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery,
-    OrderbookData, OrderbookDataV2, OrderbookEvent, OrderbookEventV2, OrderbookLevel,
+    BboQuery, BboQuote, CatalogAccess, CatalogCount, CatalogInstrument, CatalogMarket,
+    CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic, DownloadManifestEntry,
+    DownloadManifestQuery, DownloadManifestResponse, HistoricalQuery, HistoricalStream,
+    LegacyOrderbookEvent, LegacyPointSeriesEvent, LegacyStandardEvent, LegacyTradeData,
+    LegacyTradeEvent, ListSnapshotsQuery, OhlcvBar, OhlcvFormat, OhlcvInterval, OhlcvOutput,
+    OhlcvQuery, OrderbookData, OrderbookDataV2, OrderbookEvent, OrderbookEventV2, OrderbookLevel,
     PointSeriesData, PointSeriesEvent, PointSeriesEventV2, PropammQuote, PropammQuoteLadderData,
     PropammQuoteLadderEvent, PropammQuoteLadderValues, RawQuery, RawReplayQuery, RawReplayStream,
     RealtimeStream, ReplayQuery, ReplayStream, SnapshotEntry, StandardEvent, StandardEventV2,

@@ -212,6 +212,95 @@ async fn catalog_normalizes_legacy_shape() {
 }
 
 #[tokio::test]
+async fn catalog_paginates_across_cursor_pages() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().expect("tempdir");
+    let client = build_client(&server, &root);
+
+    Mock::given(method("GET"))
+        .and(path("/catalog"))
+        .respond_with(|request: &wiremock::Request| {
+            let has_cursor = request.url.query_pairs().any(|(key, _)| key == "cursor");
+            if has_cursor {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "updatedAt": "2024-01-15T00:00:00Z",
+                    "total": 3,
+                    "limit": 1000,
+                    "has_more": false,
+                    "next_cursor": null,
+                    "markets": [{
+                        "source": "hyperliquid",
+                        "market": "BTC",
+                        "symbol": "BTC"
+                    }]
+                }))
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "updatedAt": "2024-01-15T00:00:00Z",
+                    "total": 3,
+                    "limit": 1000,
+                    "has_more": true,
+                    "next_cursor": "cursor-token",
+                    "markets": [
+                        {
+                            "source": "binance",
+                            "market": "BTC-USDT",
+                            "symbol": "BTCUSDT"
+                        },
+                        {
+                            "source": "binance",
+                            "market": "ETH-USDT",
+                            "symbol": "ETHUSDT"
+                        }
+                    ]
+                }))
+            }
+        })
+        .mount(&server)
+        .await;
+
+    let response = client
+        .catalog(CatalogQuery::default())
+        .await
+        .expect("catalog");
+
+    assert_eq!(response.updated_at, "2024-01-15T00:00:00Z");
+    assert_eq!(response.markets.len(), 3);
+    assert_eq!(response.markets[0].market, "BTC-USDT");
+    assert_eq!(response.markets[1].market, "ETH-USDT");
+    assert_eq!(response.markets[2].market, "BTC");
+}
+
+#[tokio::test]
+async fn count_returns_catalog_counts() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().expect("tempdir");
+    let client = build_client(&server, &root);
+
+    Mock::given(method("GET"))
+        .and(path("/count"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "updatedAt": "2024-01-15T00:00:00Z",
+            "sources": 3,
+            "markets": 42,
+            "by_source": {
+                "binance": 10,
+                "hyperliquid": 32
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let count = client.count().await.expect("count");
+
+    assert_eq!(count.updated_at, "2024-01-15T00:00:00Z");
+    assert_eq!(count.sources, 3);
+    assert_eq!(count.markets, 42);
+    assert_eq!(count.by_source.get("binance"), Some(&10));
+    assert_eq!(count.by_source.get("hyperliquid"), Some(&32));
+}
+
+#[tokio::test]
 async fn list_snapshots_paginates_across_data_and_snapshots_fields() {
     let server = MockServer::start().await;
     let root = TempDir::new().expect("tempdir");

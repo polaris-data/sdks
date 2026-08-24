@@ -21,7 +21,7 @@ from .errors import (
     StreamProtocolError,
     UnauthorizedError,
 )
-from .models import CatalogResponse, JSONDict, PropammQuoteLadderEvent, SnapshotEntry
+from .models import CatalogCount, CatalogResponse, JSONDict, PropammQuoteLadderEvent, SnapshotEntry
 from .utils import TimeInput, to_iso8601
 
 if TYPE_CHECKING:
@@ -332,6 +332,9 @@ class PolarisClient:
         q: str | None = None,
     ) -> CatalogResponse | JSONDict:
         return self._call("catalog", source, market, q)
+
+    def count(self) -> CatalogCount:
+        return self._call("count")
 
     def list_snapshots(
         self,
