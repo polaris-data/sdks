@@ -13,6 +13,7 @@ from .errors import (
 )
 from .models import (
     CatalogAccess,
+    CatalogCount,
     CatalogInstrument,
     CatalogMarketEntry,
     CatalogResponse,
@@ -26,6 +27,7 @@ from .models import (
 __all__ = [
     "AccessDeniedError",
     "CatalogAccess",
+    "CatalogCount",
     "CatalogInstrument",
     "CatalogMarketEntry",
     "CatalogResponse",

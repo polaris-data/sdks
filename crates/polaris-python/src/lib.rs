@@ -317,6 +317,11 @@ impl NativeClient {
         to_python(py, &result)
     }
 
+    fn count<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let result = py.detach(|| self.inner.count()).map_err(native_error)?;
+        to_python(py, &result)
+    }
+
     #[pyo3(signature = (source, market, from_, to, limit=1000))]
     fn list_snapshots<'py>(
         &self,

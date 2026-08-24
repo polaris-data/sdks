@@ -27,6 +27,14 @@ export interface CatalogResponse {
   markets: CatalogMarket[];
 }
 
+/** Global public catalog counts returned by `GET /count`. */
+export interface CatalogCount {
+  updatedAt: string;
+  sources: number;
+  markets: number;
+  by_source: Record<string, number>;
+}
+
 export interface CatalogInstrument {
   base: string | null;
   quote: string | null;

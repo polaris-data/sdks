@@ -16,8 +16,8 @@ use crate::{
     errors::PolarisError,
     http::{AuthMode, HttpClient},
     models::{
-        BboQuery, BboQuote, CatalogAccess, CatalogInstrument, CatalogMarket, CatalogQuery,
-        CatalogResponse, DepthMetricsRow, Diagnostic, DownloadManifestQuery,
+        BboQuery, BboQuote, CatalogAccess, CatalogCount, CatalogInstrument, CatalogMarket,
+        CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic, DownloadManifestQuery,
         DownloadManifestResponse, HistoricalQuery, HistoricalStream, LegacyOrderbookEvent,
         LegacyPointSeriesEvent, LegacyTradeData, LegacyTradeEvent, ListSnapshotsQuery, OhlcvOutput,
         OhlcvQuery, OrderbookData, OrderbookDataV2, OrderbookEvent, OrderbookEventV2,
@@ -116,12 +116,73 @@ impl PolarisClient {
         if let Some(q) = query.q {
             params.push(("q".to_owned(), q));
         }
+        params.push(("limit".to_owned(), "1000".to_owned()));
 
+        let mut markets = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut updated_at: Option<String> = None;
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let mut page_params = params.clone();
+            if let Some(value) = &cursor {
+                page_params.push(("cursor".to_owned(), value.clone()));
+            }
+
+            let payload = self
+                .http
+                .get_json("/catalog", &page_params, AuthMode::IfAvailable)
+                .await?;
+
+            if payload.get("markets").is_none() {
+                return normalize_catalog_response(payload);
+            }
+
+            if updated_at.is_none() {
+                updated_at = payload
+                    .get("updatedAt")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+            }
+
+            for market in normalize_flat_catalog_markets(&payload)? {
+                if seen.insert((market.source.clone(), market.market.clone())) {
+                    markets.push(market);
+                }
+            }
+
+            let has_more = payload
+                .get("has_more")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let next_cursor = payload
+                .get("next_cursor")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned);
+            if !has_more || next_cursor.is_none() {
+                break;
+            }
+            cursor = next_cursor;
+        }
+
+        let updated_at = updated_at.ok_or_else(|| {
+            PolarisError::InvalidResponse("catalog response did not include updatedAt".to_owned())
+        })?;
+
+        Ok(CatalogResponse {
+            updated_at,
+            markets,
+            legacy_shape: false,
+        })
+    }
+
+    pub async fn count(&self) -> Result<CatalogCount, PolarisError> {
         let payload = self
             .http
-            .get_json("/catalog", &params, AuthMode::IfAvailable)
+            .get_json("/count", &[], AuthMode::IfAvailable)
             .await?;
-        normalize_catalog_response(payload)
+        normalize_catalog_count(payload)
     }
 
     pub async fn download_manifest(
@@ -1806,6 +1867,22 @@ fn normalize_catalog_response(payload: Value) -> Result<CatalogResponse, Polaris
     Err(PolarisError::InvalidResponse(
         "catalog response did not include markets or sources".to_owned(),
     ))
+}
+
+fn normalize_flat_catalog_markets(payload: &Value) -> Result<Vec<CatalogMarket>, PolarisError> {
+    let markets = payload
+        .get("markets")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            PolarisError::InvalidResponse("catalog response did not include markets".to_owned())
+        })?;
+    markets.iter().map(normalize_flat_market).collect()
+}
+
+fn normalize_catalog_count(payload: Value) -> Result<CatalogCount, PolarisError> {
+    serde_json::from_value(payload).map_err(|err| {
+        PolarisError::InvalidResponse(format!("count response was not valid JSON: {err}"))
+    })
 }
 
 fn normalize_download_manifest_response(

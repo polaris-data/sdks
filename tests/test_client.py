@@ -373,6 +373,68 @@ def test_catalog_returns_payload() -> None:
         client.close()
 
 
+def test_catalog_paginates_across_cursor_pages() -> None:
+    pages = [
+        {
+            "markets": [
+                {"source": "binance", "market": "BTC-USDT", "symbol": "BTCUSDT"},
+                {"source": "binance", "market": "ETH-USDT", "symbol": "ETHUSDT"},
+            ],
+            "updatedAt": "2026-05-19T10:28:00.000Z",
+            "has_more": True,
+            "next_cursor": "cursor-token",
+        },
+        {
+            "markets": [
+                {"source": "hyperliquid", "market": "BTC", "symbol": "BTC"},
+            ],
+            "updatedAt": "2026-05-19T10:28:00.000Z",
+            "has_more": False,
+            "next_cursor": None,
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/catalog"
+        cursor = request.url.params.get("cursor")
+        payload = pages[1] if cursor == "cursor-token" else pages[0]
+        return httpx.Response(200, json=payload)
+
+    client = make_client(handler)
+    try:
+        result = client.catalog()
+        assert [m["market"] for m in result["markets"]] == [
+            "BTC-USDT",
+            "ETH-USDT",
+            "BTC",
+        ]
+    finally:
+        client.close()
+
+
+def test_count_returns_catalog_totals() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/count"
+        return httpx.Response(
+            200,
+            json={
+                "updatedAt": "2026-05-19T10:28:00.000Z",
+                "sources": 3,
+                "markets": 42,
+                "by_source": {"binance": 10, "hyperliquid": 32},
+            },
+        )
+
+    client = make_client(handler)
+    try:
+        result = client.count()
+        assert result["sources"] == 3
+        assert result["markets"] == 42
+        assert result["by_source"] == {"binance": 10, "hyperliquid": 32}
+    finally:
+        client.close()
+
+
 def test_raw_infers_last_7_days_from_catalog_for_open_dataset() -> None:
     rows = [{"timestamp": _ts("2024-01-09T12:00:00Z"), "payload": "ok"}]
 

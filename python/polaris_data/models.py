@@ -40,6 +40,13 @@ class CatalogResponse(TypedDict):
     updatedAt: str
 
 
+class CatalogCount(TypedDict):
+    updatedAt: str
+    sources: int
+    markets: int
+    by_source: dict[str, int]
+
+
 @dataclass(frozen=True)
 class SnapshotEntry:
     """Remote standardized snapshot metadata."""

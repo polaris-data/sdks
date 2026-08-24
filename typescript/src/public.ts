@@ -17,6 +17,7 @@ export type {
   FetchLike,
   AuthMode,
   CatalogResponse,
+  CatalogCount,
   CatalogInstrument,
   CatalogMarket,
   LegacyStandardEvent,

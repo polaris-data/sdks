@@ -220,6 +220,15 @@ pub struct CatalogResponse {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogCount {
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+    pub sources: u64,
+    pub markets: u64,
+    pub by_source: BTreeMap<String, u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogAccess {
     pub status: String,
     pub public_cutoff_date: Option<String>,

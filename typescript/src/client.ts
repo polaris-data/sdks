@@ -3,6 +3,7 @@ import { decompress } from "fzstd";
 import type {
   AuthMode,
   BboQuote,
+  CatalogCount,
   CatalogInstrument,
   CatalogMarket,
   CatalogOptions,
@@ -208,20 +209,68 @@ export class BasePolarisClient {
    *
    * If neither `source` nor `market` is provided, returns the full catalog.
    * `market` requires `source`.
+   *
+   * Pagination is handled transparently: the client follows the server
+   * cursor until every matching market has been returned.
    */
   async catalog(options: CatalogOptions = {}): Promise<CatalogResponse> {
     const params: Record<string, string> = {};
     if (options.source) params.source = options.source;
     if (options.market) params.market = options.market;
-    const payload = await this._getJson<{
-      updatedAt?: string;
-      markets?: unknown;
-      sources?: unknown;
-    }>("/catalog", {
-      params,
-      auth: "if-available",
-    });
-    return normalizeCatalogResponse(payload);
+    params.limit = "1000";
+
+    const markets: CatalogMarket[] = [];
+    const seen = new Set<string>();
+    let updatedAt: string | undefined;
+    let cursor: string | undefined;
+
+    do {
+      const pageParams = { ...params };
+      if (cursor) pageParams.cursor = cursor;
+
+      const payload = await this._getJson<{
+        updatedAt?: string;
+        markets?: unknown;
+        sources?: unknown;
+        has_more?: boolean;
+        next_cursor?: string | null;
+      }>("/catalog", {
+        params: pageParams,
+        auth: "if-available",
+      });
+
+      if (!Array.isArray(payload.markets)) {
+        return normalizeCatalogResponse(payload);
+      }
+
+      if (updatedAt === undefined) {
+        updatedAt = payload.updatedAt;
+      }
+
+      for (const entry of payload.markets) {
+        const market = normalizeFlatCatalogMarket(entry);
+        const key = `${market.source}\u0000${market.market}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          markets.push(market);
+        }
+      }
+
+      cursor = payload.has_more && payload.next_cursor
+        ? payload.next_cursor
+        : undefined;
+    } while (cursor);
+
+    if (typeof updatedAt !== "string" || updatedAt.length === 0) {
+      throw new PolarisError("Catalog response did not include a valid updatedAt timestamp");
+    }
+
+    return { updatedAt, markets };
+  }
+
+  /** Return global public source and market totals for the catalog. */
+  async count(): Promise<CatalogCount> {
+    return this._getJson<CatalogCount>("/count", { auth: "if-available" });
   }
 
   /**
