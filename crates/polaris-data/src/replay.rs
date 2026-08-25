@@ -774,11 +774,11 @@ fn validate_v2_event(event: &StandardEventV2) -> Result<(), String> {
             }
         }
         "option_ticker" => {
-            if !event
+            if event
                 .extra
                 .get("instrument")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|instrument| !instrument.is_empty())
+                .is_none_or(|instrument| instrument.is_empty())
             {
                 return Err("option_ticker instrument must be non-empty".to_owned());
             }
