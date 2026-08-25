@@ -425,9 +425,9 @@ fn parse_server_message(text: &str) -> Result<ServerMessage, PolarisError> {
                     .to_owned();
             }
             if event.event_type() == "option_ticker"
-                && !event
+                && event
                     .instrument()
-                    .is_some_and(|instrument| !instrument.is_empty())
+                    .is_none_or(|instrument| instrument.is_empty())
             {
                 return Err(protocol_error(
                     None,
