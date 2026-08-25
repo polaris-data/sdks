@@ -16,6 +16,8 @@ import type {
   L2UpdatesOptions,
   ListSnapshotsOptions,
   MarkPriceEvent,
+  OptionTickerEvent,
+  OptionTickerOptions,
   OhlcvBar,
   OhlcvOptions,
   OrderbookEvent,
@@ -339,6 +341,28 @@ export class BasePolarisClient {
       (e) => e.type === "trade",
     )) {
       result.push(event as TradeEvent);
+    }
+    return result;
+  }
+
+  /**
+   * Return standardized option tickers for a whole chain or one exact
+   * venue-native contract.
+   */
+  async optionTickers(options: OptionTickerOptions): Promise<OptionTickerEvent[]> {
+    const instrument = normalizeInstrumentFilter(options.instrument);
+    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
+    const result: OptionTickerEvent[] = [];
+    for await (const event of this._readSnapshotEvents(
+      options.source,
+      options.market,
+      fromMs,
+      toMs,
+      (candidate) => candidate.type === "option_ticker",
+    )) {
+      const ticker = parseOptionTickerEvent(event);
+      if (instrument !== undefined && ticker.instrument !== instrument) continue;
+      result.push(ticker);
     }
     return result;
   }
@@ -1807,6 +1831,27 @@ function isMarkPriceEvent(event: Json): event is MarkPriceEvent {
   return ["mark_price", "mark_px"].includes(pointSeriesName(event) ?? "");
 }
 
+function normalizeInstrumentFilter(instrument: string | undefined): string | undefined {
+  if (instrument === undefined) return undefined;
+  const normalized = instrument.trim();
+  if (normalized.length === 0) {
+    throw new PolarisError("instrument must be non-empty");
+  }
+  return normalized;
+}
+
+function parseOptionTickerEvent(event: Json): OptionTickerEvent {
+  if (
+    event.type !== "option_ticker" ||
+    typeof event.instrument !== "string" ||
+    event.instrument.length === 0 ||
+    !isRecord(event.data)
+  ) {
+    throw new PolarisError("Invalid option ticker payload");
+  }
+  return event as unknown as OptionTickerEvent;
+}
+
 function parsePropammQuoteLadderEvent(
   event: Json,
 ): PropammQuoteLadderEvent | undefined {
@@ -2304,6 +2349,10 @@ function validateV2Event(value: Json, filePath: string): asserts value is Standa
   } else if (value.type === "record") {
     if (typeof data.series !== "string" || !isRecord(data.values)) {
       throw new PolarisError(`Invalid v2 record payload in '${filePath}'`);
+    }
+  } else if (value.type === "option_ticker") {
+    if (typeof value.instrument !== "string" || value.instrument.length === 0) {
+      throw new PolarisError(`Invalid v2 option ticker payload in '${filePath}'`);
     }
   } else {
     throw new PolarisError(`Unsupported v2 standard event type '${value.type}' in '${filePath}'`);

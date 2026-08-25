@@ -99,6 +99,20 @@ impl Default for HistoricalQuery {
     }
 }
 
+/// Query for standardized option ticker events.
+///
+/// Omitting `instrument` selects the whole option chain for `market`; setting
+/// it selects one exact venue-native contract.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OptionTickerQuery {
+    pub source: String,
+    pub market: String,
+    pub instrument: Option<String>,
+    pub from: Option<TimeInput>,
+    pub to: Option<TimeInput>,
+    pub allow_gaps: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayQuery {
     pub source: String,
@@ -126,6 +140,9 @@ impl Default for ReplayQuery {
 pub struct StreamQuery {
     pub source: String,
     pub markets: Vec<String>,
+    /// Optional exact venue-native instrument filter applied to each market.
+    /// `None` subscribes to the whole market (for options, the whole chain).
+    pub instrument: Option<String>,
     pub include_buffer: bool,
     pub materialize_orderbooks: bool,
 }
@@ -135,6 +152,7 @@ impl Default for StreamQuery {
         Self {
             source: String::new(),
             markets: Vec::new(),
+            instrument: None,
             include_buffer: false,
             materialize_orderbooks: true,
         }
@@ -364,6 +382,13 @@ impl StandardEvent {
         }
     }
 
+    /// Exact venue-native instrument carried by the event envelope, when one
+    /// is present. For options, `market()` is the normalized underlying and
+    /// this value identifies the contract.
+    pub fn instrument(&self) -> Option<&str> {
+        self.extra().get("instrument").and_then(Value::as_str)
+    }
+
     pub fn data(&self) -> &Value {
         match self {
             Self::Legacy(event) => &event.data,
@@ -531,6 +556,139 @@ impl TradeEvent {
         match self {
             Self::Legacy(event) => &event.data.extra,
             Self::V2(event) => &event.data.extra,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OptionGreeks {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gamma: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vega: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theta: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rho: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OptionTickerData {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark_price: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bid_price: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bid_size: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_price: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_size: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_price: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_price: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underlying_price: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_price: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark_iv: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bid_iv: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_iv: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_interest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_24h: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turnover_24h: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub premium_currency: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantity_unit: Option<String>,
+    #[serde(default, skip_serializing_if = "option_greeks_are_empty")]
+    pub greeks: OptionGreeks,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+fn option_greeks_are_empty(greeks: &OptionGreeks) -> bool {
+    greeks.delta.is_none()
+        && greeks.gamma.is_none()
+        && greeks.vega.is_none()
+        && greeks.theta.is_none()
+        && greeks.rho.is_none()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyOptionTickerEvent {
+    pub timestamp: i64,
+    pub source: String,
+    pub market: String,
+    pub instrument: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub data: OptionTickerData,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OptionTickerEventV2 {
+    pub collector_timestamp: i64,
+    pub collector_sequence: u64,
+    pub exchange_timestamp: Option<i64>,
+    pub exchange_sequence: Option<String>,
+    pub source: String,
+    pub market: String,
+    pub instrument: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub data: OptionTickerData,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OptionTickerEvent {
+    Legacy(LegacyOptionTickerEvent),
+    V2(OptionTickerEventV2),
+}
+
+impl OptionTickerEvent {
+    pub fn timestamp(&self) -> i64 {
+        match self {
+            Self::Legacy(event) => event.timestamp,
+            Self::V2(event) => event.collector_timestamp,
+        }
+    }
+
+    pub fn source(&self) -> &str {
+        match self {
+            Self::Legacy(event) => &event.source,
+            Self::V2(event) => &event.source,
+        }
+    }
+
+    pub fn market(&self) -> &str {
+        match self {
+            Self::Legacy(event) => &event.market,
+            Self::V2(event) => &event.market,
+        }
+    }
+
+    pub fn instrument(&self) -> &str {
+        match self {
+            Self::Legacy(event) => &event.instrument,
+            Self::V2(event) => &event.instrument,
+        }
+    }
+
+    pub fn data(&self) -> &OptionTickerData {
+        match self {
+            Self::Legacy(event) => &event.data,
+            Self::V2(event) => &event.data,
         }
     }
 }

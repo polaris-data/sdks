@@ -97,6 +97,7 @@ Use it to inspect available data, query historical market data, and open realtim
 | --- | --- | --- |
 | `events(opts)` | Array of standardised historical events | General-purpose historical analysis when you want the normalized event stream in memory |
 | `trades(opts)` | Array of standardised trade events | Trade-level analytics, execution studies, and derived bar calculations |
+| `optionTickers(opts)` | Array of typed option ticker events | Read an underlying's whole option chain or filter one exact contract with `instrument` |
 | `l2Snapshots(opts)` | Array of standardised orderbook snapshot rows | Order book reconstruction and microstructure analysis |
 | `l2Updates(opts)` | Array of raw orderbook snapshots and deltas | High-throughput application-managed books |
 | `fundingRates(opts)` | Array of funding-rate point series rows | Perpetual funding studies and carry modeling |
@@ -132,6 +133,20 @@ try {
   events.close();
   client.close();
 }
+```
+
+For option sources, pass the normalized underlying in `markets` and optionally
+set `instrument` to one non-empty exact option contract. Omitting `instrument`
+subscribes to the complete option chain. Historical option tickers use the same
+identity split:
+
+```ts
+const chain = await client.optionTickers({ source: "deribit", market: "BTC" });
+const contract = await client.optionTickers({
+  source: "deribit",
+  market: "BTC",
+  instrument: "BTC-29MAR24-50000-C",
+});
 ```
 
 The browser build uses the native browser WebSocket implementation; Node uses

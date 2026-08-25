@@ -18,10 +18,11 @@ use crate::{
     models::{
         BboQuery, BboQuote, CatalogAccess, CatalogCount, CatalogInstrument, CatalogMarket,
         CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic, DownloadManifestQuery,
-        DownloadManifestResponse, HistoricalQuery, HistoricalStream, LegacyOrderbookEvent,
-        LegacyPointSeriesEvent, LegacyTradeData, LegacyTradeEvent, ListSnapshotsQuery, OhlcvOutput,
-        OhlcvQuery, OrderbookData, OrderbookDataV2, OrderbookEvent, OrderbookEventV2,
-        OrderbookLevel, PointSeriesData, PointSeriesEvent, PointSeriesEventV2,
+        DownloadManifestResponse, HistoricalQuery, HistoricalStream, LegacyOptionTickerEvent,
+        LegacyOrderbookEvent, LegacyPointSeriesEvent, LegacyTradeData, LegacyTradeEvent,
+        ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OptionTickerData, OptionTickerEvent,
+        OptionTickerEventV2, OptionTickerQuery, OrderbookData, OrderbookDataV2, OrderbookEvent,
+        OrderbookEventV2, OrderbookLevel, PointSeriesData, PointSeriesEvent, PointSeriesEventV2,
         PropammQuoteLadderData, PropammQuoteLadderEvent, RawQuery, RawReplayQuery, RawReplayStream,
         RealtimeStream, ReplayQuery, ReplayStream, SnapshotEntry, StandardEvent, StreamQuery,
         TradeDataV2, TradeEvent, TradeEventV2, VolatilityBar, VolumeBar, VwapBar,
@@ -384,6 +385,40 @@ impl PolarisClient {
                     continue;
                 }
                 yield Self::parse_trade(event)?;
+            }
+        }))
+    }
+
+    /// Return standardized option ticker events for an underlying market.
+    ///
+    /// When `query.instrument` is omitted, all contracts in the option chain
+    /// are returned. A non-empty instrument selects one exact contract.
+    pub async fn option_tickers(
+        &self,
+        query: OptionTickerQuery,
+    ) -> Result<HistoricalStream<OptionTickerEvent>, PolarisError> {
+        let instrument = validate_optional_instrument(query.instrument)?;
+        let mut events = self
+            .events(HistoricalQuery {
+                source: query.source,
+                market: query.market,
+                from: query.from,
+                to: query.to,
+                allow_gaps: query.allow_gaps,
+                materialize_orderbooks: false,
+            })
+            .await?;
+        Ok(Box::pin(try_stream! {
+            while let Some(event) = events.next().await {
+                let event = event?;
+                if event.event_type() != "option_ticker" {
+                    continue;
+                }
+                let ticker = Self::parse_option_ticker(event)?;
+                if instrument.as_deref().is_some_and(|expected| ticker.instrument() != expected) {
+                    continue;
+                }
+                yield ticker;
             }
         }))
     }
@@ -1329,6 +1364,49 @@ impl PolarisClient {
         }
     }
 
+    pub(crate) fn parse_option_ticker(
+        event: StandardEvent,
+    ) -> Result<OptionTickerEvent, PolarisError> {
+        if event.event_type() != "option_ticker" {
+            return Err(PolarisError::Decode(
+                "expected an option_ticker event".to_owned(),
+            ));
+        }
+        match event {
+            StandardEvent::Legacy(mut event) => {
+                let instrument = take_required_instrument(&mut event.extra)?;
+                let data: OptionTickerData = serde_json::from_value(event.data).map_err(|err| {
+                    PolarisError::Decode(format!("invalid legacy option ticker payload: {err}"))
+                })?;
+                Ok(OptionTickerEvent::Legacy(LegacyOptionTickerEvent {
+                    timestamp: event.timestamp,
+                    source: event.source,
+                    market: event.market,
+                    instrument,
+                    event_type: event.event_type,
+                    data,
+                }))
+            }
+            StandardEvent::V2(mut event) => {
+                let instrument = take_required_instrument(&mut event.extra)?;
+                let data: OptionTickerData = serde_json::from_value(event.data).map_err(|err| {
+                    PolarisError::Decode(format!("invalid v2 option ticker payload: {err}"))
+                })?;
+                Ok(OptionTickerEvent::V2(OptionTickerEventV2 {
+                    collector_timestamp: event.collector_timestamp,
+                    collector_sequence: event.collector_sequence,
+                    exchange_timestamp: event.exchange_timestamp,
+                    exchange_sequence: event.exchange_sequence,
+                    source: event.source,
+                    market: event.market,
+                    instrument,
+                    event_type: event.event_type,
+                    data,
+                }))
+            }
+        }
+    }
+
     fn try_parse_orderbook(event: StandardEvent) -> Option<OrderbookEvent> {
         let mut payload = event.data().clone();
         if !payload.is_object() {
@@ -2227,6 +2305,31 @@ struct VolatilityBucket {
 // ===========================================================================
 // Helper functions
 // ===========================================================================
+
+fn validate_optional_instrument(
+    instrument: Option<String>,
+) -> Result<Option<String>, PolarisError> {
+    if let Some(instrument) = instrument {
+        let instrument = instrument.trim().to_owned();
+        if instrument.is_empty() {
+            return Err(PolarisError::InvalidResponse(
+                "instrument must be non-empty".to_owned(),
+            ));
+        }
+        return Ok(Some(instrument));
+    }
+    Ok(None)
+}
+
+fn take_required_instrument(extra: &mut BTreeMap<String, Value>) -> Result<String, PolarisError> {
+    extra
+        .remove("instrument")
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .filter(|instrument| !instrument.is_empty())
+        .ok_or_else(|| {
+            PolarisError::Decode("option_ticker instrument must be non-empty".to_owned())
+        })
+}
 
 fn parse_orderbook_levels(value: &Value) -> Option<Vec<OrderbookLevel>> {
     let rows = value.as_array()?;

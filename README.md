@@ -129,6 +129,7 @@ async fn main() -> Result<(), polaris_data::PolarisError> {
     let mut events = client.stream(StreamQuery {
         source: "binance".into(),
         markets: vec!["BTC-USDT".into(), "ETH-USDT".into()],
+        instrument: None,
         include_buffer: false,
         materialize_orderbooks: true,
     }).await?;
@@ -151,6 +152,11 @@ Reconnection is best-effort: the current live protocol has no resume cursor, so
 a reconnect can introduce a gap or duplicate event. The SDK clears reconstructed
 books on reconnect and suppresses later deltas until a new snapshot arrives.
 Protocol and authentication errors are terminal and are not retried.
+
+For option sources, `market` remains the normalized underlying (for example,
+`BTC`) and `instrument` is the exact option contract. Omit `instrument` to
+subscribe to the entire option chain, or provide a non-empty exact instrument
+to narrow every market subscription in the stream.
 
 Use `l2_updates()` in Python and Rust or `l2Updates()` in TypeScript to read the
 initial snapshots and sparse deltas without reconstructing every intermediate
@@ -199,7 +205,7 @@ Use it to inspect available data, query historical market data, and open realtim
 | Method | Returns | Use case |
 | --- | --- | --- |
 | `replay(source=..., market=..., from_=None, to=None, standard=True, allow_gaps=False, parallel=False, materialize_orderbooks=True, output="iterator", batch_size=65536)` | Iterator, exact Arrow batches, or Pandas DataFrame | Backfills and lossless replay-style processing |
-| `stream(source=..., markets=[...], include_buffer=False, materialize_orderbooks=True)` | Closeable iterator of realtime events | Open-ended normalized market data with automatic reconnection |
+| `stream(source=..., markets=[...], instrument=None, include_buffer=False, materialize_orderbooks=True)` | Closeable iterator of realtime events | Open-ended normalized market data with automatic reconnection and optional exact-instrument filtering |
 | `raw(source=..., market=..., from_=None, to=None, limit=1000)` | List of raw source payloads | Inspect exchange-native payloads and compare raw vs standardized schemas |
 
 ### Standardized Data Schemas
@@ -208,6 +214,7 @@ Use it to inspect available data, query historical market data, and open realtim
 | --- | --- | --- |
 | `events(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True, output="iterator", batch_size=65536)` | Iterator, exact Arrow batches, or Pandas DataFrame | General-purpose historical analysis and exact event transport |
 | `trades(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Trade-level analytics, execution studies, and notebook analysis |
+| `option_tickers(source=..., market=..., instrument=None, from_=None, to=None, allow_gaps=False)` | Iterator of typed option ticker events | Read an underlying's whole option chain or filter one exact contract |
 | `l2_snapshots(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)` | Iterator of complete orderbook rows | Order book reconstruction and microstructure analysis |
 | `l2_updates(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of raw orderbook snapshots and deltas | High-throughput application-managed books |
 | `funding_rates(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Perpetual funding studies and carry modeling |

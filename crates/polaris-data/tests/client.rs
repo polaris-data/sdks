@@ -5,7 +5,7 @@ use log::Level;
 use logtest::Logger;
 use polaris_data::{
     CatalogQuery, HistoricalQuery, HistoricalStream, OhlcvFormat, OhlcvInterval, OhlcvOutput,
-    OhlcvQuery, PolarisClient, PolarisError, ReplayQuery, blocking,
+    OhlcvQuery, OptionTickerQuery, PolarisClient, PolarisError, ReplayQuery, blocking,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -31,6 +31,19 @@ fn write_propamm_fixture(root: &TempDir, source: &str, fixture: &str) {
     let key = format!("standard-{source}-ethereum-2024-01-01-000000");
     let path = root.path().join(format!(
         "data/standard/{source}/ethereum/2024-01-01/{key}.jsonl.zst"
+    ));
+    std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture directory");
+    std::fs::write(
+        path,
+        zstd::stream::encode_all(fixture.as_bytes(), 0).expect("compressed fixture"),
+    )
+    .expect("fixture");
+}
+
+fn write_option_fixture(root: &TempDir, fixture: &str) {
+    let key = "standard-deribit-BTC-2024-01-01-000000";
+    let path = root.path().join(format!(
+        "data/standard/deribit/BTC/2024-01-01/{key}.jsonl.zst"
     ));
     std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture directory");
     std::fs::write(
@@ -489,6 +502,75 @@ async fn propamm_quote_ladders_are_typed_and_inherit_metadata_market() {
     .expect("blocking rows");
     assert_eq!(blocking_rows.len(), 1);
     assert_eq!(blocking_rows[0].market(), "ethereum");
+}
+
+#[tokio::test]
+async fn option_tickers_are_typed_and_filter_exact_instruments() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().expect("tempdir");
+    write_option_fixture(
+        &root,
+        include_str!("../../../tests/fixtures/events/options-v2.jsonl"),
+    );
+    let client = build_client(&server, &root);
+    let query = |instrument: Option<&str>| OptionTickerQuery {
+        source: "deribit".to_owned(),
+        market: "BTC".to_owned(),
+        instrument: instrument.map(ToOwned::to_owned),
+        from: Some("2024-01-01T00:00:00Z".into()),
+        to: Some("2024-01-01T01:00:00Z".into()),
+        allow_gaps: false,
+    };
+
+    let chain = collect_stream(
+        client
+            .option_tickers(query(None))
+            .await
+            .expect("option chain"),
+    )
+    .await
+    .expect("option rows");
+    let exact = collect_stream(
+        client
+            .option_tickers(query(Some("BTC-29MAR24-50000-C")))
+            .await
+            .expect("exact option"),
+    )
+    .await
+    .expect("exact option rows");
+
+    assert_eq!(chain.len(), 2);
+    assert_eq!(chain[0].source(), "deribit");
+    assert_eq!(chain[0].market(), "BTC");
+    assert_eq!(chain[0].instrument(), "BTC-29MAR24-50000-C");
+    assert_eq!(chain[0].data().mark_iv.as_deref(), Some("0.8359"));
+    assert_eq!(chain[0].data().greeks.delta.as_deref(), Some("0.431"));
+    assert_eq!(exact.len(), 1);
+    assert_eq!(exact[0].instrument(), "BTC-29MAR24-50000-C");
+
+    let error = match client.option_tickers(query(Some(""))).await {
+        Ok(_) => panic!("expected empty instrument error"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("instrument must be non-empty"));
+
+    let root_path = root.path().to_owned();
+    let blocking_rows = std::thread::spawn(move || {
+        let client = blocking::PolarisClient::builder()
+            .base_url("http://127.0.0.1:1")
+            .dataset_root(root_path)
+            .build()
+            .expect("blocking client");
+        client
+            .option_tickers(query(Some("BTC-29MAR24-45000-P")))
+            .expect("blocking option tickers")
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .join()
+    .expect("blocking thread")
+    .expect("blocking rows");
+    assert_eq!(blocking_rows.len(), 1);
+    assert_eq!(blocking_rows[0].instrument(), "BTC-29MAR24-45000-P");
 }
 
 #[tokio::test]

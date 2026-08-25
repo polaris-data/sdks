@@ -75,6 +75,35 @@ def _write_propamm_fixture(
     )
 
 
+def _write_option_fixture(root: Path, *, mutate=None) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "events" / "options-v2.jsonl"
+    rows = [json.loads(line) for line in fixture.read_text().splitlines()]
+    if mutate is not None:
+        mutate(rows)
+    key = "standard-deribit-BTC-2024-01-01-000000"
+    path = (
+        root
+        / "data"
+        / "standard"
+        / "deribit"
+        / "BTC"
+        / "2024-01-01"
+        / f"{key}.jsonl.zst"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_zstd_ndjson(rows))
+    path.with_name(path.name + ".coverage.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "key": key,
+                "start_us": 1_704_067_200_000_000,
+                "end_us": 1_704_070_800_000_000,
+            }
+        )
+    )
+
+
 def make_client(
     handler,
     *,
@@ -2542,6 +2571,51 @@ def test_funding_rates_filter_point_series_from_standardized_snapshots(
                 to="2024-01-01T01:00:00Z",
             )
         ) == [snapshot_rows[0], snapshot_rows[3]]
+    finally:
+        client.close()
+
+
+def test_option_tickers_filter_exact_instruments_and_validate_identity(tmp_path) -> None:
+    _write_option_fixture(tmp_path)
+    client = PolarisClient(
+        base_url="http://127.0.0.1:1",
+        dataset_root=tmp_path,
+    )
+    try:
+        chain = list(
+            client.option_tickers(
+                source="deribit",
+                market="BTC",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+            )
+        )
+        exact = list(
+            client.option_tickers(
+                source="deribit",
+                market="BTC",
+                instrument="BTC-29MAR24-50000-C",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+            )
+        )
+        assert [row["instrument"] for row in chain] == [
+            "BTC-29MAR24-50000-C",
+            "BTC-29MAR24-45000-P",
+        ]
+        assert len(exact) == 1
+        assert exact[0]["market"] == "BTC"
+        assert exact[0]["instrument"] == "BTC-29MAR24-50000-C"
+        assert exact[0]["data"]["mark_iv"] == "0.8359"
+        assert exact[0]["data"]["greeks"]["delta"] == "0.431"
+        with pytest.raises(ValueError, match="instrument must be non-empty"):
+            client.option_tickers(
+                source="deribit",
+                market="BTC",
+                instrument="",
+            )
+        with pytest.raises(ValueError, match="instrument must be non-empty"):
+            client.stream(source="deribit", markets=["BTC"], instrument="   ")
     finally:
         client.close()
 

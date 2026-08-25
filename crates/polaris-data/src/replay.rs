@@ -773,6 +773,16 @@ fn validate_v2_event(event: &StandardEventV2) -> Result<(), String> {
                 return Err("invalid v2 record payload".to_owned());
             }
         }
+        "option_ticker" => {
+            if !event
+                .extra
+                .get("instrument")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|instrument| !instrument.is_empty())
+            {
+                return Err("option_ticker instrument must be non-empty".to_owned());
+            }
+        }
         other => return Err(format!("unsupported v2 standard event type '{other}'")),
     }
     Ok(())

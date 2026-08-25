@@ -64,6 +64,7 @@ test("stream subscribes with token, deduplicates markets, and yields standard ev
     const realtime = client.stream({
       source: " binance ",
       markets: ["BTC-USDT", "BTC-USDT", "ETH-USDT"],
+      instrument: " BTC-29AUG26-100000-C ",
       includeBuffer: true,
     });
     let received;
@@ -73,6 +74,10 @@ test("stream subscribes with token, deduplicates markets, and yields standard ev
     }
     assert.equal(command.token, "secret");
     assert.equal(command.include_buffer, true);
+    assert.deepEqual(command.subscriptions.map(({ instrument }) => instrument), [
+      "BTC-29AUG26-100000-C",
+      "BTC-29AUG26-100000-C",
+    ]);
     assert.deepEqual(command.subscriptions.map(({ source, market, stream }) => ({ source, market, stream })), [
       { source: "binance", market: "BTC-USDT", stream: "standard" },
       { source: "binance", market: "ETH-USDT", stream: "standard" },

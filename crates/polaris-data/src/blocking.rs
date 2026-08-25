@@ -18,10 +18,10 @@ use tokio::runtime::{Handle, Runtime};
 use crate::{
     BboQuery, BboQuote, CatalogCount, CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic,
     DownloadManifestQuery, DownloadManifestResponse, HistoricalQuery, HistoricalStream,
-    ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OrderbookEvent, PointSeriesEvent, PolarisError,
-    PropammQuoteLadderEvent, RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream,
-    ReplayQuery, SnapshotEntry, StandardEvent, StreamQuery, TimeInput, TradeEvent, VolatilityBar,
-    VolumeBar, VwapBar,
+    ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OptionTickerEvent, OptionTickerQuery,
+    OrderbookEvent, PointSeriesEvent, PolarisError, PropammQuoteLadderEvent, RawQuery,
+    RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, SnapshotEntry, StandardEvent,
+    StreamQuery, TimeInput, TradeEvent, VolatilityBar, VolumeBar, VwapBar,
     replay::{LocalExactReplayIterator, LocalReplayIterator},
 };
 
@@ -211,6 +211,14 @@ impl PolarisClient {
         query: HistoricalQuery,
     ) -> Result<HistoricalIterator<TradeEvent>, PolarisError> {
         let stream = self.run(self.inner.trades(query))?;
+        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
+    }
+
+    pub fn option_tickers(
+        &self,
+        query: OptionTickerQuery,
+    ) -> Result<HistoricalIterator<OptionTickerEvent>, PolarisError> {
+        let stream = self.run(self.inner.option_tickers(query))?;
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 

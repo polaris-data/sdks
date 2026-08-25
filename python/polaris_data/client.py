@@ -21,7 +21,14 @@ from .errors import (
     StreamProtocolError,
     UnauthorizedError,
 )
-from .models import CatalogCount, CatalogResponse, JSONDict, PropammQuoteLadderEvent, SnapshotEntry
+from .models import (
+    CatalogCount,
+    CatalogResponse,
+    JSONDict,
+    OptionTickerEvent,
+    PropammQuoteLadderEvent,
+    SnapshotEntry,
+)
 from .utils import TimeInput, to_iso8601
 
 if TYPE_CHECKING:
@@ -310,14 +317,18 @@ class PolarisClient:
         *,
         source: str,
         markets: Sequence[str],
+        instrument: str | None = None,
         include_buffer: bool = False,
         materialize_orderbooks: bool = True,
     ) -> RealtimeStream:
         """Open a reconnecting realtime stream of normalized market events."""
+        if instrument is not None and not instrument.strip():
+            raise ValueError("instrument must be non-empty")
         iterator = self._call(
             "stream",
             source,
             list(markets),
+            instrument,
             include_buffer,
             materialize_orderbooks,
         )
@@ -653,6 +664,30 @@ class PolarisClient:
             allow_gaps,
         )
         return self._iterate(iterator, "trades")
+
+    def option_tickers(
+        self,
+        *,
+        source: str,
+        market: str,
+        instrument: str | None = None,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        allow_gaps: bool = False,
+    ) -> Iterator[OptionTickerEvent]:
+        """Iterate option tickers for a whole chain or one exact contract."""
+        if instrument is not None and not instrument.strip():
+            raise ValueError("instrument must be non-empty")
+        iterator = self._call(
+            "option_tickers",
+            source,
+            market,
+            instrument,
+            self._time(from_),
+            self._time(to),
+            allow_gaps,
+        )
+        return self._iterate(iterator, "option_tickers")
 
     def raw(
         self,
