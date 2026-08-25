@@ -16,6 +16,8 @@ import type {
   L2UpdatesOptions,
   ListSnapshotsOptions,
   MarkPriceEvent,
+  IntentData,
+  IntentEvent,
   OptionTickerEvent,
   OptionTickerOptions,
   OhlcvBar,
@@ -341,6 +343,22 @@ export class BasePolarisClient {
       (e) => e.type === "trade",
     )) {
       result.push(event as TradeEvent);
+    }
+    return result;
+  }
+
+  /** Return canonical RFQ, quote, and executable-intent observations. */
+  async intents(options: HistoricalQueryOptions): Promise<IntentEvent[]> {
+    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
+    const result: IntentEvent[] = [];
+    for await (const event of this._readSnapshotEvents(
+      options.source,
+      options.market,
+      fromMs,
+      toMs,
+      (candidate) => candidate.type === "intent",
+    )) {
+      result.push(parseIntentEvent(event));
     }
     return result;
   }
@@ -1852,6 +1870,68 @@ function parseOptionTickerEvent(event: Json): OptionTickerEvent {
   return event as unknown as OptionTickerEvent;
 }
 
+const AMOUNT_KINDS = new Set(["exact_input", "exact_output"]);
+const INTENT_STATUSES = new Set([
+  "submitted",
+  "open",
+  "partially_filled",
+  "executing",
+  "filled",
+  "settled",
+  "cancelled",
+  "expired",
+  "failed",
+  "unknown",
+]);
+
+function optionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+function isAssetAmount(value: unknown): boolean {
+  return isRecord(value) &&
+    typeof value.asset_id === "string" &&
+    optionalString(value.chain_id) &&
+    optionalString(value.amount) &&
+    optionalString(value.recipient);
+}
+
+function isSettlementTransaction(value: unknown): boolean {
+  return isRecord(value) &&
+    typeof value.transaction_hash === "string" &&
+    optionalString(value.chain_id);
+}
+
+function isIntentData(value: unknown): value is IntentData {
+  if (!isRecord(value)) return false;
+  const strings = ["rfq_id", "intent_id", "requester", "signer"] as const;
+  if (!strings.every((field) => optionalString(value[field]))) return false;
+  if (!Array.isArray(value.inputs) || !value.inputs.every(isAssetAmount)) return false;
+  if (!Array.isArray(value.outputs) || !value.outputs.every(isAssetAmount)) return false;
+  if (!Array.isArray(value.transactions) ||
+    !value.transactions.every(isSettlementTransaction)) return false;
+  if (value.amount_kind !== undefined &&
+    (typeof value.amount_kind !== "string" || !AMOUNT_KINDS.has(value.amount_kind))) return false;
+  if (value.status !== undefined &&
+    (typeof value.status !== "string" || !INTENT_STATUSES.has(value.status))) return false;
+  if (value.expires_at !== undefined &&
+    (typeof value.expires_at !== "number" || !Number.isSafeInteger(value.expires_at))) return false;
+  if (value.settled_at !== undefined &&
+    (typeof value.settled_at !== "number" || !Number.isSafeInteger(value.settled_at))) return false;
+  if (value.quote !== undefined) {
+    if (!isRecord(value.quote) || typeof value.quote.quote_id !== "string" ||
+      !Array.isArray(value.quote.response) || !value.quote.response.every(isAssetAmount)) return false;
+  }
+  return true;
+}
+
+function parseIntentEvent(event: Json): IntentEvent {
+  if (event.type !== "intent" || !isIntentData(event.data)) {
+    throw new PolarisError("Invalid intent payload");
+  }
+  return event as unknown as IntentEvent;
+}
+
 function parsePropammQuoteLadderEvent(
   event: Json,
 ): PropammQuoteLadderEvent | undefined {
@@ -2353,6 +2433,10 @@ function validateV2Event(value: Json, filePath: string): asserts value is Standa
   } else if (value.type === "option_ticker") {
     if (typeof value.instrument !== "string" || value.instrument.length === 0) {
       throw new PolarisError(`Invalid v2 option ticker payload in '${filePath}'`);
+    }
+  } else if (value.type === "intent") {
+    if (!isIntentData(data)) {
+      throw new PolarisError(`Invalid v2 intent payload in '${filePath}'`);
     }
   } else {
     throw new PolarisError(`Unsupported v2 standard event type '${value.type}' in '${filePath}'`);

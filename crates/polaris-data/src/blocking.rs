@@ -18,7 +18,7 @@ use tokio::runtime::{Handle, Runtime};
 use crate::{
     BboQuery, BboQuote, CatalogCount, CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic,
     DownloadManifestQuery, DownloadManifestResponse, HistoricalQuery, HistoricalStream,
-    ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OptionTickerEvent, OptionTickerQuery,
+    IntentEvent, ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OptionTickerEvent, OptionTickerQuery,
     OrderbookEvent, PointSeriesEvent, PolarisError, PropammQuoteLadderEvent, RawQuery,
     RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, SnapshotEntry, StandardEvent,
     StreamQuery, TimeInput, TradeEvent, VolatilityBar, VolumeBar, VwapBar,
@@ -211,6 +211,14 @@ impl PolarisClient {
         query: HistoricalQuery,
     ) -> Result<HistoricalIterator<TradeEvent>, PolarisError> {
         let stream = self.run(self.inner.trades(query))?;
+        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
+    }
+
+    pub fn intents(
+        &self,
+        query: HistoricalQuery,
+    ) -> Result<HistoricalIterator<IntentEvent>, PolarisError> {
+        let stream = self.run(self.inner.intents(query))?;
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 
@@ -467,6 +475,15 @@ impl PreparedHistoricalReplay {
             Err(error) => Some(Err(error)),
         });
         HistoricalIterator::direct(trades)
+    }
+
+    pub fn intents(&self) -> HistoricalIterator<IntentEvent> {
+        let intents = self.events().filter_map(|event| match event {
+            Ok(event) if event.event_type() != "intent" => None,
+            Ok(event) => Some(crate::client::PolarisClient::parse_intent(event)),
+            Err(error) => Some(Err(error)),
+        });
+        HistoricalIterator::direct(intents)
     }
 
     pub fn point_series(

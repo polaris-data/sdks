@@ -9,6 +9,20 @@ from typing import Any, Literal, Optional, TypedDict, Union
 JSONDict = dict[str, Any]
 CatalogInstrumentValue = Optional[Union[str, int, float]]
 
+AmountKind = Literal["exact_input", "exact_output"]
+IntentStatus = Literal[
+    "submitted",
+    "open",
+    "partially_filled",
+    "executing",
+    "filled",
+    "settled",
+    "cancelled",
+    "expired",
+    "failed",
+    "unknown",
+]
+
 
 class CatalogInstrument(TypedDict):
     base: str | None
@@ -151,3 +165,74 @@ class OptionTickerEventV2(TypedDict):
 
 
 OptionTickerEvent = Union[LegacyOptionTickerEvent, OptionTickerEventV2]
+
+
+class _AssetAmountRequired(TypedDict):
+    asset_id: str
+
+
+class AssetAmount(_AssetAmountRequired, total=False):
+    chain_id: str
+    amount: str
+    recipient: str
+
+
+class IntentQuote(TypedDict):
+    quote_id: str
+    response: list[AssetAmount]
+
+
+class _SettlementTransactionRequired(TypedDict):
+    transaction_hash: str
+
+
+class SettlementTransaction(_SettlementTransactionRequired, total=False):
+    chain_id: str
+
+
+class _IntentDataRequired(TypedDict):
+    inputs: list[AssetAmount]
+    outputs: list[AssetAmount]
+    transactions: list[SettlementTransaction]
+
+
+class IntentData(_IntentDataRequired, total=False):
+    rfq_id: str
+    intent_id: str
+    requester: str
+    signer: str
+    amount_kind: AmountKind
+    expires_at: int
+    quote: IntentQuote
+    status: IntentStatus
+    settled_at: int
+
+
+class _LegacyIntentEventRequired(TypedDict):
+    timestamp: int
+    source: str
+    market: str
+    type: Literal["intent"]
+    data: IntentData
+
+
+class LegacyIntentEvent(_LegacyIntentEventRequired, total=False):
+    raw: Any
+
+
+class _IntentEventV2Required(TypedDict):
+    collector_timestamp: int
+    collector_sequence: int
+    exchange_timestamp: Optional[int]
+    exchange_sequence: Optional[str]
+    source: str
+    market: str
+    type: Literal["intent"]
+    data: IntentData
+
+
+class IntentEventV2(_IntentEventV2Required, total=False):
+    raw: Any
+
+
+IntentEvent = Union[LegacyIntentEvent, IntentEventV2]

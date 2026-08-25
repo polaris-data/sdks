@@ -4,8 +4,9 @@ use futures_util::StreamExt;
 use log::Level;
 use logtest::Logger;
 use polaris_data::{
-    CatalogQuery, HistoricalQuery, HistoricalStream, OhlcvFormat, OhlcvInterval, OhlcvOutput,
-    OhlcvQuery, OptionTickerQuery, PolarisClient, PolarisError, ReplayQuery, blocking,
+    AmountKind, CatalogQuery, HistoricalQuery, HistoricalStream, IntentStatus, OhlcvFormat,
+    OhlcvInterval, OhlcvOutput, OhlcvQuery, OptionTickerQuery, PolarisClient, PolarisError,
+    ReplayQuery, blocking,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -44,6 +45,19 @@ fn write_option_fixture(root: &TempDir, fixture: &str) {
     let key = "standard-deribit-BTC-2024-01-01-000000";
     let path = root.path().join(format!(
         "data/standard/deribit/BTC/2024-01-01/{key}.jsonl.zst"
+    ));
+    std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture directory");
+    std::fs::write(
+        path,
+        zstd::stream::encode_all(fixture.as_bytes(), 0).expect("compressed fixture"),
+    )
+    .expect("fixture");
+}
+
+fn write_intent_fixture(root: &TempDir, fixture: &str) {
+    let key = "standard-uniswapx-intents-2024-01-01-000000";
+    let path = root.path().join(format!(
+        "data/standard/uniswapx/intents/2024-01-01/{key}.jsonl.zst"
     ));
     std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture directory");
     std::fs::write(
@@ -571,6 +585,106 @@ async fn option_tickers_are_typed_and_filter_exact_instruments() {
     .expect("blocking rows");
     assert_eq!(blocking_rows.len(), 1);
     assert_eq!(blocking_rows[0].instrument(), "BTC-29MAR24-45000-P");
+}
+
+#[tokio::test]
+async fn intents_are_typed_filtered_and_available_from_prepared_replay() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().expect("tempdir");
+    write_intent_fixture(
+        &root,
+        include_str!("../../../tests/fixtures/events/intents-v2.jsonl"),
+    );
+    let client = build_client(&server, &root);
+    let query = HistoricalQuery {
+        source: "uniswapx".to_owned(),
+        market: "intents".to_owned(),
+        from: Some("2024-01-01T00:00:00Z".into()),
+        to: Some("2024-01-01T01:00:00Z".into()),
+        allow_gaps: false,
+        materialize_orderbooks: true,
+    };
+
+    let rows = collect_stream(client.intents(query.clone()).await.expect("intents"))
+        .await
+        .expect("intent rows");
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0].source(), "uniswapx");
+    assert_eq!(rows[0].market(), "intents");
+    assert_eq!(rows[0].data().rfq_id.as_deref(), Some("rfq-1"));
+    assert_eq!(rows[0].data().amount_kind, Some(AmountKind::ExactInput));
+    assert_eq!(rows[0].data().quote.as_ref().unwrap().quote_id, "quote-1");
+    assert_eq!(rows[0].data().inputs[0].extra["token_symbol"], "AAA");
+    assert_eq!(rows[0].data().extra["venue_context"], "rfq");
+    assert_eq!(rows[0].raw().unwrap()["requestId"], "rfq-1");
+    assert_eq!(rows[0].raw().unwrap()["venuePayload"]["token"], "0xaaa");
+    assert!(rows[1].raw().is_none());
+    assert_eq!(rows[1].data().amount_kind, Some(AmountKind::ExactOutput));
+    assert_eq!(rows[2].data().status, Some(IntentStatus::Settled));
+    assert_eq!(
+        rows[2].data().transactions[0].transaction_hash,
+        "0xsettlement"
+    );
+    assert_eq!(rows[2].data().transactions[0].extra["block_number"], "123");
+
+    let root_path = root.path().to_owned();
+    let (prepared_rows, blocking_rows) = std::thread::spawn(move || {
+        let client = blocking::PolarisClient::builder()
+            .base_url("http://127.0.0.1:1")
+            .dataset_root(root_path)
+            .build()
+            .expect("blocking client");
+        let prepared_rows = client
+            .prepare_historical(query.clone())
+            .expect("prepared replay")
+            .intents()
+            .collect::<Result<Vec<_>, _>>()?;
+        let blocking_rows = client
+            .intents(query)
+            .expect("blocking intents")
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok::<_, PolarisError>((prepared_rows, blocking_rows))
+    })
+    .join()
+    .expect("blocking thread")
+    .expect("blocking rows");
+    assert_eq!(prepared_rows.len(), 4);
+    assert_eq!(blocking_rows.len(), 4);
+
+    let malformed_root = TempDir::new().expect("tempdir");
+    let mut fixture = include_str!("../../../tests/fixtures/events/intents-v2.jsonl")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("fixture row"))
+        .collect::<Vec<_>>();
+    fixture[1]["data"]["inputs"][0]
+        .as_object_mut()
+        .expect("asset")
+        .remove("asset_id");
+    write_intent_fixture(
+        &malformed_root,
+        &fixture
+            .iter()
+            .map(serde_json::Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    let malformed_client = build_client(&server, &malformed_root);
+    let error = collect_stream(
+        malformed_client
+            .intents(HistoricalQuery {
+                source: "uniswapx".to_owned(),
+                market: "intents".to_owned(),
+                from: Some("2024-01-01T00:00:00Z".into()),
+                to: Some("2024-01-01T01:00:00Z".into()),
+                allow_gaps: false,
+                materialize_orderbooks: false,
+            })
+            .await
+            .expect("malformed stream"),
+    )
+    .await
+    .expect_err("missing asset_id must fail");
+    assert!(error.to_string().contains("invalid v2 intent payload"));
 }
 
 #[tokio::test]

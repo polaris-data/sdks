@@ -14,6 +14,7 @@ export { RealtimeStream } from "./realtime";
 
 export type {
   TimeInput,
+  Json,
   FetchLike,
   AuthMode,
   CatalogResponse,
@@ -28,6 +29,15 @@ export type {
   LegacyTradeEvent,
   TradeEventV2,
   TradeEvent,
+  AmountKind,
+  AssetAmount,
+  IntentStatus,
+  IntentQuote,
+  SettlementTransaction,
+  IntentData,
+  LegacyIntentEvent,
+  IntentEventV2,
+  IntentEvent,
   OptionGreeks,
   OptionTickerData,
   LegacyOptionTickerEvent,

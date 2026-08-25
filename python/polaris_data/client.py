@@ -22,6 +22,7 @@ from .errors import (
     UnauthorizedError,
 )
 from .models import (
+    IntentEvent,
     CatalogCount,
     CatalogResponse,
     JSONDict,
@@ -664,6 +665,26 @@ class PolarisClient:
             allow_gaps,
         )
         return self._iterate(iterator, "trades")
+
+    def intents(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        allow_gaps: bool = False,
+    ) -> Iterator[IntentEvent]:
+        """Iterate canonical RFQ, quote, and executable-intent observations."""
+        iterator = self._call(
+            "intents",
+            source,
+            market,
+            self._time(from_),
+            self._time(to),
+            allow_gaps,
+        )
+        return self._iterate(iterator, "intents")
 
     def option_tickers(
         self,

@@ -560,6 +560,167 @@ impl TradeEvent {
     }
 }
 
+/// Whether an intent fixes its inputs or outputs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AmountKind {
+    ExactInput,
+    ExactOutput,
+}
+
+/// Canonical execution lifecycle for an intent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntentStatus {
+    Submitted,
+    Open,
+    PartiallyFilled,
+    Executing,
+    Filled,
+    Settled,
+    Cancelled,
+    Expired,
+    Failed,
+    Unknown,
+}
+
+/// One asset and its economically binding amount.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetAmount {
+    pub asset_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+/// A solver or venue response to an RFQ.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntentQuote {
+    pub quote_id: String,
+    #[serde(default)]
+    pub response: Vec<AssetAmount>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+/// A chain transaction that executes or settles an intent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettlementTransaction {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_id: Option<String>,
+    pub transaction_hash: String,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+/// Venue-independent projection of an RFQ, quote, or executable intent.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntentData {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rfq_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer: Option<String>,
+    #[serde(default)]
+    pub inputs: Vec<AssetAmount>,
+    #[serde(default)]
+    pub outputs: Vec<AssetAmount>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount_kind: Option<AmountKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<IntentQuote>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<IntentStatus>,
+    #[serde(default)]
+    pub transactions: Vec<SettlementTransaction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settled_at: Option<i64>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyIntentEvent {
+    pub timestamp: i64,
+    pub source: String,
+    pub market: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub data: IntentData,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntentEventV2 {
+    pub collector_timestamp: i64,
+    pub collector_sequence: u64,
+    pub exchange_timestamp: Option<i64>,
+    pub exchange_sequence: Option<String>,
+    pub source: String,
+    pub market: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub data: IntentData,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum IntentEvent {
+    Legacy(LegacyIntentEvent),
+    V2(IntentEventV2),
+}
+
+impl IntentEvent {
+    pub fn timestamp(&self) -> i64 {
+        match self {
+            Self::Legacy(event) => event.timestamp,
+            Self::V2(event) => event.collector_timestamp,
+        }
+    }
+
+    pub fn source(&self) -> &str {
+        match self {
+            Self::Legacy(event) => &event.source,
+            Self::V2(event) => &event.source,
+        }
+    }
+
+    pub fn market(&self) -> &str {
+        match self {
+            Self::Legacy(event) => &event.market,
+            Self::V2(event) => &event.market,
+        }
+    }
+
+    pub fn data(&self) -> &IntentData {
+        match self {
+            Self::Legacy(event) => &event.data,
+            Self::V2(event) => &event.data,
+        }
+    }
+
+    /// Exact upstream JSON token associated with this observation, when stored.
+    pub fn raw(&self) -> Option<&Value> {
+        match self {
+            Self::Legacy(event) => event.raw.as_ref(),
+            Self::V2(event) => event.raw.as_ref(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OptionGreeks {
     #[serde(default, skip_serializing_if = "Option::is_none")]

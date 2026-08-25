@@ -97,6 +97,7 @@ Use it to inspect available data, query historical market data, and open realtim
 | --- | --- | --- |
 | `events(opts)` | Array of standardised historical events | General-purpose historical analysis when you want the normalized event stream in memory |
 | `trades(opts)` | Array of standardised trade events | Trade-level analytics, execution studies, and derived bar calculations |
+| `intents(opts)` | Array of typed intent events | Process canonical RFQ, quote, and executable-intent observations |
 | `optionTickers(opts)` | Array of typed option ticker events | Read an underlying's whole option chain or filter one exact contract with `instrument` |
 | `l2Snapshots(opts)` | Array of standardised orderbook snapshot rows | Order book reconstruction and microstructure analysis |
 | `l2Updates(opts)` | Array of raw orderbook snapshots and deltas | High-throughput application-managed books |
@@ -113,6 +114,22 @@ Use it to inspect available data, query historical market data, and open realtim
 
 All snapshot-based methods accept `from` and `to` as ISO 8601 strings, `Date`, or epoch microseconds. If one or both bounds are omitted, the client infers a bounded range from catalog metadata.
 `replay({ standard: false })` is not supported in the TypeScript SDK.
+
+UniswapX, LI.FI, and CoW Swap expose RFQs, quotes, and executable orders with
+the same canonical `IntentEvent` shape. `intents()` returns the individual
+stored observations in order rather than lifecycle-reduced snapshots:
+
+```ts
+for (const source of ["uniswapx", "lifi", "cowswap"]) {
+  const observations = await client.intents({ source, market: "intents" });
+  for (const { data } of observations) {
+    console.log(source, data.rfq_id, data.intent_id, data.status);
+  }
+}
+```
+
+When present, `observation.raw` contains the exact captured upstream JSON next
+to the canonical `observation.data` payload.
 
 ### Realtime stream
 
@@ -441,7 +458,7 @@ import type {
 
 ## Snapshot-first architecture
 
-Standardised historical data (`events`, `trades`, `l2Snapshots`, `l2Updates`, `fundingRates`, `markPrices`, `propammQuoteLadders`, `bbo`, `depthMetrics`, `ohlcv`, `volume`, `vwap`, `volatility`, and `replay`) uses a **snapshot-first** approach:
+Standardised historical data (`events`, `trades`, `intents`, `l2Snapshots`, `l2Updates`, `fundingRates`, `markPrices`, `propammQuoteLadders`, `bbo`, `depthMetrics`, `ohlcv`, `volume`, `vwap`, `volatility`, and `replay`) uses a **snapshot-first** approach:
 
 1. Hourly `.jsonl.zst` snapshot files are discovered via `GET /snapshots` and downloaded via `GET /download` on first access.
 2. Subsequent calls for the same date range read from the local cache — no network round-trips.

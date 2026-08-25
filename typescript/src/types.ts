@@ -5,6 +5,9 @@
 /** Accepts ISO 8601 strings, `Date` instances, or Unix epoch milliseconds. */
 export type TimeInput = string | Date | number;
 
+/** Any JSON-serializable value. */
+export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
+
 // ---------------------------------------------------------------------------
 // Fetch
 // ---------------------------------------------------------------------------
@@ -111,6 +114,66 @@ export interface TradeEventV2 extends StandardEventV2 {
 }
 
 export type TradeEvent = LegacyTradeEvent | TradeEventV2;
+
+export type AmountKind = "exact_input" | "exact_output";
+
+export type IntentStatus =
+  | "submitted"
+  | "open"
+  | "partially_filled"
+  | "executing"
+  | "filled"
+  | "settled"
+  | "cancelled"
+  | "expired"
+  | "failed"
+  | "unknown";
+
+export interface AssetAmount extends Record<string, unknown> {
+  asset_id: string;
+  chain_id?: string;
+  amount?: string;
+  recipient?: string;
+}
+
+export interface IntentQuote extends Record<string, unknown> {
+  quote_id: string;
+  response: AssetAmount[];
+}
+
+export interface SettlementTransaction extends Record<string, unknown> {
+  chain_id?: string;
+  transaction_hash: string;
+}
+
+export interface IntentData extends Record<string, unknown> {
+  rfq_id?: string;
+  intent_id?: string;
+  requester?: string;
+  signer?: string;
+  inputs: AssetAmount[];
+  outputs: AssetAmount[];
+  amount_kind?: AmountKind;
+  expires_at?: number;
+  quote?: IntentQuote;
+  status?: IntentStatus;
+  transactions: SettlementTransaction[];
+  settled_at?: number;
+}
+
+export interface LegacyIntentEvent extends LegacyStandardEvent {
+  type: "intent";
+  data: IntentData;
+  raw?: Json;
+}
+
+export interface IntentEventV2 extends StandardEventV2 {
+  type: "intent";
+  data: IntentData;
+  raw?: Json;
+}
+
+export type IntentEvent = LegacyIntentEvent | IntentEventV2;
 
 export interface OptionGreeks extends Record<string, unknown> {
   delta?: string;

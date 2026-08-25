@@ -6,17 +6,25 @@ import importlib.util
 import inspect
 import json
 from dataclasses import fields, is_dataclass
-from typing import Any, get_type_hints
+from typing import Any, Literal, get_args, get_type_hints
 
 import pytest
 import polaris_data
 from polaris_data import (
     AccessDeniedError,
+    AmountKind,
+    AssetAmount,
     CatalogAccess,
     CatalogCount,
     CatalogInstrument,
     CatalogMarketEntry,
     CatalogResponse,
+    IntentData,
+    IntentEvent,
+    IntentEventV2,
+    IntentQuote,
+    IntentStatus,
+    LegacyIntentEvent,
     LegacyOptionTickerEvent,
     NotFoundError,
     OptionGreeks,
@@ -32,6 +40,7 @@ from polaris_data import (
     PropammQuoteLadderValues,
     RateLimitedError,
     RealtimeStream,
+    SettlementTransaction,
     SnapshotEntry,
     StreamConnectionError,
     StreamDecodeError,
@@ -51,12 +60,20 @@ def _parameters(callable_: object) -> list[tuple[str, inspect._ParameterKind, ob
 def test_top_level_exports_are_stable() -> None:
     assert polaris_data.__all__ == [
         "AccessDeniedError",
+        "AmountKind",
+        "AssetAmount",
         "CatalogAccess",
         "CatalogCount",
         "CatalogInstrument",
         "CatalogMarketEntry",
         "CatalogResponse",
         "LegacyOptionTickerEvent",
+        "IntentData",
+        "IntentEvent",
+        "IntentEventV2",
+        "IntentQuote",
+        "IntentStatus",
+        "LegacyIntentEvent",
         "NotFoundError",
         "OptionGreeks",
         "OptionTickerData",
@@ -71,6 +88,7 @@ def test_top_level_exports_are_stable() -> None:
         "PropammQuoteLadderValues",
         "RateLimitedError",
         "RealtimeStream",
+        "SettlementTransaction",
         "SnapshotEntry",
         "StreamDecodeError",
         "StreamConnectionError",
@@ -139,6 +157,15 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("source", keyword_only, required),
         ("market", keyword_only, required),
         ("instrument", keyword_only, None),
+        ("from_", keyword_only, None),
+        ("to", keyword_only, None),
+        ("allow_gaps", keyword_only, False),
+    ]
+
+    assert _parameters(PolarisClient.intents) == [
+        ("self", positional, required),
+        ("source", keyword_only, required),
+        ("market", keyword_only, required),
         ("from_", keyword_only, None),
         ("to", keyword_only, None),
         ("allow_gaps", keyword_only, False),
@@ -283,6 +310,7 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
     assert inspect.signature(PolarisClient.propamm_quote_ladders).return_annotation == (
         "Iterator[PropammQuoteLadderEvent] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
     )
+    assert inspect.signature(PolarisClient.intents).return_annotation == "Iterator[IntentEvent]"
     for method in [
         PolarisClient.l2_snapshots,
         PolarisClient.l2_updates,
@@ -324,6 +352,16 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
     event_hints = get_type_hints(PropammQuoteLadderEvent)
     assert event_hints["market"] is str
     assert event_hints["data"] is PropammQuoteLadderData
+    intent_hints = get_type_hints(IntentData)
+    assert intent_hints["inputs"] == list[AssetAmount]
+    assert intent_hints["quote"] is IntentQuote
+    assert intent_hints["transactions"] == list[SettlementTransaction]
+    assert get_type_hints(IntentEventV2)["data"] is IntentData
+    assert get_type_hints(IntentEventV2)["raw"] is Any
+    assert get_type_hints(LegacyIntentEvent)["data"] is IntentData
+    assert get_type_hints(LegacyIntentEvent)["raw"] is Any
+    assert AmountKind == Literal["exact_input", "exact_output"]
+    assert "settled" in get_args(IntentStatus)
     assert JSONDict == dict[str, Any]
     assert is_dataclass(SnapshotEntry)
     assert [field.name for field in fields(SnapshotEntry)] == [

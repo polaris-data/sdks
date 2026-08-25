@@ -783,6 +783,7 @@ fn validate_v2_event(event: &StandardEventV2) -> Result<(), String> {
                 return Err("option_ticker instrument must be non-empty".to_owned());
             }
         }
+        "intent" => {}
         other => return Err(format!("unsupported v2 standard event type '{other}'")),
     }
     Ok(())

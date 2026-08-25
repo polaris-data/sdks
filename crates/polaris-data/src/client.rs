@@ -18,14 +18,15 @@ use crate::{
     models::{
         BboQuery, BboQuote, CatalogAccess, CatalogCount, CatalogInstrument, CatalogMarket,
         CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic, DownloadManifestQuery,
-        DownloadManifestResponse, HistoricalQuery, HistoricalStream, LegacyOptionTickerEvent,
-        LegacyOrderbookEvent, LegacyPointSeriesEvent, LegacyTradeData, LegacyTradeEvent,
-        ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OptionTickerData, OptionTickerEvent,
-        OptionTickerEventV2, OptionTickerQuery, OrderbookData, OrderbookDataV2, OrderbookEvent,
-        OrderbookEventV2, OrderbookLevel, PointSeriesData, PointSeriesEvent, PointSeriesEventV2,
-        PropammQuoteLadderData, PropammQuoteLadderEvent, RawQuery, RawReplayQuery, RawReplayStream,
-        RealtimeStream, ReplayQuery, ReplayStream, SnapshotEntry, StandardEvent, StreamQuery,
-        TradeDataV2, TradeEvent, TradeEventV2, VolatilityBar, VolumeBar, VwapBar,
+        DownloadManifestResponse, HistoricalQuery, HistoricalStream, IntentData, IntentEvent,
+        IntentEventV2, LegacyIntentEvent, LegacyOptionTickerEvent, LegacyOrderbookEvent,
+        LegacyPointSeriesEvent, LegacyTradeData, LegacyTradeEvent, ListSnapshotsQuery, OhlcvOutput,
+        OhlcvQuery, OptionTickerData, OptionTickerEvent, OptionTickerEventV2, OptionTickerQuery,
+        OrderbookData, OrderbookDataV2, OrderbookEvent, OrderbookEventV2, OrderbookLevel,
+        PointSeriesData, PointSeriesEvent, PointSeriesEventV2, PropammQuoteLadderData,
+        PropammQuoteLadderEvent, RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream,
+        ReplayQuery, ReplayStream, SnapshotEntry, StandardEvent, StreamQuery, TradeDataV2,
+        TradeEvent, TradeEventV2, VolatilityBar, VolumeBar, VwapBar,
     },
     ohlcv,
     orderbook::{BookUpdate, BookView, parse_level_tuple},
@@ -385,6 +386,24 @@ impl PolarisClient {
                     continue;
                 }
                 yield Self::parse_trade(event)?;
+            }
+        }))
+    }
+
+    /// Return standardized RFQ, quote, and executable-intent observations.
+    pub async fn intents(
+        &self,
+        mut query: HistoricalQuery,
+    ) -> Result<HistoricalStream<IntentEvent>, PolarisError> {
+        query.materialize_orderbooks = false;
+        let mut events = self.events(query).await?;
+        Ok(Box::pin(try_stream! {
+            while let Some(event) = events.next().await {
+                let event = event?;
+                if event.event_type() != "intent" {
+                    continue;
+                }
+                yield Self::parse_intent(event)?;
             }
         }))
     }
@@ -1402,6 +1421,45 @@ impl PolarisClient {
                     instrument,
                     event_type: event.event_type,
                     data,
+                }))
+            }
+        }
+    }
+
+    pub(crate) fn parse_intent(event: StandardEvent) -> Result<IntentEvent, PolarisError> {
+        if event.event_type() != "intent" {
+            return Err(PolarisError::Decode("expected an intent event".to_owned()));
+        }
+        match event {
+            StandardEvent::Legacy(mut event) => {
+                let raw = event.extra.remove("raw");
+                let data: IntentData = serde_json::from_value(event.data).map_err(|err| {
+                    PolarisError::Decode(format!("invalid legacy intent payload: {err}"))
+                })?;
+                Ok(IntentEvent::Legacy(LegacyIntentEvent {
+                    timestamp: event.timestamp,
+                    source: event.source,
+                    market: event.market,
+                    event_type: event.event_type,
+                    data,
+                    raw,
+                }))
+            }
+            StandardEvent::V2(mut event) => {
+                let raw = event.extra.remove("raw");
+                let data: IntentData = serde_json::from_value(event.data).map_err(|err| {
+                    PolarisError::Decode(format!("invalid v2 intent payload: {err}"))
+                })?;
+                Ok(IntentEvent::V2(IntentEventV2 {
+                    collector_timestamp: event.collector_timestamp,
+                    collector_sequence: event.collector_sequence,
+                    exchange_timestamp: event.exchange_timestamp,
+                    exchange_sequence: event.exchange_sequence,
+                    source: event.source,
+                    market: event.market,
+                    event_type: event.event_type,
+                    data,
+                    raw,
                 }))
             }
         }

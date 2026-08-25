@@ -3,10 +3,10 @@ use std::path::PathBuf;
 mod columnar;
 
 use polaris_data::{
-    BboQuery, BboQuote, DepthMetricsRow, HistoricalQuery, ListSnapshotsQuery, OhlcvFormat,
-    OhlcvInterval, OhlcvOutput, OhlcvQuery, OptionTickerEvent, OptionTickerQuery, OrderbookBuilder,
-    PointSeriesEvent, PolarisError, PropammQuoteLadderEvent, RawQuery, RawReplayQuery, ReplayQuery,
-    StandardEvent, StreamQuery, TimeInput, TradeEvent,
+    BboQuery, BboQuote, DepthMetricsRow, HistoricalQuery, IntentEvent, ListSnapshotsQuery,
+    OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery, OptionTickerEvent, OptionTickerQuery,
+    OrderbookBuilder, PointSeriesEvent, PolarisError, PropammQuoteLadderEvent, RawQuery,
+    RawReplayQuery, ReplayQuery, StandardEvent, StreamQuery, TimeInput, TradeEvent,
     blocking::{self, RawReplayCacheConfig},
 };
 use pyo3::{
@@ -417,6 +417,27 @@ impl NativeClient {
             })
             .map_err(native_error)?;
         Ok(NativeHistorical::new(NativeHistoricalIterator::Trades(
+            iterator,
+        )))
+    }
+
+    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
+    fn intents<'py>(
+        &self,
+        py: Python<'py>,
+        source: String,
+        market: String,
+        from_: Option<String>,
+        to: Option<String>,
+        allow_gaps: bool,
+    ) -> PyResult<NativeHistorical> {
+        let iterator = py
+            .detach(|| {
+                self.inner
+                    .intents(historical_query(source, market, from_, to, allow_gaps))
+            })
+            .map_err(native_error)?;
+        Ok(NativeHistorical::new(NativeHistoricalIterator::Intents(
             iterator,
         )))
     }
@@ -1133,6 +1154,7 @@ enum NativeHistoricalIterator {
     Events(blocking::HistoricalIterator<StandardEvent>),
     L2Events(blocking::HistoricalIterator<StandardEvent>),
     Trades(blocking::HistoricalIterator<TradeEvent>),
+    Intents(blocking::HistoricalIterator<IntentEvent>),
     OptionTickers(blocking::HistoricalIterator<OptionTickerEvent>),
     Bbo(blocking::HistoricalIterator<BboQuote>),
     Points(blocking::HistoricalIterator<PointSeriesEvent>),
@@ -1205,6 +1227,7 @@ impl NativeHistorical {
             NativeHistoricalIterator::Events(iterator) => next_standard_event(py, iterator),
             NativeHistoricalIterator::L2Events(iterator) => next_l2_event(py, iterator),
             NativeHistoricalIterator::Trades(iterator) => next_historical(py, iterator),
+            NativeHistoricalIterator::Intents(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::OptionTickers(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Bbo(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Points(iterator) => next_historical(py, iterator),
