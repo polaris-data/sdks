@@ -114,6 +114,64 @@ test("option tickers preserve chain identity and filter exact instruments", asyn
   client.close();
 });
 
+test("intents filter mixed events and preserve canonical nested observations", async () => {
+  const { PolarisClient } = await import("../dist/node/index.js");
+  const rows = [
+    {
+      collector_timestamp: 1,
+      collector_sequence: 1,
+      exchange_timestamp: null,
+      exchange_sequence: null,
+      source: "uniswapx",
+      market: "intents",
+      type: "intent",
+      data: {
+        rfq_id: "rfq-1",
+        inputs: [{ asset_id: "eip155:1/erc20:0xaaa", amount: "100", symbol: "AAA" }],
+        outputs: [{ asset_id: "eip155:1/erc20:0xbbb", amount: "95" }],
+        amount_kind: "exact_input",
+        quote: { quote_id: "quote-1", response: [], solver: "solver-a" },
+        transactions: [],
+        venue_context: "rfq",
+      },
+      raw: { requestId: "rfq-1", venuePayload: { token: "0xaaa" } },
+    },
+    { timestamp: 2, source: "uniswapx", market: "intents", type: "trade", data: {} },
+    {
+      collector_timestamp: 3,
+      collector_sequence: 3,
+      exchange_timestamp: null,
+      exchange_sequence: "intent-1",
+      source: "uniswapx",
+      market: "intents",
+      type: "intent",
+      data: {
+        intent_id: "intent-1",
+        inputs: [],
+        outputs: [],
+        status: "settled",
+        transactions: [{ transaction_hash: "0xtx", block_number: "123" }],
+      },
+    },
+  ];
+  const client = new PolarisClient({ baseUrl: "https://api.example" });
+  client._resolveHistoricalRange = async () => ({ fromMs: 0, toMs: 10 });
+  client._readSnapshotEvents = async function* (_source, _market, _from, _to, filter) {
+    for (const row of rows) if (!filter || filter(row)) yield structuredClone(row);
+  };
+
+  const intents = await client.intents({ source: "uniswapx", market: "intents" });
+  assert.equal(intents.length, 2);
+  assert.equal(intents[0].data.quote.quote_id, "quote-1");
+  assert.equal(intents[0].data.inputs[0].symbol, "AAA");
+  assert.equal(intents[0].data.venue_context, "rfq");
+  assert.equal(intents[0].raw.requestId, "rfq-1");
+  assert.equal(intents[0].raw.venuePayload.token, "0xaaa");
+  assert.equal("raw" in intents[1], false);
+  assert.equal(intents[1].data.transactions[0].block_number, "123");
+  client.close();
+});
+
 test("v2 decoder consumes metadata and materializes unified books without changing delta identity", async () => {
   const { OrderbookBuilder, PolarisClient } = await import("../dist/node/index.js");
   const fixture = await readFile(new URL("../../tests/fixtures/events/schema-v2.jsonl", import.meta.url), "utf8");
@@ -232,6 +290,41 @@ test("v2 decoder accepts option tickers only with exact instrument identity", as
   assert.throws(
     () => client._decodeSnapshotLines(malformed, "missing-option-instrument.jsonl"),
     /Invalid v2 option ticker payload/,
+  );
+  client.close();
+});
+
+test("v2 decoder accepts canonical intents and rejects malformed nested payloads", async () => {
+  const { PolarisClient } = await import("../dist/node/index.js");
+  const fixture = await readFile(
+    new URL("../../tests/fixtures/events/intents-v2.jsonl", import.meta.url),
+    "utf8",
+  );
+  const client = new PolarisClient({ baseUrl: "https://api.example" });
+  const lines = fixture.trim().split("\n");
+  const decoded = client._decodeSnapshotLines(lines, "intents-v2.jsonl");
+  assert.equal(decoded.filter(({ type }) => type === "intent").length, 4);
+  assert.deepEqual(
+    decoded.filter(({ type }) => type === "intent").map(({ collector_sequence }) => collector_sequence),
+    [1, 2, 3, 5],
+  );
+
+  const malformed = [...lines];
+  const missingAssetId = JSON.parse(malformed[1]);
+  delete missingAssetId.data.inputs[0].asset_id;
+  malformed[1] = JSON.stringify(missingAssetId);
+  assert.throws(
+    () => client._decodeSnapshotLines(malformed, "missing-intent-asset.jsonl"),
+    /Invalid v2 intent payload/,
+  );
+
+  const invalidStatus = [...lines];
+  const badStatus = JSON.parse(invalidStatus[2]);
+  badStatus.data.status = "pending_forever";
+  invalidStatus[2] = JSON.stringify(badStatus);
+  assert.throws(
+    () => client._decodeSnapshotLines(invalidStatus, "invalid-intent-status.jsonl"),
+    /Invalid v2 intent payload/,
   );
   client.close();
 });

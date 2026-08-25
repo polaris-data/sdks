@@ -104,6 +104,35 @@ def _write_option_fixture(root: Path, *, mutate=None) -> None:
     )
 
 
+def _write_intent_fixture(root: Path, *, mutate=None) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "events" / "intents-v2.jsonl"
+    rows = [json.loads(line) for line in fixture.read_text().splitlines()]
+    if mutate is not None:
+        mutate(rows)
+    key = "standard-uniswapx-intents-2024-01-01-000000"
+    path = (
+        root
+        / "data"
+        / "standard"
+        / "uniswapx"
+        / "intents"
+        / "2024-01-01"
+        / f"{key}.jsonl.zst"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_zstd_ndjson(rows))
+    path.with_name(path.name + ".coverage.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "key": key,
+                "start_us": 1_704_067_200_000_000,
+                "end_us": 1_704_070_800_000_000,
+            }
+        )
+    )
+
+
 def make_client(
     handler,
     *,
@@ -2616,6 +2645,57 @@ def test_option_tickers_filter_exact_instruments_and_validate_identity(tmp_path)
             )
         with pytest.raises(ValueError, match="instrument must be non-empty"):
             client.stream(source="deribit", markets=["BTC"], instrument="   ")
+    finally:
+        client.close()
+
+
+def test_intents_are_typed_filtered_and_preserve_nested_payloads(tmp_path) -> None:
+    _write_intent_fixture(tmp_path)
+    client = PolarisClient(base_url="http://127.0.0.1:1", dataset_root=tmp_path)
+    try:
+        rows = list(
+            client.intents(
+                source="uniswapx",
+                market="intents",
+                from_="2024-01-01T00:00:00Z",
+                to="2024-01-01T01:00:00Z",
+            )
+        )
+        assert len(rows) == 4
+        assert [row["data"].get("status") for row in rows] == [
+            None,
+            "submitted",
+            "settled",
+            "failed",
+        ]
+        assert rows[0]["data"]["quote"]["quote_id"] == "quote-1"
+        assert rows[0]["data"]["inputs"][0]["token_symbol"] == "AAA"
+        assert rows[0]["data"]["venue_context"] == "rfq"
+        assert rows[0]["raw"]["requestId"] == "rfq-1"
+        assert rows[0]["raw"]["venuePayload"]["token"] == "0xaaa"
+        assert "raw" not in rows[1]
+        assert rows[2]["data"]["transactions"][0]["transaction_hash"] == "0xsettlement"
+        assert rows[2]["data"]["transactions"][0]["block_number"] == "123"
+    finally:
+        client.close()
+
+
+def test_intents_reject_malformed_nested_payloads(tmp_path) -> None:
+    def mutate(rows):
+        del rows[1]["data"]["inputs"][0]["asset_id"]
+
+    _write_intent_fixture(tmp_path, mutate=mutate)
+    client = PolarisClient(base_url="http://127.0.0.1:1", dataset_root=tmp_path)
+    try:
+        with pytest.raises(PolarisError, match="invalid v2 intent payload"):
+            list(
+                client.intents(
+                    source="uniswapx",
+                    market="intents",
+                    from_="2024-01-01T00:00:00Z",
+                    to="2024-01-01T01:00:00Z",
+                )
+            )
     finally:
         client.close()
 
