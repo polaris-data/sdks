@@ -98,6 +98,18 @@ pub(crate) async fn open_stream(
             "stream markets must contain at most {MAX_SUBSCRIPTIONS} unique markets"
         )));
     }
+    query.instrument = match query.instrument {
+        Some(instrument) => {
+            let instrument = instrument.trim().to_owned();
+            if instrument.is_empty() {
+                return Err(PolarisError::InvalidResponse(
+                    "instrument must be non-empty".to_owned(),
+                ));
+            }
+            Some(instrument)
+        }
+        None => None,
+    };
 
     let first_socket = connect_and_subscribe(&stream_url, api_key.as_deref(), &query)
         .await
@@ -230,7 +242,14 @@ async fn connect_and_subscribe(
     let subscriptions = query
         .markets
         .iter()
-        .map(|market| json!({"source": query.source, "market": market, "stream": "standard"}))
+        .map(|market| {
+            let mut subscription =
+                json!({"source": query.source, "market": market, "stream": "standard"});
+            if let Some(instrument) = &query.instrument {
+                subscription["instrument"] = Value::String(instrument.clone());
+            }
+            subscription
+        })
         .collect::<Vec<_>>();
     let mut command = json!({
         "action": "subscribe",
@@ -405,6 +424,16 @@ fn parse_server_message(text: &str) -> Result<ServerMessage, PolarisError> {
                     .unwrap_or_default()
                     .to_owned();
             }
+            if event.event_type() == "option_ticker"
+                && !event
+                    .instrument()
+                    .is_some_and(|instrument| !instrument.is_empty())
+            {
+                return Err(protocol_error(
+                    None,
+                    "option_ticker instrument must be non-empty",
+                ));
+            }
             Ok(ServerMessage::Data(event))
         }
         Some(other) => Err(protocol_error(
@@ -537,6 +566,10 @@ mod tests {
             assert_eq!(command["subscriptions"].as_array().unwrap().len(), 2);
             assert_eq!(command["subscriptions"][0]["market"], "BTC-USDT");
             assert_eq!(command["subscriptions"][1]["market"], "ETH-USDT");
+            assert_eq!(
+                command["subscriptions"][0]["instrument"],
+                "BTC-29AUG26-100000-C"
+            );
             socket
                 .send(Message::Text(
                     json!({
@@ -571,6 +604,7 @@ mod tests {
                     "BTC-USDT".to_owned(),
                     "ETH-USDT".to_owned(),
                 ],
+                instrument: Some(" BTC-29AUG26-100000-C ".to_owned()),
                 include_buffer: true,
                 materialize_orderbooks: true,
             },
@@ -653,6 +687,7 @@ mod tests {
             StreamQuery {
                 source: "afx".to_owned(),
                 markets: vec!["AAPLUSDC".to_owned()],
+                instrument: None,
                 include_buffer: false,
                 materialize_orderbooks: true,
             },
@@ -702,6 +737,7 @@ mod tests {
             StreamQuery {
                 source: "afx".to_owned(),
                 markets: vec!["AAPLUSDC".to_owned()],
+                instrument: None,
                 include_buffer: false,
                 materialize_orderbooks: true,
             },
@@ -725,6 +761,7 @@ mod tests {
             StreamQuery {
                 source: " ".to_owned(),
                 markets: vec!["BTC-USDT".to_owned()],
+                instrument: None,
                 include_buffer: false,
                 materialize_orderbooks: true,
             },

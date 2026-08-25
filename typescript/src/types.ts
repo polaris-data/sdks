@@ -66,6 +66,7 @@ export interface LegacyStandardEvent extends Record<string, unknown> {
   timestamp: number;
   source: string;
   market: string;
+  instrument?: string;
   type: string;
   data: Record<string, unknown>;
 }
@@ -77,6 +78,7 @@ export interface StandardEventV2 extends Record<string, unknown> {
   exchange_sequence: string | null;
   source: string;
   market: string;
+  instrument?: string;
   type: string;
   data: Record<string, unknown>;
 }
@@ -109,6 +111,49 @@ export interface TradeEventV2 extends StandardEventV2 {
 }
 
 export type TradeEvent = LegacyTradeEvent | TradeEventV2;
+
+export interface OptionGreeks extends Record<string, unknown> {
+  delta?: string;
+  gamma?: string;
+  vega?: string;
+  theta?: string;
+  rho?: string;
+}
+
+export interface OptionTickerData extends Record<string, unknown> {
+  mark_price?: string;
+  bid_price?: string;
+  bid_size?: string;
+  ask_price?: string;
+  ask_size?: string;
+  last_price?: string;
+  index_price?: string;
+  underlying_price?: string;
+  forward_price?: string;
+  mark_iv?: string;
+  bid_iv?: string;
+  ask_iv?: string;
+  open_interest?: string;
+  volume_24h?: string;
+  turnover_24h?: string;
+  premium_currency?: string;
+  quantity_unit?: string;
+  greeks?: OptionGreeks;
+}
+
+export interface LegacyOptionTickerEvent extends LegacyStandardEvent {
+  type: "option_ticker";
+  instrument: string;
+  data: OptionTickerData;
+}
+
+export interface OptionTickerEventV2 extends StandardEventV2 {
+  type: "option_ticker";
+  instrument: string;
+  data: OptionTickerData;
+}
+
+export type OptionTickerEvent = LegacyOptionTickerEvent | OptionTickerEventV2;
 
 export interface PointSeriesData extends Record<string, unknown> {
   series: string;
@@ -404,6 +449,12 @@ export interface HistoricalQueryOptions {
   materializeOrderbooks?: boolean;
 }
 
+/** Options for option ticker reads across a chain or one exact contract. */
+export interface OptionTickerOptions extends HistoricalQueryOptions {
+  /** Exact venue-native contract. Omit to read the whole option chain. */
+  instrument?: string;
+}
+
 /** Options for raw snapshot-and-delta orderbook reads. */
 export type L2UpdatesOptions = Omit<HistoricalQueryOptions, "materializeOrderbooks">;
 
@@ -451,6 +502,8 @@ export interface ReplayOptions {
 export interface StreamOptions {
   source: string;
   markets: string[];
+  /** Exact venue-native contract. Omit to subscribe to each whole market. */
+  instrument?: string;
   includeBuffer?: boolean;
   /** Materialize complete orderbooks from snapshots and deltas. Defaults to `true`. */
   materializeOrderbooks?: boolean;

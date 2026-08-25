@@ -98,3 +98,56 @@ class PropammQuoteLadderEvent(TypedDict):
     market: str
     type: Literal["record"]
     data: PropammQuoteLadderData
+
+
+class OptionGreeks(TypedDict, total=False):
+    delta: str
+    gamma: str
+    vega: str
+    theta: str
+    rho: str
+
+
+class OptionTickerData(TypedDict, total=False):
+    mark_price: str
+    bid_price: str
+    bid_size: str
+    ask_price: str
+    ask_size: str
+    last_price: str
+    index_price: str
+    underlying_price: str
+    forward_price: str
+    mark_iv: str
+    bid_iv: str
+    ask_iv: str
+    open_interest: str
+    volume_24h: str
+    turnover_24h: str
+    premium_currency: str
+    quantity_unit: str
+    greeks: OptionGreeks
+
+
+class LegacyOptionTickerEvent(TypedDict):
+    timestamp: int
+    source: str
+    market: str
+    instrument: str
+    type: Literal["option_ticker"]
+    data: OptionTickerData
+
+
+class OptionTickerEventV2(TypedDict):
+    collector_timestamp: int
+    collector_sequence: int
+    exchange_timestamp: Optional[int]
+    exchange_sequence: Optional[str]
+    source: str
+    market: str
+    instrument: str
+    type: Literal["option_ticker"]
+    data: OptionTickerData
+
+
+OptionTickerEvent = Union[LegacyOptionTickerEvent, OptionTickerEventV2]

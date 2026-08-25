@@ -17,7 +17,12 @@ from polaris_data import (
     CatalogInstrument,
     CatalogMarketEntry,
     CatalogResponse,
+    LegacyOptionTickerEvent,
     NotFoundError,
+    OptionGreeks,
+    OptionTickerData,
+    OptionTickerEvent,
+    OptionTickerEventV2,
     OrderbookBuilder,
     PolarisClient,
     PolarisError,
@@ -51,7 +56,12 @@ def test_top_level_exports_are_stable() -> None:
         "CatalogInstrument",
         "CatalogMarketEntry",
         "CatalogResponse",
+        "LegacyOptionTickerEvent",
         "NotFoundError",
+        "OptionGreeks",
+        "OptionTickerData",
+        "OptionTickerEvent",
+        "OptionTickerEventV2",
         "OrderbookBuilder",
         "PolarisClient",
         "PolarisError",
@@ -119,8 +129,19 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("self", positional, required),
         ("source", keyword_only, required),
         ("markets", keyword_only, required),
+        ("instrument", keyword_only, None),
         ("include_buffer", keyword_only, False),
         ("materialize_orderbooks", keyword_only, True),
+    ]
+
+    assert _parameters(PolarisClient.option_tickers) == [
+        ("self", positional, required),
+        ("source", keyword_only, required),
+        ("market", keyword_only, required),
+        ("instrument", keyword_only, None),
+        ("from_", keyword_only, None),
+        ("to", keyword_only, None),
+        ("allow_gaps", keyword_only, False),
     ]
 
     assert _parameters(PolarisClient.events) == [

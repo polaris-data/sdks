@@ -51,6 +51,69 @@ test("event APIs materialize orderbooks by default and expose raw L2 updates", a
   client.close();
 });
 
+test("option tickers preserve chain identity and filter exact instruments", async () => {
+  const { PolarisClient } = await import("../dist/node/index.js");
+  const rows = [
+    {
+      collector_timestamp: 1,
+      collector_sequence: 1,
+      exchange_timestamp: null,
+      exchange_sequence: null,
+      source: "deribit",
+      market: "BTC",
+      instrument: "BTC-29MAR24-50000-C",
+      type: "option_ticker",
+      data: { mark_price: "0.0175", mark_iv: "0.8359", greeks: { delta: "0.431" } },
+    },
+    {
+      collector_timestamp: 2,
+      collector_sequence: 2,
+      exchange_timestamp: null,
+      exchange_sequence: null,
+      source: "deribit",
+      market: "BTC",
+      instrument: "BTC-29MAR24-45000-P",
+      type: "option_ticker",
+      data: { bid_price: "0.0100", ask_price: "0.0110" },
+    },
+    { timestamp: 3, source: "deribit", market: "BTC", type: "trade", data: {} },
+  ];
+  const client = new PolarisClient({ baseUrl: "https://api.example" });
+  client._resolveHistoricalRange = async () => ({ fromMs: 0, toMs: 10 });
+  client._readSnapshotEvents = async function* (_source, _market, _from, _to, filter) {
+    for (const row of rows) if (!filter || filter(row)) yield structuredClone(row);
+  };
+
+  const chain = await client.optionTickers({ source: "deribit", market: "BTC" });
+  const exact = await client.optionTickers({
+    source: "deribit",
+    market: "BTC",
+    instrument: "BTC-29MAR24-50000-C",
+  });
+  assert.deepEqual(chain.map(({ instrument }) => instrument), [
+    "BTC-29MAR24-50000-C",
+    "BTC-29MAR24-45000-P",
+  ]);
+  assert.equal(exact.length, 1);
+  assert.equal(exact[0].market, "BTC");
+  assert.equal(exact[0].data.greeks.delta, "0.431");
+  await assert.rejects(
+    client.optionTickers({ source: "deribit", market: "BTC", instrument: "" }),
+    /instrument must be non-empty/,
+  );
+
+  const malformed = structuredClone(rows);
+  delete malformed[0].instrument;
+  client._readSnapshotEvents = async function* (_source, _market, _from, _to, filter) {
+    for (const row of malformed) if (!filter || filter(row)) yield row;
+  };
+  await assert.rejects(
+    client.optionTickers({ source: "deribit", market: "BTC" }),
+    /Invalid option ticker payload/,
+  );
+  client.close();
+});
+
 test("v2 decoder consumes metadata and materializes unified books without changing delta identity", async () => {
   const { OrderbookBuilder, PolarisClient } = await import("../dist/node/index.js");
   const fixture = await readFile(new URL("../../tests/fixtures/events/schema-v2.jsonl", import.meta.url), "utf8");
@@ -143,6 +206,32 @@ test("v2 decoder consumes metadata and materializes unified books without changi
       "headerless-v1.jsonl",
     ),
     legacyDecoded,
+  );
+  client.close();
+});
+
+test("v2 decoder accepts option tickers only with exact instrument identity", async () => {
+  const { PolarisClient } = await import("../dist/node/index.js");
+  const fixture = await readFile(
+    new URL("../../tests/fixtures/events/options-v2.jsonl", import.meta.url),
+    "utf8",
+  );
+  const client = new PolarisClient({ baseUrl: "https://api.example" });
+  const lines = fixture.trim().split("\n");
+  const decoded = client._decodeSnapshotLines(lines, "options-v2.jsonl");
+  assert.deepEqual(decoded.slice(0, 2).map(({ market }) => market), ["BTC", "BTC"]);
+  assert.deepEqual(decoded.slice(0, 2).map(({ instrument }) => instrument), [
+    "BTC-29MAR24-50000-C",
+    "BTC-29MAR24-45000-P",
+  ]);
+
+  const malformed = [...lines];
+  const missingInstrument = JSON.parse(malformed[1]);
+  delete missingInstrument.instrument;
+  malformed[1] = JSON.stringify(missingInstrument);
+  assert.throws(
+    () => client._decodeSnapshotLines(malformed, "missing-option-instrument.jsonl"),
+    /Invalid v2 option ticker payload/,
   );
   client.close();
 });

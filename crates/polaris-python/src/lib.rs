@@ -4,9 +4,9 @@ mod columnar;
 
 use polaris_data::{
     BboQuery, BboQuote, DepthMetricsRow, HistoricalQuery, ListSnapshotsQuery, OhlcvFormat,
-    OhlcvInterval, OhlcvOutput, OhlcvQuery, OrderbookBuilder, PointSeriesEvent, PolarisError,
-    PropammQuoteLadderEvent, RawQuery, RawReplayQuery, ReplayQuery, StandardEvent, StreamQuery,
-    TimeInput, TradeEvent,
+    OhlcvInterval, OhlcvOutput, OhlcvQuery, OptionTickerEvent, OptionTickerQuery, OrderbookBuilder,
+    PointSeriesEvent, PolarisError, PropammQuoteLadderEvent, RawQuery, RawReplayQuery, ReplayQuery,
+    StandardEvent, StreamQuery, TimeInput, TradeEvent,
     blocking::{self, RawReplayCacheConfig},
 };
 use pyo3::{
@@ -263,12 +263,13 @@ impl NativeClient {
 
     fn close(&self) {}
 
-    #[pyo3(signature = (source, markets, include_buffer=false, materialize_orderbooks=true))]
+    #[pyo3(signature = (source, markets, instrument=None, include_buffer=false, materialize_orderbooks=true))]
     fn stream(
         &self,
         py: Python<'_>,
         source: String,
         markets: Vec<String>,
+        instrument: Option<String>,
         include_buffer: bool,
         materialize_orderbooks: bool,
     ) -> PyResult<NativeRealtimeStream> {
@@ -277,6 +278,7 @@ impl NativeClient {
                 self.inner.stream(StreamQuery {
                     source,
                     markets,
+                    instrument,
                     include_buffer,
                     materialize_orderbooks,
                 })
@@ -440,6 +442,34 @@ impl NativeClient {
             NativeColumnar::trades(plan, identity_source, identity_market, batch_size)
         })
         .map_err(native_error)
+    }
+
+    #[pyo3(signature = (source, market, instrument=None, from_=None, to=None, allow_gaps=false))]
+    fn option_tickers(
+        &self,
+        py: Python<'_>,
+        source: String,
+        market: String,
+        instrument: Option<String>,
+        from_: Option<String>,
+        to: Option<String>,
+        allow_gaps: bool,
+    ) -> PyResult<NativeHistorical> {
+        let iterator = py
+            .detach(|| {
+                self.inner.option_tickers(OptionTickerQuery {
+                    source,
+                    market,
+                    instrument,
+                    from: time_input(from_),
+                    to: time_input(to),
+                    allow_gaps,
+                })
+            })
+            .map_err(native_error)?;
+        Ok(NativeHistorical::new(
+            NativeHistoricalIterator::OptionTickers(iterator),
+        ))
     }
 
     #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, materialize_orderbooks=true))]
@@ -1103,6 +1133,7 @@ enum NativeHistoricalIterator {
     Events(blocking::HistoricalIterator<StandardEvent>),
     L2Events(blocking::HistoricalIterator<StandardEvent>),
     Trades(blocking::HistoricalIterator<TradeEvent>),
+    OptionTickers(blocking::HistoricalIterator<OptionTickerEvent>),
     Bbo(blocking::HistoricalIterator<BboQuote>),
     Points(blocking::HistoricalIterator<PointSeriesEvent>),
     PropammQuoteLadders(blocking::HistoricalIterator<PropammQuoteLadderEvent>),
@@ -1174,6 +1205,7 @@ impl NativeHistorical {
             NativeHistoricalIterator::Events(iterator) => next_standard_event(py, iterator),
             NativeHistoricalIterator::L2Events(iterator) => next_l2_event(py, iterator),
             NativeHistoricalIterator::Trades(iterator) => next_historical(py, iterator),
+            NativeHistoricalIterator::OptionTickers(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Bbo(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Points(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::PropammQuoteLadders(iterator) => {

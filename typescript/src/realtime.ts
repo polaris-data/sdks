@@ -55,6 +55,7 @@ interface ConnectedSocket {
 export class RealtimeStream implements AsyncIterable<StandardEvent> {
   private readonly source: string;
   private readonly markets: string[];
+  private readonly instrument: string | undefined;
   private readonly includeBuffer: boolean;
   private readonly materializeOrderbooks: boolean;
   private readonly streamUrl: string;
@@ -87,6 +88,10 @@ export class RealtimeStream implements AsyncIterable<StandardEvent> {
     }
     if (this.markets.length > MAX_SUBSCRIPTIONS) {
       throw new StreamProtocolError(`stream markets must contain at most ${MAX_SUBSCRIPTIONS} unique markets`);
+    }
+    this.instrument = options.instrument?.trim();
+    if (this.instrument !== undefined && this.instrument.length === 0) {
+      throw new StreamProtocolError("instrument must be non-empty");
     }
     this.includeBuffer = options.includeBuffer ?? false;
     this.materializeOrderbooks = options.materializeOrderbooks ?? true;
@@ -247,6 +252,7 @@ export class RealtimeStream implements AsyncIterable<StandardEvent> {
         subscriptions: this.markets.map((market) => ({
           source: this.source,
           market,
+          ...(this.instrument === undefined ? {} : { instrument: this.instrument }),
           stream: "standard",
         })),
       };
@@ -339,6 +345,12 @@ function parseServerMessage(data: unknown): ParsedMessage {
   }
   if (!event.source) event.source = typeof value.source === "string" ? value.source : "";
   if (!event.market) event.market = typeof value.market === "string" ? value.market : "";
+  if (
+    event.type === "option_ticker" &&
+    (typeof event.instrument !== "string" || event.instrument.length === 0)
+  ) {
+    throw new StreamProtocolError("option_ticker instrument must be non-empty");
+  }
   return { type: "data", event };
 }
 
