@@ -21,6 +21,7 @@ env:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,6 +46,7 @@ jobs:
 
   linux:
     needs: validate
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -74,6 +76,7 @@ jobs:
 
   macos:
     needs: validate
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -103,6 +106,7 @@ jobs:
 
   windows:
     needs: validate
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -136,6 +140,7 @@ jobs:
   sdist:
     needs: validate
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -153,6 +158,7 @@ jobs:
   publish:
     needs: [linux, macos, windows, sdist]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment:
       name: pypi
       url: https://pypi.org/p/polaris-data
