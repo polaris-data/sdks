@@ -249,6 +249,7 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("interval", keyword_only, required),
         ("format", keyword_only, None),
         ("allow_gaps", keyword_only, False),
+        ("output", keyword_only, "records"),
     ]
 
     for method in [PolarisClient.volume, PolarisClient.vwap]:
@@ -260,6 +261,7 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
             ("to", keyword_only, None),
             ("interval", keyword_only, required),
             ("allow_gaps", keyword_only, False),
+            ("output", keyword_only, "records"),
         ]
 
     assert _parameters(PolarisClient.volatility) == [
@@ -271,6 +273,7 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("interval", keyword_only, required),
         ("method", keyword_only, "log_returns"),
         ("allow_gaps", keyword_only, False),
+        ("output", keyword_only, "records"),
     ]
     assert _parameters(PolarisClient.depth_metrics) == [
         ("self", positional, required),
@@ -330,8 +333,16 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
     assert inspect.signature(PolarisClient.stream).return_annotation == "RealtimeStream"
     assert (
         inspect.signature(PolarisClient.ohlcv).return_annotation
-        == "list[JSONDict] | JSONDict"
+        == "list[JSONDict] | JSONDict | pandas.DataFrame"
     )
+    for method in [
+        PolarisClient.volume,
+        PolarisClient.vwap,
+        PolarisClient.volatility,
+    ]:
+        assert inspect.signature(method).return_annotation == (
+            "list[JSONDict] | pandas.DataFrame"
+        )
 
     assert get_type_hints(CatalogResponse) == {
         "markets": list[CatalogMarketEntry],

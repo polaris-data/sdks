@@ -603,6 +603,127 @@ def test_empty_dataframe_preserves_schema_and_dtypes(tmp_path) -> None:
     assert isinstance(frame.dtypes["source"], pd.CategoricalDtype)
 
 
+def test_aggregate_dataframes_have_stable_notebook_ready_schemas(tmp_path) -> None:
+    _write_fixture(
+        tmp_path,
+        [
+            {
+                "timestamp": START_MS,
+                "type": "trade",
+                "data": {"price": 100.0, "quantity": 1.0},
+            },
+            {
+                "timestamp": START_MS + 1,
+                "type": "trade",
+                "data": {"price": 101.0, "quantity": 2.0},
+            },
+            {
+                "timestamp": START_MS + 2,
+                "type": "trade",
+                "data": {"price": 99.0, "quantity": 3.0},
+            },
+        ],
+    )
+
+    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
+        ohlcv = _query(client, "ohlcv", interval="100ms", output="dataframe")
+        volume = _query(client, "volume", interval="100ms", output="dataframe")
+        vwap = _query(client, "vwap", interval="100ms", output="dataframe")
+        volatility = _query(
+            client,
+            "volatility",
+            interval="100ms",
+            output="dataframe",
+        )
+        records = _query(client, "volume", interval="100ms")
+
+    assert isinstance(ohlcv, pd.DataFrame)
+    assert ohlcv.columns.tolist() == [
+        "timestamp",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "trades",
+    ]
+    assert volume.columns.tolist() == ["timestamp", "volume"]
+    assert vwap.columns.tolist() == [
+        "timestamp",
+        "vwap",
+        "volume",
+        "quote_volume",
+        "trades",
+    ]
+    assert volatility.columns.tolist() == ["timestamp", "volatility", "returns"]
+    for frame in [ohlcv, volume, vwap, volatility]:
+        assert str(frame.dtypes["timestamp"]) == "datetime64[ms, UTC]"
+        assert frame.index.equals(pd.RangeIndex(len(frame)))
+    assert str(ohlcv.dtypes["trades"]) == "uint64"
+    assert str(volatility.dtypes["returns"]) == "uint64"
+    assert isinstance(records, list)
+    assert records == [{"timestamp": START_MS, "volume": 6.0}]
+
+
+@pytest.mark.parametrize(
+    ("method", "columns"),
+    [
+        (
+            "ohlcv",
+            ["timestamp", "open", "high", "low", "close", "volume", "trades"],
+        ),
+        ("volume", ["timestamp", "volume"]),
+        ("vwap", ["timestamp", "vwap", "volume", "quote_volume", "trades"]),
+        ("volatility", ["timestamp", "volatility", "returns"]),
+    ],
+)
+def test_empty_aggregate_dataframes_preserve_schema_and_dtypes(
+    tmp_path,
+    method,
+    columns,
+) -> None:
+    _write_fixture(
+        tmp_path,
+        [{"timestamp": START_MS, "type": "point", "data": {"value": 1}}],
+    )
+
+    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
+        frame = _query(client, method, interval="100ms", output="dataframe")
+
+    assert frame.empty
+    assert frame.columns.tolist() == columns
+    assert str(frame.dtypes["timestamp"]) == "datetime64[ms, UTC]"
+    assert all(
+        str(frame.dtypes[column]) == "float64"
+        for column in columns[1:]
+        if column not in {"trades", "returns"}
+    )
+    assert all(
+        str(frame.dtypes[column]) == "uint64"
+        for column in columns
+        if column in {"trades", "returns"}
+    )
+
+
+@pytest.mark.parametrize("method", ["ohlcv", "volume", "vwap", "volatility"])
+def test_aggregate_output_is_validated_before_query(method) -> None:
+    with PolarisClient(base_url="http://127.0.0.1:1") as client:
+        with pytest.raises(ValueError, match="output must be one of"):
+            _query(client, method, interval="100ms", output="table")
+
+
+def test_ohlcv_dataframe_rejects_tradingview_format() -> None:
+    with PolarisClient(base_url="http://127.0.0.1:1") as client:
+        with pytest.raises(ValueError, match="only available when format is None"):
+            _query(
+                client,
+                "ohlcv",
+                interval="100ms",
+                format="tradingview",
+                output="dataframe",
+            )
+
+
 @pytest.mark.parametrize(
     "method",
     [
@@ -652,6 +773,8 @@ def test_dataframe_checks_pandas_before_query(monkeypatch) -> None:
     with PolarisClient(base_url="http://127.0.0.1:1") as client:
         with pytest.raises(ImportError, match=r"polaris-data\[dataframe\]"):
             _query(client, "trades", output="dataframe")
+        with pytest.raises(ImportError, match=r"polaris-data\[dataframe\]"):
+            _query(client, "volume", interval="100ms", output="dataframe")
 
 
 def test_schema_change_between_inference_and_emission_is_translated(tmp_path) -> None:
