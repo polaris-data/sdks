@@ -67,6 +67,19 @@ fn write_intent_fixture(root: &TempDir, fixture: &str) {
     .expect("fixture");
 }
 
+fn write_new_event_fixture(root: &TempDir, fixture: &str) {
+    let key = "standard-hyperliquid-BTC-2024-01-01-000000";
+    let path = root.path().join(format!(
+        "data/standard/hyperliquid/BTC/2024-01-01/{key}.jsonl.zst"
+    ));
+    std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture directory");
+    std::fs::write(
+        path,
+        zstd::stream::encode_all(fixture.as_bytes(), 0).expect("compressed fixture"),
+    )
+    .expect("fixture");
+}
+
 fn zstd_ndjson(lines: &[serde_json::Value]) -> Vec<u8> {
     let body = lines
         .iter()
@@ -558,6 +571,10 @@ async fn option_tickers_are_typed_and_filter_exact_instruments() {
     assert_eq!(chain[0].market(), "BTC");
     assert_eq!(chain[0].instrument(), "BTC-29MAR24-50000-C");
     assert_eq!(chain[0].data().mark_iv.as_deref(), Some("0.8359"));
+    assert_eq!(chain[0].data().underlying.as_deref(), Some("BTC"));
+    assert_eq!(chain[0].data().strike.as_deref(), Some("50000"));
+    assert_eq!(chain[0].data().expiry_timestamp, Some(1_711_699_200_000));
+    assert_eq!(chain[0].data().option_type.as_deref(), Some("call"));
     assert_eq!(chain[0].data().greeks.delta.as_deref(), Some("0.431"));
     assert_eq!(exact.len(), 1);
     assert_eq!(exact[0].instrument(), "BTC-29MAR24-50000-C");
@@ -585,6 +602,129 @@ async fn option_tickers_are_typed_and_filter_exact_instruments() {
     .expect("blocking rows");
     assert_eq!(blocking_rows.len(), 1);
     assert_eq!(blocking_rows[0].instrument(), "BTC-29MAR24-45000-P");
+}
+
+#[tokio::test]
+async fn new_event_shapes_are_typed_and_supported_by_default() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().expect("tempdir");
+    write_new_event_fixture(
+        &root,
+        include_str!("../../../tests/fixtures/events/new-event-shapes-v2.jsonl"),
+    );
+    let client = build_client(&server, &root);
+    let query = HistoricalQuery {
+        source: "hyperliquid".to_owned(),
+        market: "BTC".to_owned(),
+        from: Some("2024-01-01T00:00:00Z".into()),
+        to: Some("2024-01-01T01:00:00Z".into()),
+        allow_gaps: false,
+        materialize_orderbooks: true,
+    };
+
+    let events = collect_stream(client.events(query.clone()).await.expect("events"))
+        .await
+        .expect("event rows");
+    assert_eq!(events.len(), 6);
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.event_type())
+            .collect::<Vec<_>>(),
+        [
+            "perpetual_ticker",
+            "perpetual_ticker",
+            "option_ticker",
+            "trade",
+            "trade",
+            "intent",
+        ]
+    );
+
+    let tickers = collect_stream(
+        client
+            .perpetual_tickers(query.clone())
+            .await
+            .expect("perpetual tickers"),
+    )
+    .await
+    .expect("perpetual ticker rows");
+    assert_eq!(tickers.len(), 2);
+    assert_eq!(tickers[0].source(), "hyperliquid");
+    assert_eq!(tickers[0].market(), "BTC");
+    assert_eq!(tickers[0].data().mark_price.as_deref(), Some("98750.3"));
+    assert_eq!(tickers[0].data().funding_timestamp, Some(1_704_069_000_000));
+    assert_eq!(tickers[1].data().funding_rate.as_deref(), Some("-0.000025"));
+
+    let trades = collect_stream(client.trades(query.clone()).await.expect("trades"))
+        .await
+        .expect("trade rows");
+    assert_eq!(trades.len(), 2);
+    assert_eq!(trades[0].maker(), Some("0xmaker"));
+    assert_eq!(trades[0].taker(), Some("0xtaker"));
+    assert_eq!(trades[1].maker(), None);
+    assert_eq!(trades[1].taker(), None);
+
+    let root_path = root.path().to_owned();
+    let (prepared, blocking) = std::thread::spawn(move || {
+        let client = blocking::PolarisClient::builder()
+            .base_url("http://127.0.0.1:1")
+            .dataset_root(root_path)
+            .build()
+            .expect("blocking client");
+        let prepared = client
+            .prepare_historical(query.clone())?
+            .perpetual_tickers()
+            .collect::<Result<Vec<_>, _>>()?;
+        let blocking = client
+            .perpetual_tickers(query)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok::<_, PolarisError>((prepared, blocking))
+    })
+    .join()
+    .expect("blocking thread")
+    .expect("blocking rows");
+    assert_eq!(prepared.len(), 2);
+    assert_eq!(blocking.len(), 2);
+}
+
+#[tokio::test]
+async fn malformed_perpetual_tickers_are_rejected() {
+    let server = MockServer::start().await;
+    for (field, value) in [("data", json!({})), ("data", json!({"funding_rate": 0.1}))] {
+        let root = TempDir::new().expect("tempdir");
+        let mut rows = include_str!("../../../tests/fixtures/events/new-event-shapes-v2.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("fixture row"))
+            .collect::<Vec<_>>();
+        rows[1][field] = value;
+        let fixture = rows
+            .iter()
+            .map(serde_json::Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        write_new_event_fixture(&root, &fixture);
+        let client = build_client(&server, &root);
+        let error = collect_stream(
+            client
+                .events(HistoricalQuery {
+                    source: "hyperliquid".to_owned(),
+                    market: "BTC".to_owned(),
+                    from: Some("2024-01-01T00:00:00Z".into()),
+                    to: Some("2024-01-01T01:00:00Z".into()),
+                    allow_gaps: false,
+                    materialize_orderbooks: false,
+                })
+                .await
+                .expect("event stream"),
+        )
+        .await
+        .expect_err("invalid perpetual ticker must fail");
+        assert!(
+            error.to_string().contains("perpetual"),
+            "unexpected error: {error}"
+        );
+    }
 }
 
 #[tokio::test]

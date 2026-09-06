@@ -745,6 +745,10 @@ fn validate_v2_event(event: &StandardEventV2) -> Result<(), String> {
                 || data.get("side").is_some_and(|value| {
                     !value.is_null() && !matches!(value.as_str(), Some("buy" | "sell"))
                 })
+                || ["maker", "taker"].iter().any(|field| {
+                    data.get(*field)
+                        .is_some_and(|value| !value.is_null() && !value.is_string())
+                })
             {
                 return Err("invalid v2 trade nullable fields".to_owned());
             }
@@ -781,6 +785,44 @@ fn validate_v2_event(event: &StandardEventV2) -> Result<(), String> {
                 .is_none_or(|instrument| instrument.is_empty())
             {
                 return Err("option_ticker instrument must be non-empty".to_owned());
+            }
+            if data.get("option_type").is_some_and(|value| {
+                !value.is_null() && !matches!(value.as_str(), Some("call" | "put"))
+            }) {
+                return Err("invalid v2 option ticker payload".to_owned());
+            }
+        }
+        "perpetual_ticker" => {
+            const STRING_FIELDS: [&str; 9] = [
+                "last_price",
+                "mark_price",
+                "index_price",
+                "oracle_price",
+                "mid_price",
+                "open_interest",
+                "funding_rate",
+                "predicted_funding_rate",
+                "premium",
+            ];
+            let has_string = STRING_FIELDS
+                .iter()
+                .any(|field| data.get(*field).is_some_and(|value| !value.is_null()));
+            let has_funding_timestamp = data
+                .get("funding_timestamp")
+                .is_some_and(|value| !value.is_null());
+            if !has_string && !has_funding_timestamp {
+                return Err(
+                    "perpetual_ticker data must contain at least one recognized field".to_owned(),
+                );
+            }
+            if STRING_FIELDS.iter().any(|field| {
+                data.get(*field)
+                    .is_some_and(|value| !value.is_null() && !value.is_string())
+            }) || data
+                .get("funding_timestamp")
+                .is_some_and(|value| !value.is_null() && !value.is_i64() && !value.is_u64())
+            {
+                return Err("invalid v2 perpetual ticker payload".to_owned());
             }
         }
         "intent" => {}

@@ -27,8 +27,10 @@ from .models import (
     CatalogResponse,
     JSONDict,
     OptionTickerEvent,
+    PerpetualTickerEvent,
     PropammQuoteLadderEvent,
     SnapshotEntry,
+    TradeEvent,
 )
 from .utils import TimeInput, to_iso8601
 
@@ -596,7 +598,7 @@ class PolarisClient:
         allow_gaps: bool = False,
         output: Literal["iterator"] = "iterator",
         batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict]: ...
+    ) -> Iterator[TradeEvent]: ...
 
     @overload
     def trades(
@@ -634,7 +636,7 @@ class PolarisClient:
         allow_gaps: bool = False,
         output: OutputFormat = "iterator",
         batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
+    ) -> Iterator[TradeEvent] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
         self._validate_columnar_output(output, batch_size)
         if output != "iterator":
             extra = "dataframe" if output == "dataframe" else "arrow"
@@ -709,6 +711,26 @@ class PolarisClient:
             allow_gaps,
         )
         return self._iterate(iterator, "option_tickers")
+
+    def perpetual_tickers(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        allow_gaps: bool = False,
+    ) -> Iterator[PerpetualTickerEvent]:
+        """Iterate partial venue-published perpetual market-state updates."""
+        iterator = self._call(
+            "perpetual_tickers",
+            source,
+            market,
+            self._time(from_),
+            self._time(to),
+            allow_gaps,
+        )
+        return self._iterate(iterator, "perpetual_tickers")
 
     def raw(
         self,

@@ -114,6 +114,54 @@ test("option tickers preserve chain identity and filter exact instruments", asyn
   client.close();
 });
 
+test("new event shapes are typed, filtered, and accepted by v2 decoding", async () => {
+  const { PolarisClient } = await import("../dist/node/index.js");
+  const fixture = await readFile(
+    new URL("../../tests/fixtures/events/new-event-shapes-v2.jsonl", import.meta.url),
+    "utf8",
+  );
+  const client = new PolarisClient({ baseUrl: "https://api.example" });
+  const lines = fixture.trim().split("\n");
+  const decoded = client._decodeSnapshotLines(lines, "new-event-shapes-v2.jsonl");
+
+  assert.deepEqual(decoded.map(({ type }) => type), [
+    "perpetual_ticker",
+    "perpetual_ticker",
+    "option_ticker",
+    "trade",
+    "trade",
+    "intent",
+  ]);
+  assert.equal(decoded[2].data.underlying, "BTC");
+  assert.equal(decoded[2].data.strike, "50000");
+  assert.equal(decoded[2].data.option_type, "call");
+  assert.equal(decoded[3].data.maker, "0xmaker");
+  assert.equal(decoded[3].data.taker, "0xtaker");
+  assert.equal("maker" in decoded[4].data, false);
+
+  client._resolveHistoricalRange = async () => ({ fromMs: 0, toMs: 10 });
+  client._readSnapshotEvents = async function* (_source, _market, _from, _to, filter) {
+    for (const row of decoded) if (!filter || filter(row)) yield structuredClone(row);
+  };
+  const tickers = await client.perpetualTickers({ source: "hyperliquid", market: "BTC" });
+  assert.equal(tickers.length, 2);
+  assert.equal(tickers[0].data.mark_price, "98750.3");
+  assert.equal(tickers[0].data.funding_timestamp, 1_704_069_000_000);
+  assert.equal(tickers[1].data.funding_rate, "-0.000025");
+
+  for (const badData of [{}, { funding_rate: 0.1 }]) {
+    const malformed = [...lines];
+    const row = JSON.parse(malformed[1]);
+    row.data = badData;
+    malformed[1] = JSON.stringify(row);
+    assert.throws(
+      () => client._decodeSnapshotLines(malformed, "bad-perpetual-ticker.jsonl"),
+      /Invalid v2 perpetual ticker payload/,
+    );
+  }
+  client.close();
+});
+
 test("intents filter mixed events and preserve canonical nested observations", async () => {
   const { PolarisClient } = await import("../dist/node/index.js");
   const rows = [

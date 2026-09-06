@@ -19,9 +19,9 @@ use crate::{
     BboQuery, BboQuote, CatalogCount, CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic,
     DownloadManifestQuery, DownloadManifestResponse, HistoricalQuery, HistoricalStream,
     IntentEvent, ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OptionTickerEvent, OptionTickerQuery,
-    OrderbookEvent, PointSeriesEvent, PolarisError, PropammQuoteLadderEvent, RawQuery,
-    RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, SnapshotEntry, StandardEvent,
-    StreamQuery, TimeInput, TradeEvent, VolatilityBar, VolumeBar, VwapBar,
+    OrderbookEvent, PerpetualTickerEvent, PointSeriesEvent, PolarisError, PropammQuoteLadderEvent,
+    RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, SnapshotEntry,
+    StandardEvent, StreamQuery, TimeInput, TradeEvent, VolatilityBar, VolumeBar, VwapBar,
     replay::{LocalExactReplayIterator, LocalReplayIterator},
 };
 
@@ -227,6 +227,14 @@ impl PolarisClient {
         query: OptionTickerQuery,
     ) -> Result<HistoricalIterator<OptionTickerEvent>, PolarisError> {
         let stream = self.run(self.inner.option_tickers(query))?;
+        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
+    }
+
+    pub fn perpetual_tickers(
+        &self,
+        query: HistoricalQuery,
+    ) -> Result<HistoricalIterator<PerpetualTickerEvent>, PolarisError> {
+        let stream = self.run(self.inner.perpetual_tickers(query))?;
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 
@@ -484,6 +492,15 @@ impl PreparedHistoricalReplay {
             Err(error) => Some(Err(error)),
         });
         HistoricalIterator::direct(intents)
+    }
+
+    pub fn perpetual_tickers(&self) -> HistoricalIterator<PerpetualTickerEvent> {
+        let tickers = self.events().filter_map(|event| match event {
+            Ok(event) if event.event_type() != "perpetual_ticker" => None,
+            Ok(event) => Some(crate::client::PolarisClient::parse_perpetual_ticker(event)),
+            Err(error) => Some(Err(error)),
+        });
+        HistoricalIterator::direct(tickers)
     }
 
     pub fn point_series(

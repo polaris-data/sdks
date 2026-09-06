@@ -5,8 +5,9 @@ mod columnar;
 use polaris_data::{
     BboQuery, BboQuote, DepthMetricsRow, HistoricalQuery, IntentEvent, ListSnapshotsQuery,
     OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery, OptionTickerEvent, OptionTickerQuery,
-    OrderbookBuilder, PointSeriesEvent, PolarisError, PropammQuoteLadderEvent, RawQuery,
-    RawReplayQuery, ReplayQuery, StandardEvent, StreamQuery, TimeInput, TradeEvent,
+    OrderbookBuilder, PerpetualTickerEvent, PointSeriesEvent, PolarisError,
+    PropammQuoteLadderEvent, RawQuery, RawReplayQuery, ReplayQuery, StandardEvent, StreamQuery,
+    TimeInput, TradeEvent,
     blocking::{self, RawReplayCacheConfig},
 };
 use pyo3::{
@@ -490,6 +491,27 @@ impl NativeClient {
             .map_err(native_error)?;
         Ok(NativeHistorical::new(
             NativeHistoricalIterator::OptionTickers(iterator),
+        ))
+    }
+
+    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
+    fn perpetual_tickers(
+        &self,
+        py: Python<'_>,
+        source: String,
+        market: String,
+        from_: Option<String>,
+        to: Option<String>,
+        allow_gaps: bool,
+    ) -> PyResult<NativeHistorical> {
+        let iterator = py
+            .detach(|| {
+                self.inner
+                    .perpetual_tickers(historical_query(source, market, from_, to, allow_gaps))
+            })
+            .map_err(native_error)?;
+        Ok(NativeHistorical::new(
+            NativeHistoricalIterator::PerpetualTickers(iterator),
         ))
     }
 
@@ -1156,6 +1178,7 @@ enum NativeHistoricalIterator {
     Trades(blocking::HistoricalIterator<TradeEvent>),
     Intents(blocking::HistoricalIterator<IntentEvent>),
     OptionTickers(blocking::HistoricalIterator<OptionTickerEvent>),
+    PerpetualTickers(blocking::HistoricalIterator<PerpetualTickerEvent>),
     Bbo(blocking::HistoricalIterator<BboQuote>),
     Points(blocking::HistoricalIterator<PointSeriesEvent>),
     PropammQuoteLadders(blocking::HistoricalIterator<PropammQuoteLadderEvent>),
@@ -1229,6 +1252,7 @@ impl NativeHistorical {
             NativeHistoricalIterator::Trades(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Intents(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::OptionTickers(iterator) => next_historical(py, iterator),
+            NativeHistoricalIterator::PerpetualTickers(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Bbo(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Points(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::PropammQuoteLadders(iterator) => {

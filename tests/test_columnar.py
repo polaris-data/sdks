@@ -59,6 +59,8 @@ def test_trade_batches_are_typed_bounded_and_preserve_dynamic_fields(tmp_path) -
                     "price": 100,
                     "quantity": 1,
                     "side": "buy",
+                    "maker": "0xmaker",
+                    "taker": "0xtaker",
                     "mixed": 1,
                 },
             },
@@ -98,6 +100,8 @@ def test_trade_batches_are_typed_bounded_and_preserve_dynamic_fields(tmp_path) -
         "price",
         "quantity",
         "side",
+        "maker",
+        "taker",
         "extra.late",
         "extra.mixed",
         "extra.nested",
@@ -108,6 +112,8 @@ def test_trade_batches_are_typed_bounded_and_preserve_dynamic_fields(tmp_path) -
     table = pa.Table.from_batches(batches)
     assert table.column("source").to_pylist() == [SOURCE] * 3
     assert table.column("market").to_pylist() == [MARKET] * 3
+    assert table.column("maker").to_pylist() == ["0xmaker", None, None]
+    assert table.column("taker").to_pylist() == ["0xtaker", None, None]
     assert table.column("extra.late").to_pylist() == [None, 7, None]
     assert table.column("extra.mixed").to_pylist() == ["1", '"two"', None]
     assert table.column("extra.nested").to_pylist() == [None, None, '{"a":1,"b":2}']
@@ -477,6 +483,8 @@ def test_trade_dataframe_has_notebook_ready_dtypes(tmp_path) -> None:
         "price",
         "quantity",
         "side",
+        "maker",
+        "taker",
     ]
     assert str(frame.dtypes["timestamp"]) == "datetime64[ms, UTC]"
     assert isinstance(frame.dtypes["source"], pd.CategoricalDtype)

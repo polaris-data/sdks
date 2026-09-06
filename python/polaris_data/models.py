@@ -114,6 +114,51 @@ class PropammQuoteLadderEvent(TypedDict):
     data: PropammQuoteLadderData
 
 
+class _LegacyTradeDataRequired(TypedDict):
+    price: float
+    quantity: float
+    side: str
+
+
+class LegacyTradeData(_LegacyTradeDataRequired, total=False):
+    maker: str
+    taker: str
+
+
+class _TradeDataV2Required(TypedDict):
+    order_id: Optional[str]
+    price: float
+    quantity: float
+    side: Optional[Literal["buy", "sell"]]
+
+
+class TradeDataV2(_TradeDataV2Required, total=False):
+    maker: str
+    taker: str
+
+
+class LegacyTradeEvent(TypedDict):
+    timestamp: int
+    source: str
+    market: str
+    type: Literal["trade"]
+    data: LegacyTradeData
+
+
+class TradeEventV2(TypedDict):
+    collector_timestamp: int
+    collector_sequence: int
+    exchange_timestamp: Optional[int]
+    exchange_sequence: Optional[str]
+    source: str
+    market: str
+    type: Literal["trade"]
+    data: TradeDataV2
+
+
+TradeEvent = Union[LegacyTradeEvent, TradeEventV2]
+
+
 class OptionGreeks(TypedDict, total=False):
     delta: str
     gamma: str
@@ -123,6 +168,10 @@ class OptionGreeks(TypedDict, total=False):
 
 
 class OptionTickerData(TypedDict, total=False):
+    underlying: str
+    strike: str
+    expiry_timestamp: int
+    option_type: Literal["call", "put"]
     mark_price: str
     bid_price: str
     bid_size: str
@@ -165,6 +214,41 @@ class OptionTickerEventV2(TypedDict):
 
 
 OptionTickerEvent = Union[LegacyOptionTickerEvent, OptionTickerEventV2]
+
+
+class PerpetualTickerData(TypedDict, total=False):
+    last_price: str
+    mark_price: str
+    index_price: str
+    oracle_price: str
+    mid_price: str
+    open_interest: str
+    funding_rate: str
+    funding_timestamp: int
+    predicted_funding_rate: str
+    premium: str
+
+
+class LegacyPerpetualTickerEvent(TypedDict):
+    timestamp: int
+    source: str
+    market: str
+    type: Literal["perpetual_ticker"]
+    data: PerpetualTickerData
+
+
+class PerpetualTickerEventV2(TypedDict):
+    collector_timestamp: int
+    collector_sequence: int
+    exchange_timestamp: Optional[int]
+    exchange_sequence: Optional[str]
+    source: str
+    market: str
+    type: Literal["perpetual_ticker"]
+    data: PerpetualTickerData
+
+
+PerpetualTickerEvent = Union[LegacyPerpetualTickerEvent, PerpetualTickerEventV2]
 
 
 class _AssetAmountRequired(TypedDict):

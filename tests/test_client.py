@@ -133,6 +133,35 @@ def _write_intent_fixture(root: Path, *, mutate=None) -> None:
     )
 
 
+def _write_new_event_fixture(root: Path, *, mutate=None) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "events" / "new-event-shapes-v2.jsonl"
+    rows = [json.loads(line) for line in fixture.read_text().splitlines()]
+    if mutate is not None:
+        mutate(rows)
+    key = "standard-hyperliquid-BTC-2024-01-01-000000"
+    path = (
+        root
+        / "data"
+        / "standard"
+        / "hyperliquid"
+        / "BTC"
+        / "2024-01-01"
+        / f"{key}.jsonl.zst"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_zstd_ndjson(rows))
+    path.with_name(path.name + ".coverage.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "key": key,
+                "start_us": 1_704_067_200_000_000,
+                "end_us": 1_704_070_800_000_000,
+            }
+        )
+    )
+
+
 def make_client(
     handler,
     *,
@@ -2676,6 +2705,66 @@ def test_intents_are_typed_filtered_and_preserve_nested_payloads(tmp_path) -> No
         assert "raw" not in rows[1]
         assert rows[2]["data"]["transactions"][0]["transaction_hash"] == "0xsettlement"
         assert rows[2]["data"]["transactions"][0]["block_number"] == "123"
+    finally:
+        client.close()
+
+
+def test_new_event_shapes_are_available_through_python_sdk(tmp_path) -> None:
+    _write_new_event_fixture(tmp_path)
+    client = PolarisClient(base_url="http://127.0.0.1:1", dataset_root=tmp_path)
+    query = {
+        "source": "hyperliquid",
+        "market": "BTC",
+        "from_": "2024-01-01T00:00:00Z",
+        "to": "2024-01-01T01:00:00Z",
+    }
+    try:
+        events = list(client.events(**query))
+        assert [row["type"] for row in events] == [
+            "perpetual_ticker",
+            "perpetual_ticker",
+            "option_ticker",
+            "trade",
+            "trade",
+            "intent",
+        ]
+        tickers = list(client.perpetual_tickers(**query))
+        assert len(tickers) == 2
+        assert tickers[0]["data"]["mark_price"] == "98750.3"
+        assert tickers[0]["data"]["funding_timestamp"] == 1_704_069_000_000
+        assert tickers[1]["data"]["funding_rate"] == "-0.000025"
+        trades = list(client.trades(**query))
+        assert trades[0]["data"]["maker"] == "0xmaker"
+        assert trades[0]["data"]["taker"] == "0xtaker"
+        assert "maker" not in trades[1]["data"]
+        assert "taker" not in trades[1]["data"]
+        options = list(client.option_tickers(**query))
+        assert options[0]["data"]["underlying"] == "BTC"
+        assert options[0]["data"]["option_type"] == "call"
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(
+    "bad_data",
+    [{}, {"funding_rate": 0.1}],
+)
+def test_python_rejects_malformed_perpetual_tickers(tmp_path, bad_data) -> None:
+    def mutate(rows):
+        rows[1]["data"] = bad_data
+
+    _write_new_event_fixture(tmp_path, mutate=mutate)
+    client = PolarisClient(base_url="http://127.0.0.1:1", dataset_root=tmp_path)
+    try:
+        with pytest.raises(PolarisError, match="perpetual"):
+            list(
+                client.events(
+                    source="hyperliquid",
+                    market="BTC",
+                    from_="2024-01-01T00:00:00Z",
+                    to="2024-01-01T01:00:00Z",
+                )
+            )
     finally:
         client.close()
 

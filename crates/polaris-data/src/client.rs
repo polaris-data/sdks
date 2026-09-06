@@ -20,13 +20,14 @@ use crate::{
         CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic, DownloadManifestQuery,
         DownloadManifestResponse, HistoricalQuery, HistoricalStream, IntentData, IntentEvent,
         IntentEventV2, LegacyIntentEvent, LegacyOptionTickerEvent, LegacyOrderbookEvent,
-        LegacyPointSeriesEvent, LegacyTradeData, LegacyTradeEvent, ListSnapshotsQuery, OhlcvOutput,
-        OhlcvQuery, OptionTickerData, OptionTickerEvent, OptionTickerEventV2, OptionTickerQuery,
-        OrderbookData, OrderbookDataV2, OrderbookEvent, OrderbookEventV2, OrderbookLevel,
-        PointSeriesData, PointSeriesEvent, PointSeriesEventV2, PropammQuoteLadderData,
-        PropammQuoteLadderEvent, RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream,
-        ReplayQuery, ReplayStream, SnapshotEntry, StandardEvent, StreamQuery, TradeDataV2,
-        TradeEvent, TradeEventV2, VolatilityBar, VolumeBar, VwapBar,
+        LegacyPerpetualTickerEvent, LegacyPointSeriesEvent, LegacyTradeData, LegacyTradeEvent,
+        ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OptionTickerData, OptionTickerEvent,
+        OptionTickerEventV2, OptionTickerQuery, OrderbookData, OrderbookDataV2, OrderbookEvent,
+        OrderbookEventV2, OrderbookLevel, PerpetualTickerData, PerpetualTickerEvent,
+        PerpetualTickerEventV2, PointSeriesData, PointSeriesEvent, PointSeriesEventV2,
+        PropammQuoteLadderData, PropammQuoteLadderEvent, RawQuery, RawReplayQuery, RawReplayStream,
+        RealtimeStream, ReplayQuery, ReplayStream, SnapshotEntry, StandardEvent, StreamQuery,
+        TradeDataV2, TradeEvent, TradeEventV2, VolatilityBar, VolumeBar, VwapBar,
     },
     ohlcv,
     orderbook::{BookUpdate, BookView, parse_level_tuple},
@@ -438,6 +439,24 @@ impl PolarisClient {
                     continue;
                 }
                 yield ticker;
+            }
+        }))
+    }
+
+    /// Return partial venue-published perpetual market-state updates.
+    pub async fn perpetual_tickers(
+        &self,
+        mut query: HistoricalQuery,
+    ) -> Result<HistoricalStream<PerpetualTickerEvent>, PolarisError> {
+        query.materialize_orderbooks = false;
+        let mut events = self.events(query).await?;
+        Ok(Box::pin(try_stream! {
+            while let Some(event) = events.next().await {
+                let event = event?;
+                if event.event_type() != "perpetual_ticker" {
+                    continue;
+                }
+                yield Self::parse_perpetual_ticker(event)?;
             }
         }))
     }
@@ -1397,6 +1416,7 @@ impl PolarisClient {
                 let data: OptionTickerData = serde_json::from_value(event.data).map_err(|err| {
                     PolarisError::Decode(format!("invalid legacy option ticker payload: {err}"))
                 })?;
+                validate_option_ticker_data(&data, "legacy")?;
                 Ok(OptionTickerEvent::Legacy(LegacyOptionTickerEvent {
                     timestamp: event.timestamp,
                     source: event.source,
@@ -1411,6 +1431,7 @@ impl PolarisClient {
                 let data: OptionTickerData = serde_json::from_value(event.data).map_err(|err| {
                     PolarisError::Decode(format!("invalid v2 option ticker payload: {err}"))
                 })?;
+                validate_option_ticker_data(&data, "v2")?;
                 Ok(OptionTickerEvent::V2(OptionTickerEventV2 {
                     collector_timestamp: event.collector_timestamp,
                     collector_sequence: event.collector_sequence,
@@ -1460,6 +1481,51 @@ impl PolarisClient {
                     event_type: event.event_type,
                     data,
                     raw,
+                }))
+            }
+        }
+    }
+
+    pub(crate) fn parse_perpetual_ticker(
+        event: StandardEvent,
+    ) -> Result<PerpetualTickerEvent, PolarisError> {
+        if event.event_type() != "perpetual_ticker" {
+            return Err(PolarisError::Decode(
+                "expected a perpetual_ticker event".to_owned(),
+            ));
+        }
+        match event {
+            StandardEvent::Legacy(event) => {
+                let data: PerpetualTickerData =
+                    serde_json::from_value(event.data).map_err(|err| {
+                        PolarisError::Decode(format!(
+                            "invalid legacy perpetual ticker payload: {err}"
+                        ))
+                    })?;
+                validate_perpetual_ticker_data(&data, "legacy")?;
+                Ok(PerpetualTickerEvent::Legacy(LegacyPerpetualTickerEvent {
+                    timestamp: event.timestamp,
+                    source: event.source,
+                    market: event.market,
+                    event_type: event.event_type,
+                    data,
+                }))
+            }
+            StandardEvent::V2(event) => {
+                let data: PerpetualTickerData =
+                    serde_json::from_value(event.data).map_err(|err| {
+                        PolarisError::Decode(format!("invalid v2 perpetual ticker payload: {err}"))
+                    })?;
+                validate_perpetual_ticker_data(&data, "v2")?;
+                Ok(PerpetualTickerEvent::V2(PerpetualTickerEventV2 {
+                    collector_timestamp: event.collector_timestamp,
+                    collector_sequence: event.collector_sequence,
+                    exchange_timestamp: event.exchange_timestamp,
+                    exchange_sequence: event.exchange_sequence,
+                    source: event.source,
+                    market: event.market,
+                    event_type: event.event_type,
+                    data,
                 }))
             }
         }
@@ -2377,6 +2443,31 @@ fn validate_optional_instrument(
         return Ok(Some(instrument));
     }
     Ok(None)
+}
+
+fn validate_perpetual_ticker_data(
+    data: &PerpetualTickerData,
+    schema: &str,
+) -> Result<(), PolarisError> {
+    if data.is_empty() {
+        return Err(PolarisError::Decode(format!(
+            "invalid {schema} perpetual ticker payload: data must contain at least one field"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_option_ticker_data(data: &OptionTickerData, schema: &str) -> Result<(), PolarisError> {
+    if data
+        .option_type
+        .as_deref()
+        .is_some_and(|value| !matches!(value, "call" | "put"))
+    {
+        return Err(PolarisError::Decode(format!(
+            "invalid {schema} option ticker payload: data.option_type must be call or put"
+        )));
+    }
+    Ok(())
 }
 
 fn take_required_instrument(extra: &mut BTreeMap<String, Value>) -> Result<String, PolarisError> {
