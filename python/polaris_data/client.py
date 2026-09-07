@@ -40,6 +40,15 @@ DEFAULT_BASE_URL = "https://api.polaris.supply"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_BATCH_SIZE = 65_536
 OutputFormat = Literal["iterator", "batches", "dataframe"]
+AggregateOutputFormat = Literal["records", "dataframe"]
+
+AGGREGATE_COLUMNS: dict[str, tuple[str, ...]] = {
+    "ohlcv": ("timestamp", "open", "high", "low", "close", "volume", "trades"),
+    "volume": ("timestamp", "volume"),
+    "vwap": ("timestamp", "vwap", "volume", "quote_volume", "trades"),
+    "volatility": ("timestamp", "volatility", "returns"),
+}
+AGGREGATE_COUNT_COLUMNS = frozenset({"trades", "returns"})
 
 
 class OrderbookBuilder:
@@ -1094,6 +1103,7 @@ class PolarisClient:
         )
         return self._columnar_result(iterator, method, output, pyarrow_module)
 
+    @overload
     def ohlcv(
         self,
         *,
@@ -1104,8 +1114,41 @@ class PolarisClient:
         interval: str,
         format: str | None = None,
         allow_gaps: bool = False,
-    ) -> list[JSONDict] | JSONDict:
-        return self._call(
+        output: Literal["records"] = "records",
+    ) -> list[JSONDict] | JSONDict: ...
+
+    @overload
+    def ohlcv(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        interval: str,
+        format: None = None,
+        allow_gaps: bool = False,
+        output: Literal["dataframe"],
+    ) -> pandas.DataFrame: ...
+
+    def ohlcv(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        interval: str,
+        format: str | None = None,
+        allow_gaps: bool = False,
+        output: AggregateOutputFormat = "records",
+    ) -> list[JSONDict] | JSONDict | pandas.DataFrame:
+        if output == "dataframe" and format is not None:
+            raise ValueError(
+                "output='dataframe' is only available when format is None"
+            )
+        pandas_module = self._prepare_aggregate_output(output)
+        result = self._call(
             "ohlcv",
             source,
             market,
@@ -1115,6 +1158,39 @@ class PolarisClient:
             format,
             allow_gaps,
         )
+        if output == "records":
+            return result
+        return self._aggregate_dataframe(
+            result,
+            AGGREGATE_COLUMNS["ohlcv"],
+            pandas_module,
+        )
+
+    @overload
+    def volume(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        interval: str,
+        allow_gaps: bool = False,
+        output: Literal["records"] = "records",
+    ) -> list[JSONDict]: ...
+
+    @overload
+    def volume(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        interval: str,
+        allow_gaps: bool = False,
+        output: Literal["dataframe"],
+    ) -> pandas.DataFrame: ...
 
     def volume(
         self,
@@ -1125,10 +1201,37 @@ class PolarisClient:
         to: TimeInput | None = None,
         interval: str,
         allow_gaps: bool = False,
-    ) -> list[JSONDict]:
+        output: AggregateOutputFormat = "records",
+    ) -> list[JSONDict] | pandas.DataFrame:
         return self._aggregate(
-            "volume", source, market, from_, to, interval, allow_gaps
+            "volume", source, market, from_, to, interval, allow_gaps, output
         )
+
+    @overload
+    def vwap(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        interval: str,
+        allow_gaps: bool = False,
+        output: Literal["records"] = "records",
+    ) -> list[JSONDict]: ...
+
+    @overload
+    def vwap(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        interval: str,
+        allow_gaps: bool = False,
+        output: Literal["dataframe"],
+    ) -> pandas.DataFrame: ...
 
     def vwap(
         self,
@@ -1139,8 +1242,39 @@ class PolarisClient:
         to: TimeInput | None = None,
         interval: str,
         allow_gaps: bool = False,
-    ) -> list[JSONDict]:
-        return self._aggregate("vwap", source, market, from_, to, interval, allow_gaps)
+        output: AggregateOutputFormat = "records",
+    ) -> list[JSONDict] | pandas.DataFrame:
+        return self._aggregate(
+            "vwap", source, market, from_, to, interval, allow_gaps, output
+        )
+
+    @overload
+    def volatility(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        interval: str,
+        method: str = "log_returns",
+        allow_gaps: bool = False,
+        output: Literal["records"] = "records",
+    ) -> list[JSONDict]: ...
+
+    @overload
+    def volatility(
+        self,
+        *,
+        source: str,
+        market: str,
+        from_: TimeInput | None = None,
+        to: TimeInput | None = None,
+        interval: str,
+        method: str = "log_returns",
+        allow_gaps: bool = False,
+        output: Literal["dataframe"],
+    ) -> pandas.DataFrame: ...
 
     def volatility(
         self,
@@ -1152,12 +1286,39 @@ class PolarisClient:
         interval: str,
         method: str = "log_returns",
         allow_gaps: bool = False,
-    ) -> list[JSONDict]:
+        output: AggregateOutputFormat = "records",
+    ) -> list[JSONDict] | pandas.DataFrame:
         if method != "log_returns":
             raise ValueError("method must be 'log_returns'")
         return self._aggregate(
-            "volatility", source, market, from_, to, interval, allow_gaps
+            "volatility", source, market, from_, to, interval, allow_gaps, output
         )
+
+    def _prepare_aggregate_output(
+        self,
+        output: str,
+    ) -> Any | None:
+        if output not in {"records", "dataframe"}:
+            raise ValueError("output must be one of: 'records', 'dataframe'")
+        if output == "dataframe":
+            return self._require_optional_module("pandas", "dataframe")
+        return None
+
+    @staticmethod
+    def _aggregate_dataframe(
+        rows: list[JSONDict],
+        columns: tuple[str, ...],
+        pandas_module: Any,
+    ) -> pandas.DataFrame:
+        frame = pandas_module.DataFrame.from_records(rows, columns=columns)
+        frame["timestamp"] = pandas_module.Series(
+            pandas_module.to_datetime(frame["timestamp"], unit="ms", utc=True),
+            dtype="datetime64[ms, UTC]",
+        )
+        for column in columns[1:]:
+            dtype = "uint64" if column in AGGREGATE_COUNT_COLUMNS else "float64"
+            frame[column] = frame[column].astype(dtype)
+        return frame
 
     def _aggregate(
         self,
@@ -1168,8 +1329,10 @@ class PolarisClient:
         to: TimeInput | None,
         interval: str,
         allow_gaps: bool,
-    ) -> list[JSONDict]:
-        return self._call(
+        output: AggregateOutputFormat,
+    ) -> list[JSONDict] | pandas.DataFrame:
+        pandas_module = self._prepare_aggregate_output(output)
+        rows = self._call(
             method,
             source,
             market,
@@ -1177,6 +1340,13 @@ class PolarisClient:
             self._time(from_),
             self._time(to),
             allow_gaps,
+        )
+        if output == "records":
+            return rows
+        return self._aggregate_dataframe(
+            rows,
+            AGGREGATE_COLUMNS[method],
+            pandas_module,
         )
 
     @overload

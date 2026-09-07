@@ -221,10 +221,10 @@ Use it to inspect available data, query historical market data, and open realtim
 | `funding_rates(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Perpetual funding studies and carry modeling |
 | `mark_prices(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Basis analysis, mark tracking, and liquidation-related research |
 | `propamm_quote_ladders(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, exact Arrow batches, or Pandas DataFrame | PropAMM execution-quote analysis with full-precision Ethereum amounts |
-| `ohlcv(source=..., market=..., from_=None, to=None, interval=..., format=None, allow_gaps=False)` | Aggregated OHLCV bars | Charting, bar-based strategies, and downstream TA workflows |
-| `volume(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False)` | Bucketed trade volume series | Volume profiling and participation analysis |
-| `vwap(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False)` | Bucketed VWAP series | Execution benchmarking and price smoothing |
-| `volatility(source=..., market=..., from_=None, to=None, interval=..., method="log_returns", allow_gaps=False)` | Bucketed realized volatility series | Risk modeling and intraperiod volatility analysis |
+| `ohlcv(source=..., market=..., from_=None, to=None, interval=..., format=None, allow_gaps=False, output="records")` | Aggregated OHLCV records or Pandas DataFrame | Charting, bar-based strategies, and downstream TA workflows |
+| `volume(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False, output="records")` | Bucketed volume records or Pandas DataFrame | Volume profiling and participation analysis |
+| `vwap(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False, output="records")` | Bucketed VWAP records or Pandas DataFrame | Execution benchmarking and price smoothing |
+| `volatility(source=..., market=..., from_=None, to=None, interval=..., method="log_returns", allow_gaps=False, output="records")` | Bucketed volatility records or Pandas DataFrame | Risk modeling and intraperiod volatility analysis |
 | `bbo(source=..., market=..., from_=None, to=None, interval=None, allow_gaps=False, changes_only=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Spread tracking, quote analytics, and top-of-book monitoring |
 | `depth_metrics(source=..., market=..., from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Liquidity analysis and market impact estimation |
 
@@ -241,6 +241,28 @@ Pandas DataFrame. Typed-series output flattens fields, uses UTC millisecond
 timestamps, and dictionary-encodes source, market, and side. Venue-specific
 trade and point fields appear as sorted `extra.<name>` columns; discovering
 those fields requires one schema pass before batches are emitted.
+
+The eager aggregate methods (`ohlcv`, `volume`, `vwap`, and `volatility`)
+accept `output="dataframe"` for a fixed-schema Pandas DataFrame with a UTC
+millisecond `timestamp` column. Their default `output="records"` preserves the
+existing list-of-dictionaries response. TradingView-formatted OHLCV output is
+available only as records.
+
+Common notebook preamble helpers are available from `polaris_data.utils`:
+
+```python
+from polaris_data.utils import (
+    accessible_bounds,
+    as_utc,
+    bounded_rows,
+    event_timestamp,
+)
+```
+
+`accessible_bounds` clips preview catalog entries to their public day,
+`bounded_rows` safely closes partially consumed iterators, and the timestamp
+helpers return timezone-aware Pandas timestamps. Install
+`polaris-data[dataframe]` to use the Pandas-backed helpers.
 
 PropAMM quote ladders retain their complete v2 record envelope. Quote amounts
 remain decimal strings so values across the full Ethereum `uint256` range are
