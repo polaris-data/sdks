@@ -91,6 +91,55 @@ test("stream subscribes with token, deduplicates markets, and yields standard ev
   }
 });
 
+test("stream yields v2 perpetual ticker events", async () => {
+  const { server, url } = await startServer((socket) => {
+    socket.once("message", () => {
+      socket.send(JSON.stringify({
+        type: "ack",
+        request_id: "polaris-sdk-subscribe",
+        action: "subscribe",
+        changed: 1,
+        active_subscriptions: 1,
+      }));
+      socket.send(JSON.stringify({
+        source: "hyperliquid",
+        market: "BTC",
+        kind: {
+          type: "data",
+          stream: "standard",
+          event: {
+            collector_timestamp: 1_786_000_000_123,
+            collector_sequence: 43,
+            exchange_timestamp: 1_786_000_000_100,
+            exchange_sequence: null,
+            type: "perpetual_ticker",
+            data: { mark_price: "98750.3", funding_rate: "0.0000125" },
+          },
+        },
+      }));
+    });
+  });
+
+  try {
+    const { PolarisClient } = await import("../dist/node/index.js");
+    const client = new PolarisClient({ streamUrl: url });
+    const realtime = client.stream({ source: "hyperliquid", markets: ["BTC"] });
+    let received;
+    for await (const event of realtime) {
+      received = event;
+      break;
+    }
+    assert.equal(received.type, "perpetual_ticker");
+    assert.equal(received.source, "hyperliquid");
+    assert.equal(received.market, "BTC");
+    assert.equal(received.data.mark_price, "98750.3");
+    realtime.close();
+    client.close();
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test("stream accepts v2 envelopes and fills outer identity", async () => {
   const { server, url } = await startServer((socket) => {
     socket.once("message", () => {

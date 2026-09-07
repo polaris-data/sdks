@@ -216,6 +216,7 @@ Use it to inspect available data, query historical market data, and open realtim
 | `trades(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Trade-level analytics, execution studies, and notebook analysis |
 | `intents(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of typed intent events | Process canonical RFQ, quote, and executable-intent observations |
 | `option_tickers(source=..., market=..., instrument=None, from_=None, to=None, allow_gaps=False)` | Iterator of typed option ticker events | Read an underlying's whole option chain or filter one exact contract |
+| `perpetual_tickers(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of typed perpetual ticker events | Read partial venue-published prices, open interest, premium, and funding state |
 | `l2_snapshots(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)` | Iterator of complete orderbook rows | Order book reconstruction and microstructure analysis |
 | `l2_updates(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of raw orderbook snapshots and deltas | High-throughput application-managed books |
 | `funding_rates(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Perpetual funding studies and carry modeling |
@@ -241,6 +242,17 @@ Pandas DataFrame. Typed-series output flattens fields, uses UTC millisecond
 timestamps, and dictionary-encodes source, market, and side. Venue-specific
 trade and point fields appear as sorted `extra.<name>` columns; discovering
 those fields requires one schema pass before batches are emitted.
+Trade output includes nullable `maker` and `taker` fields when the venue
+publishes account or address identifiers.
+
+Perpetual tickers preserve venue decimal values as strings and represent each
+message as a partial update; omitted fields are not accumulated from earlier
+rows:
+
+```python
+for event in client.perpetual_tickers(source="hyperliquid", market="BTC"):
+    print(event["data"].get("mark_price"), event["data"].get("funding_rate"))
+```
 
 The eager aggregate methods (`ohlcv`, `volume`, `vwap`, and `volatility`)
 accept `output="dataframe"` for a fixed-schema Pandas DataFrame with a UTC
@@ -487,7 +499,7 @@ Pass `dataset_root=...` to `PolarisClient(...)` to override the root explicitly.
 
 ## Snapshot-first replay
 
-For standardized historical data, `replay(...)`, `events(...)`, `trades(...)`, `intents(...)`, `propamm_quote_ladders(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, `l2_updates(...)`, `volume(...)`, and default/tradingview `ohlcv(...)` now prefer `/snapshots` plus daily bulk `/download?source=...&market=...&date=...&mode=json` manifests, and reuse local snapshot files when they already exist:
+For standardized historical data, `replay(...)`, `events(...)`, `trades(...)`, `intents(...)`, `option_tickers(...)`, `perpetual_tickers(...)`, `propamm_quote_ladders(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, `l2_updates(...)`, `volume(...)`, and default/tradingview `ohlcv(...)` now prefer `/snapshots` plus daily bulk `/download?source=...&market=...&date=...&mode=json` manifests, and reuse local snapshot files when they already exist:
 
 ```python
 from polaris_data import PolarisClient
@@ -502,7 +514,7 @@ with PolarisClient(api_key="polaris_key_your_key") as client:
         print(row)
 ```
 
-If the requested standardized range cannot be satisfied from available standardized snapshots, `replay(...)`, `events(...)`, `trades(...)`, `intents(...)`, `propamm_quote_ladders(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, `l2_updates(...)`, `volume(...)`, and `ohlcv(...)` raise by default instead of falling back. Pass `allow_gaps=True` on standardized methods to return only covered data and receive a warning with the missing intervals.
+If the requested standardized range cannot be satisfied from available standardized snapshots, `replay(...)`, `events(...)`, `trades(...)`, `intents(...)`, `option_tickers(...)`, `perpetual_tickers(...)`, `propamm_quote_ladders(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, `l2_updates(...)`, `volume(...)`, and `ohlcv(...)` raise by default instead of falling back. Pass `allow_gaps=True` on standardized methods to return only covered data and receive a warning with the missing intervals.
 
 ## Error handling
 

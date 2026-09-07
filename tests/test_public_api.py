@@ -26,11 +26,17 @@ from polaris_data import (
     IntentStatus,
     LegacyIntentEvent,
     LegacyOptionTickerEvent,
+    LegacyPerpetualTickerEvent,
+    LegacyTradeData,
+    LegacyTradeEvent,
     NotFoundError,
     OptionGreeks,
     OptionTickerData,
     OptionTickerEvent,
     OptionTickerEventV2,
+    PerpetualTickerData,
+    PerpetualTickerEvent,
+    PerpetualTickerEventV2,
     OrderbookBuilder,
     PolarisClient,
     PolarisError,
@@ -42,6 +48,9 @@ from polaris_data import (
     RealtimeStream,
     SettlementTransaction,
     SnapshotEntry,
+    TradeDataV2,
+    TradeEvent,
+    TradeEventV2,
     StreamConnectionError,
     StreamDecodeError,
     StreamProtocolError,
@@ -68,6 +77,9 @@ def test_top_level_exports_are_stable() -> None:
         "CatalogMarketEntry",
         "CatalogResponse",
         "LegacyOptionTickerEvent",
+        "LegacyPerpetualTickerEvent",
+        "LegacyTradeData",
+        "LegacyTradeEvent",
         "IntentData",
         "IntentEvent",
         "IntentEventV2",
@@ -79,6 +91,9 @@ def test_top_level_exports_are_stable() -> None:
         "OptionTickerData",
         "OptionTickerEvent",
         "OptionTickerEventV2",
+        "PerpetualTickerData",
+        "PerpetualTickerEvent",
+        "PerpetualTickerEventV2",
         "OrderbookBuilder",
         "PolarisClient",
         "PolarisError",
@@ -90,6 +105,9 @@ def test_top_level_exports_are_stable() -> None:
         "RealtimeStream",
         "SettlementTransaction",
         "SnapshotEntry",
+        "TradeDataV2",
+        "TradeEvent",
+        "TradeEventV2",
         "StreamDecodeError",
         "StreamConnectionError",
         "StreamProtocolError",
@@ -163,6 +181,15 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
     ]
 
     assert _parameters(PolarisClient.intents) == [
+        ("self", positional, required),
+        ("source", keyword_only, required),
+        ("market", keyword_only, required),
+        ("from_", keyword_only, None),
+        ("to", keyword_only, None),
+        ("allow_gaps", keyword_only, False),
+    ]
+
+    assert _parameters(PolarisClient.perpetual_tickers) == [
         ("self", positional, required),
         ("source", keyword_only, required),
         ("market", keyword_only, required),
@@ -314,13 +341,15 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
         "Iterator[PropammQuoteLadderEvent] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
     )
     assert inspect.signature(PolarisClient.intents).return_annotation == "Iterator[IntentEvent]"
+    assert inspect.signature(PolarisClient.perpetual_tickers).return_annotation == (
+        "Iterator[PerpetualTickerEvent]"
+    )
     for method in [
         PolarisClient.l2_snapshots,
         PolarisClient.l2_updates,
     ]:
         assert inspect.signature(method).return_annotation == "Iterator[JSONDict]"
     for method in [
-        PolarisClient.trades,
         PolarisClient.events,
         PolarisClient.funding_rates,
         PolarisClient.mark_prices,
@@ -330,6 +359,9 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
         assert inspect.signature(method).return_annotation == (
             "Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
         )
+    assert inspect.signature(PolarisClient.trades).return_annotation == (
+        "Iterator[TradeEvent] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
+    )
     assert inspect.signature(PolarisClient.stream).return_annotation == "RealtimeStream"
     assert (
         inspect.signature(PolarisClient.ohlcv).return_annotation
@@ -371,6 +403,14 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
     assert get_type_hints(IntentEventV2)["raw"] is Any
     assert get_type_hints(LegacyIntentEvent)["data"] is IntentData
     assert get_type_hints(LegacyIntentEvent)["raw"] is Any
+    assert get_type_hints(TradeDataV2)["maker"] is str
+    assert get_type_hints(TradeDataV2)["taker"] is str
+    assert get_type_hints(TradeEventV2)["data"] is TradeDataV2
+    assert get_type_hints(LegacyTradeEvent)["data"] is LegacyTradeData
+    assert get_type_hints(OptionTickerData)["option_type"] == Literal["call", "put"]
+    assert get_type_hints(PerpetualTickerData)["funding_timestamp"] is int
+    assert get_type_hints(PerpetualTickerEventV2)["data"] is PerpetualTickerData
+    assert get_type_hints(LegacyPerpetualTickerEvent)["data"] is PerpetualTickerData
     assert AmountKind == Literal["exact_input", "exact_output"]
     assert "settled" in get_args(IntentStatus)
     assert JSONDict == dict[str, Any]

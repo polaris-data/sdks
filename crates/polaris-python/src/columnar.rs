@@ -416,6 +416,8 @@ fn trade_schema(extensions: &[ExtensionField]) -> SchemaRef {
         Field::new("price", DataType::Float64, false),
         Field::new("quantity", DataType::Float64, false),
         Field::new("side", dictionary_type(), true),
+        Field::new("maker", DataType::Utf8, true),
+        Field::new("taker", DataType::Utf8, true),
     ]);
     fields.extend(
         extensions
@@ -821,6 +823,8 @@ fn build_trade_batch(
             rows.iter().map(TradeEvent::quantity),
         )),
         dictionary(rows.iter().map(TradeEvent::side))?,
+        Arc::new(StringArray::from_iter(rows.iter().map(TradeEvent::maker))),
+        Arc::new(StringArray::from_iter(rows.iter().map(TradeEvent::taker))),
     ];
     for field in extensions {
         columns.push(extension_array(rows, field, TradeEvent::extra)?);

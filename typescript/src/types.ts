@@ -92,6 +92,8 @@ export interface LegacyTradeData {
   price: number;
   quantity: number;
   side: string;
+  maker?: string;
+  taker?: string;
   [key: string]: unknown;
 }
 
@@ -100,6 +102,8 @@ export interface TradeDataV2 {
   price: number;
   quantity: number;
   side: "buy" | "sell" | null;
+  maker?: string;
+  taker?: string;
   [key: string]: unknown;
 }
 
@@ -184,6 +188,10 @@ export interface OptionGreeks extends Record<string, unknown> {
 }
 
 export interface OptionTickerData extends Record<string, unknown> {
+  underlying?: string;
+  strike?: string;
+  expiry_timestamp?: number;
+  option_type?: "call" | "put";
   mark_price?: string;
   bid_price?: string;
   bid_size?: string;
@@ -217,6 +225,33 @@ export interface OptionTickerEventV2 extends StandardEventV2 {
 }
 
 export type OptionTickerEvent = LegacyOptionTickerEvent | OptionTickerEventV2;
+
+export interface PerpetualTickerData extends Record<string, unknown> {
+  last_price?: string;
+  mark_price?: string;
+  index_price?: string;
+  oracle_price?: string;
+  mid_price?: string;
+  open_interest?: string;
+  funding_rate?: string;
+  funding_timestamp?: number;
+  predicted_funding_rate?: string;
+  premium?: string;
+}
+
+export interface LegacyPerpetualTickerEvent extends LegacyStandardEvent {
+  type: "perpetual_ticker";
+  data: PerpetualTickerData;
+}
+
+export interface PerpetualTickerEventV2 extends StandardEventV2 {
+  type: "perpetual_ticker";
+  data: PerpetualTickerData;
+}
+
+export type PerpetualTickerEvent =
+  | LegacyPerpetualTickerEvent
+  | PerpetualTickerEventV2;
 
 export interface PointSeriesData extends Record<string, unknown> {
   series: string;

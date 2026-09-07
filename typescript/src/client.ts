@@ -20,6 +20,7 @@ import type {
   IntentEvent,
   OptionTickerEvent,
   OptionTickerOptions,
+  PerpetualTickerEvent,
   OhlcvBar,
   OhlcvOptions,
   OrderbookEvent,
@@ -381,6 +382,22 @@ export class BasePolarisClient {
       const ticker = parseOptionTickerEvent(event);
       if (instrument !== undefined && ticker.instrument !== instrument) continue;
       result.push(ticker);
+    }
+    return result;
+  }
+
+  /** Return partial venue-published perpetual market-state updates. */
+  async perpetualTickers(options: HistoricalQueryOptions): Promise<PerpetualTickerEvent[]> {
+    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
+    const result: PerpetualTickerEvent[] = [];
+    for await (const event of this._readSnapshotEvents(
+      options.source,
+      options.market,
+      fromMs,
+      toMs,
+      (candidate) => candidate.type === "perpetual_ticker",
+    )) {
+      result.push(parsePerpetualTickerEvent(event));
     }
     return result;
   }
@@ -1858,16 +1875,99 @@ function normalizeInstrumentFilter(instrument: string | undefined): string | und
   return normalized;
 }
 
+const OPTION_TICKER_STRING_FIELDS = [
+  "underlying",
+  "strike",
+  "mark_price",
+  "bid_price",
+  "bid_size",
+  "ask_price",
+  "ask_size",
+  "last_price",
+  "index_price",
+  "underlying_price",
+  "forward_price",
+  "mark_iv",
+  "bid_iv",
+  "ask_iv",
+  "open_interest",
+  "volume_24h",
+  "turnover_24h",
+  "premium_currency",
+  "quantity_unit",
+] as const;
+
+function isOptionTickerData(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (!OPTION_TICKER_STRING_FIELDS.every(
+    (field) => value[field] === undefined || typeof value[field] === "string",
+  )) return false;
+  if (value.expiry_timestamp !== undefined &&
+    (typeof value.expiry_timestamp !== "number" ||
+      !Number.isSafeInteger(value.expiry_timestamp))) return false;
+  if (value.option_type !== undefined &&
+    value.option_type !== "call" && value.option_type !== "put") return false;
+  if (value.greeks !== undefined) {
+    const greeks = value.greeks;
+    if (!isRecord(greeks)) return false;
+    if (!["delta", "gamma", "vega", "theta", "rho"].every(
+      (field) => greeks[field] === undefined || typeof greeks[field] === "string",
+    )) return false;
+  }
+  return true;
+}
+
 function parseOptionTickerEvent(event: Json): OptionTickerEvent {
   if (
     event.type !== "option_ticker" ||
     typeof event.instrument !== "string" ||
     event.instrument.length === 0 ||
-    !isRecord(event.data)
+    !isOptionTickerData(event.data)
   ) {
     throw new PolarisError("Invalid option ticker payload");
   }
   return event as unknown as OptionTickerEvent;
+}
+
+const PERPETUAL_TICKER_STRING_FIELDS = [
+  "last_price",
+  "mark_price",
+  "index_price",
+  "oracle_price",
+  "mid_price",
+  "open_interest",
+  "funding_rate",
+  "predicted_funding_rate",
+  "premium",
+] as const;
+
+function isPerpetualTickerData(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const hasString = PERPETUAL_TICKER_STRING_FIELDS.some(
+    (field) => value[field] !== undefined,
+  );
+  const hasFundingTimestamp = value.funding_timestamp !== undefined;
+  if (!hasString && !hasFundingTimestamp) return false;
+  if (!PERPETUAL_TICKER_STRING_FIELDS.every(
+    (field) => value[field] === undefined || typeof value[field] === "string",
+  )) return false;
+  return value.funding_timestamp === undefined ||
+    (typeof value.funding_timestamp === "number" &&
+      Number.isSafeInteger(value.funding_timestamp));
+}
+
+function parsePerpetualTickerEvent(event: Json): PerpetualTickerEvent {
+  if (
+    event.type !== "perpetual_ticker" ||
+    typeof event.source !== "string" ||
+    event.source.length === 0 ||
+    typeof event.market !== "string" ||
+    event.market.length === 0 ||
+    !isPerpetualTickerData(event.data)
+  ) {
+    throw new PolarisError("Invalid perpetual ticker payload");
+  }
+  return event as unknown as PerpetualTickerEvent;
 }
 
 const AMOUNT_KINDS = new Set(["exact_input", "exact_output"]);
@@ -2409,8 +2509,11 @@ function validateV2Event(value: Json, filePath: string): asserts value is Standa
       (data.order_id === null || typeof data.order_id === "string");
     const sideValid = "side" in data &&
       (data.side === null || data.side === "buy" || data.side === "sell");
+    const makerValid = data.maker === undefined || typeof data.maker === "string";
+    const takerValid = data.taker === undefined || typeof data.taker === "string";
     if (
-      !orderIdValid || !sideValid || typeof data.price !== "number" ||
+      !orderIdValid || !sideValid || !makerValid || !takerValid ||
+      typeof data.price !== "number" ||
       typeof data.quantity !== "number"
     ) {
       throw new PolarisError(`Invalid v2 trade payload in '${filePath}'`);
@@ -2431,8 +2534,16 @@ function validateV2Event(value: Json, filePath: string): asserts value is Standa
       throw new PolarisError(`Invalid v2 record payload in '${filePath}'`);
     }
   } else if (value.type === "option_ticker") {
-    if (typeof value.instrument !== "string" || value.instrument.length === 0) {
+    if (
+      typeof value.instrument !== "string" ||
+      value.instrument.length === 0 ||
+      !isOptionTickerData(data)
+    ) {
       throw new PolarisError(`Invalid v2 option ticker payload in '${filePath}'`);
+    }
+  } else if (value.type === "perpetual_ticker") {
+    if (!isPerpetualTickerData(data)) {
+      throw new PolarisError(`Invalid v2 perpetual ticker payload in '${filePath}'`);
     }
   } else if (value.type === "intent") {
     if (!isIntentData(data)) {

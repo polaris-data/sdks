@@ -452,6 +452,10 @@ pub struct LegacyTradeData {
     pub quantity: f64,
     #[serde(default)]
     pub side: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maker: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taker: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -462,6 +466,10 @@ pub struct TradeDataV2 {
     pub price: f64,
     pub quantity: f64,
     pub side: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maker: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taker: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -549,6 +557,20 @@ impl TradeEvent {
         match self {
             Self::Legacy(event) => event.data.extra.get("order_id").and_then(Value::as_str),
             Self::V2(event) => event.data.order_id.as_deref(),
+        }
+    }
+
+    pub fn maker(&self) -> Option<&str> {
+        match self {
+            Self::Legacy(event) => event.data.maker.as_deref(),
+            Self::V2(event) => event.data.maker.as_deref(),
+        }
+    }
+
+    pub fn taker(&self) -> Option<&str> {
+        match self {
+            Self::Legacy(event) => event.data.taker.as_deref(),
+            Self::V2(event) => event.data.taker.as_deref(),
         }
     }
 
@@ -738,6 +760,14 @@ pub struct OptionGreeks {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OptionTickerData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underlying: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strike: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiry_timestamp: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub option_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mark_price: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bid_price: Option<String>,
@@ -847,6 +877,107 @@ impl OptionTickerEvent {
     }
 
     pub fn data(&self) -> &OptionTickerData {
+        match self {
+            Self::Legacy(event) => &event.data,
+            Self::V2(event) => &event.data,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PerpetualTickerData {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_price: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark_price: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_price: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oracle_price: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mid_price: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_interest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub funding_rate: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub funding_timestamp: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicted_funding_rate: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub premium: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+impl PerpetualTickerData {
+    pub fn is_empty(&self) -> bool {
+        self.last_price.is_none()
+            && self.mark_price.is_none()
+            && self.index_price.is_none()
+            && self.oracle_price.is_none()
+            && self.mid_price.is_none()
+            && self.open_interest.is_none()
+            && self.funding_rate.is_none()
+            && self.funding_timestamp.is_none()
+            && self.predicted_funding_rate.is_none()
+            && self.premium.is_none()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyPerpetualTickerEvent {
+    pub timestamp: i64,
+    pub source: String,
+    pub market: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub data: PerpetualTickerData,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PerpetualTickerEventV2 {
+    pub collector_timestamp: i64,
+    pub collector_sequence: u64,
+    pub exchange_timestamp: Option<i64>,
+    pub exchange_sequence: Option<String>,
+    pub source: String,
+    pub market: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub data: PerpetualTickerData,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PerpetualTickerEvent {
+    Legacy(LegacyPerpetualTickerEvent),
+    V2(PerpetualTickerEventV2),
+}
+
+impl PerpetualTickerEvent {
+    pub fn timestamp(&self) -> i64 {
+        match self {
+            Self::Legacy(event) => event.timestamp,
+            Self::V2(event) => event.collector_timestamp,
+        }
+    }
+
+    pub fn source(&self) -> &str {
+        match self {
+            Self::Legacy(event) => &event.source,
+            Self::V2(event) => &event.source,
+        }
+    }
+
+    pub fn market(&self) -> &str {
+        match self {
+            Self::Legacy(event) => &event.market,
+            Self::V2(event) => &event.market,
+        }
+    }
+
+    pub fn data(&self) -> &PerpetualTickerData {
         match self {
             Self::Legacy(event) => &event.data,
             Self::V2(event) => &event.data,

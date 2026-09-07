@@ -549,6 +549,33 @@ mod tests {
         assert_eq!(event.market(), "BTC-USD");
     }
 
+    #[test]
+    fn parses_v2_perpetual_ticker_realtime_event() {
+        let message = json!({
+            "source": "hyperliquid",
+            "market": "BTC",
+            "kind": {
+                "type": "data",
+                "stream": "standard",
+                "event": {
+                    "collector_timestamp": 1_786_000_000_123_i64,
+                    "collector_sequence": 43,
+                    "exchange_timestamp": 1_786_000_000_100_i64,
+                    "exchange_sequence": null,
+                    "type": "perpetual_ticker",
+                    "data": {"mark_price": "98750.3"}
+                }
+            }
+        });
+        let ServerMessage::Data(event) = parse_server_message(&message.to_string()).unwrap() else {
+            panic!("expected data event");
+        };
+        assert_eq!(event.event_type(), "perpetual_ticker");
+        assert_eq!(event.source(), "hyperliquid");
+        assert_eq!(event.market(), "BTC");
+        assert_eq!(event.data()["mark_price"], "98750.3");
+    }
+
     #[tokio::test]
     async fn subscribes_with_token_and_yields_only_standard_events() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

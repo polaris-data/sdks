@@ -99,6 +99,7 @@ Use it to inspect available data, query historical market data, and open realtim
 | `trades(opts)` | Array of standardised trade events | Trade-level analytics, execution studies, and derived bar calculations |
 | `intents(opts)` | Array of typed intent events | Process canonical RFQ, quote, and executable-intent observations |
 | `optionTickers(opts)` | Array of typed option ticker events | Read an underlying's whole option chain or filter one exact contract with `instrument` |
+| `perpetualTickers(opts)` | Array of typed perpetual ticker events | Read partial venue-published prices, open interest, premium, and funding state |
 | `l2Snapshots(opts)` | Array of standardised orderbook snapshot rows | Order book reconstruction and microstructure analysis |
 | `l2Updates(opts)` | Array of raw orderbook snapshots and deltas | High-throughput application-managed books |
 | `fundingRates(opts)` | Array of funding-rate point series rows | Perpetual funding studies and carry modeling |
@@ -164,7 +165,17 @@ const contract = await client.optionTickers({
   market: "BTC",
   instrument: "BTC-29MAR24-50000-C",
 });
+
+const perpetuals = await client.perpetualTickers({
+  source: "hyperliquid",
+  market: "BTC",
+});
+console.log(perpetuals[0]?.data.mark_price, perpetuals[0]?.data.funding_rate);
 ```
+
+Perpetual ticker decimal values remain strings, and each row is a partial
+venue update rather than an accumulated snapshot. Trade data exposes optional
+`maker` and `taker` identifiers when supplied by the venue.
 
 The browser build uses the native browser WebSocket implementation; Node uses
 the bundled Node transport. Streams reconnect automatically after transport
@@ -458,7 +469,7 @@ import type {
 
 ## Snapshot-first architecture
 
-Standardised historical data (`events`, `trades`, `intents`, `l2Snapshots`, `l2Updates`, `fundingRates`, `markPrices`, `propammQuoteLadders`, `bbo`, `depthMetrics`, `ohlcv`, `volume`, `vwap`, `volatility`, and `replay`) uses a **snapshot-first** approach:
+Standardised historical data (`events`, `trades`, `intents`, `optionTickers`, `perpetualTickers`, `l2Snapshots`, `l2Updates`, `fundingRates`, `markPrices`, `propammQuoteLadders`, `bbo`, `depthMetrics`, `ohlcv`, `volume`, `vwap`, `volatility`, and `replay`) uses a **snapshot-first** approach:
 
 1. Hourly `.jsonl.zst` snapshot files are discovered via `GET /snapshots` and downloaded via `GET /download` on first access.
 2. Subsequent calls for the same date range read from the local cache — no network round-trips.
