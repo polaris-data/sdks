@@ -6,7 +6,7 @@ use logtest::Logger;
 use polaris_data::{
     AmountKind, CatalogQuery, HistoricalQuery, HistoricalRowsQuery, HistoricalStream, IntentStatus,
     OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery, OptionTickerRowsQuery, PolarisClient,
-    PolarisError, ReplayQuery, blocking,
+    PolarisError, RawChannelQuery, ReplayQuery, blocking,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -693,6 +693,81 @@ async fn direct_trades_and_funding_paginate_and_keep_nullable_fields() {
             .url
             .query_pairs()
             .any(|(key, _)| key == "start" || key == "end")
+    );
+}
+
+#[tokio::test]
+async fn raw_channel_paginates_exact_text_and_keeps_legacy_raw_separate() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().expect("tempdir");
+    let client = PolarisClient::builder()
+        .base_url(server.uri())
+        .api_key("secret")
+        .dataset_root(root.path())
+        .build()
+        .expect("client");
+    Mock::given(method("GET"))
+        .and(path("/raw/binance/trades"))
+        .and(query_param("start", "10"))
+        .and(query_param("end", "10"))
+        .and(query_param("limit", "1000"))
+        .and(header("authorization", "Bearer secret"))
+        .respond_with(|request: &wiremock::Request| {
+            let second = request
+                .url
+                .query_pairs()
+                .any(|(key, value)| key == "cursor" && value == "next");
+            ResponseTemplate::new(200).set_body_json(json!({
+                "items": [{
+                    "capture_id": if second { "c2" } else { "c1" },
+                    "collector_timestamp": 10,
+                    "recorder_version": "v1",
+                    "ingested_at": 11,
+                    "additional_context": {"channel": "trades"},
+                    "original_json": "{ \"price\": 1.0 }"
+                }],
+                "has_more": !second,
+                "next_cursor": if second { None } else { Some("next") }
+            }))
+        })
+        .mount(&server)
+        .await;
+
+    let query = RawChannelQuery {
+        exchange: "binance".into(),
+        event: "trades".into(),
+        start: 10,
+        end: 10,
+    };
+    let rows = collect_stream(
+        client
+            .raw_channel(query.clone())
+            .await
+            .expect("raw channel"),
+    )
+    .await
+    .expect("rows");
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.capture_id.as_str())
+            .collect::<Vec<_>>(),
+        ["c1", "c2"]
+    );
+    assert_eq!(rows[0].original_json, "{ \"price\": 1.0 }");
+    assert_eq!(rows[0].additional_context["channel"], "trades");
+    assert!(
+        client
+            .raw_channel(RawChannelQuery { start: 11, ..query })
+            .await
+            .is_err()
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|request| request.url.path() != "/raw")
     );
 }
 

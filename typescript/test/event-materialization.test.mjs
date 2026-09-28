@@ -101,6 +101,34 @@ test("direct historical rows paginate, filter, and keep flat nullable fields", a
   client.close();
 });
 
+test("rawChannel pages exact captures with required channel and time bounds", async () => {
+  const { PolarisClient } = await import("../dist/node/index.js");
+  const calls = [];
+  const capture = {
+    capture_id: "c1", collector_timestamp: 10, recorder_version: "v1", ingested_at: 11,
+    additional_context: { channel: "trades" }, original_json: '{ "price": 1.0 }',
+  };
+  const client = new PolarisClient({ baseUrl: "https://api.example", apiKey: "secret", fetch: async (input, init) => {
+    const url = new URL(input);
+    calls.push({ url, headers: init.headers });
+    const second = url.searchParams.get("cursor") === "next";
+    const body = { items: [{ ...capture, capture_id: second ? "c2" : "c1" }],
+      has_more: !second, next_cursor: second ? null : "next" };
+    return new Response(JSON.stringify(body), { status: 200 });
+  } });
+  const rows = await client.rawChannel({ exchange: "binance", event: "trades", start: 10, end: 10 });
+  assert.deepEqual(rows.map((row) => row.capture_id), ["c1", "c2"]);
+  assert.equal(rows[0].original_json, '{ "price": 1.0 }');
+  assert.equal(calls[0].url.pathname, "/raw/binance/trades");
+  assert.equal(calls[0].url.searchParams.get("start"), "10");
+  assert.equal(calls[0].url.searchParams.get("end"), "10");
+  assert.equal(calls[0].headers.Authorization, "Bearer secret");
+  assert.equal(calls[1].url.searchParams.get("cursor"), "next");
+  await assert.rejects(client.rawChannel({ exchange: "", event: "trades", start: 10, end: 10 }), /exchange and event/);
+  await assert.rejects(client.rawChannel({ exchange: "binance", event: "trades", start: 11, end: 10 }), /start and end/);
+  client.close();
+});
+
 test("new event shapes are typed, filtered, and accepted by v2 decoding", async () => {
   const { PolarisClient } = await import("../dist/node/index.js");
   const fixture = await readFile(

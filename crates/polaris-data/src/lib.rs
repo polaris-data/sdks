@@ -26,11 +26,11 @@ pub use models::{
     OptionTickerRow, OptionTickerRowsQuery, OrderbookData, OrderbookDataV2, OrderbookEvent,
     OrderbookEventV2, OrderbookLevel, PerpetualTickerData, PerpetualTickerEvent,
     PerpetualTickerEventV2, PointSeriesData, PointSeriesEvent, PointSeriesEventV2, PropammQuote,
-    PropammQuoteLadderData, PropammQuoteLadderEvent, PropammQuoteLadderValues, RawQuery,
-    RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, ReplayStream,
-    SettlementTransaction, SnapshotEntry, StandardEvent, StandardEventV2, StreamQuery, TimeInput,
-    TradeDataV2, TradeEvent, TradeEventV2, TradeRow, TradingViewCandle, TradingViewOhlcv,
-    TradingViewVolume, VolatilityBar, VolumeBar, VwapBar,
+    PropammQuoteLadderData, PropammQuoteLadderEvent, PropammQuoteLadderValues, RawCaptureRow,
+    RawChannelQuery, RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery,
+    ReplayStream, SettlementTransaction, SnapshotEntry, StandardEvent, StandardEventV2,
+    StreamQuery, TimeInput, TradeDataV2, TradeEvent, TradeEventV2, TradeRow, TradingViewCandle,
+    TradingViewOhlcv, TradingViewVolume, VolatilityBar, VolumeBar, VwapBar,
 };
 pub use orderbook::OrderbookBuilder;
 #[doc(hidden)]

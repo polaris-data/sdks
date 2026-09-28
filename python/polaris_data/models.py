@@ -298,6 +298,15 @@ class FundingRateRow(_FundingRateRowRequired, total=False):
     premium: Optional[str]
 
 
+class RawCaptureRow(TypedDict):
+    capture_id: str
+    collector_timestamp: int
+    recorder_version: str
+    ingested_at: int
+    additional_context: Any
+    original_json: str
+
+
 class PerpetualTickerData(TypedDict, total=False):
     last_price: str
     mark_price: str

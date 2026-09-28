@@ -20,9 +20,9 @@ use crate::{
     DownloadManifestQuery, DownloadManifestResponse, FundingRateRow, HistoricalQuery,
     HistoricalRowsQuery, HistoricalStream, IntentEvent, ListSnapshotsQuery, OhlcvOutput,
     OhlcvQuery, OptionTickerRow, OptionTickerRowsQuery, OrderbookEvent, PerpetualTickerEvent,
-    PointSeriesEvent, PolarisError, PropammQuoteLadderEvent, RawQuery, RawReplayQuery,
-    RawReplayStream, RealtimeStream, ReplayQuery, SnapshotEntry, StandardEvent, StreamQuery,
-    TimeInput, TradeEvent, TradeRow, VolatilityBar, VolumeBar, VwapBar,
+    PointSeriesEvent, PolarisError, PropammQuoteLadderEvent, RawCaptureRow, RawChannelQuery,
+    RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, SnapshotEntry,
+    StandardEvent, StreamQuery, TimeInput, TradeEvent, TradeRow, VolatilityBar, VolumeBar, VwapBar,
     replay::{LocalExactReplayIterator, LocalReplayIterator},
 };
 
@@ -261,6 +261,14 @@ impl PolarisClient {
 
     pub fn raw(&self, query: RawQuery) -> Result<Vec<Value>, PolarisError> {
         self.run(self.inner.raw(query))
+    }
+
+    pub fn raw_channel(
+        &self,
+        query: RawChannelQuery,
+    ) -> Result<HistoricalIterator<RawCaptureRow>, PolarisError> {
+        let stream = self.run(self.inner.raw_channel(query))?;
+        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 
     pub fn raw_replay(&self, query: RawReplayQuery) -> Result<RawReplayIterator, PolarisError> {

@@ -294,6 +294,29 @@ pub struct RawQuery {
     pub limit: usize,
 }
 
+/// Query for exact captures from one venue-native raw channel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawChannelQuery {
+    pub exchange: String,
+    pub event: String,
+    /// Inclusive collector time in Unix milliseconds.
+    pub start: i64,
+    /// Inclusive collector time in Unix milliseconds.
+    pub end: i64,
+}
+
+/// One capture from `GET /raw/{exchange}/{event}`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RawCaptureRow {
+    pub capture_id: String,
+    pub collector_timestamp: i64,
+    pub recorder_version: String,
+    pub ingested_at: i64,
+    pub additional_context: Value,
+    /// Exact upstream JSON text; intentionally left unparsed.
+    pub original_json: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawReplayQuery {
     pub source: String,

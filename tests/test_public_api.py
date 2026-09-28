@@ -46,6 +46,7 @@ from polaris_data import (
     PropammQuoteLadderData,
     PropammQuoteLadderEvent,
     PropammQuoteLadderValues,
+    RawCaptureRow,
     RateLimitedError,
     RealtimeStream,
     SettlementTransaction,
@@ -106,6 +107,7 @@ def test_top_level_exports_are_stable() -> None:
         "PropammQuoteLadderData",
         "PropammQuoteLadderEvent",
         "PropammQuoteLadderValues",
+        "RawCaptureRow",
         "RateLimitedError",
         "RealtimeStream",
         "SettlementTransaction",
@@ -282,6 +284,13 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("to", keyword_only, None),
         ("limit", keyword_only, 1000),
     ]
+    assert _parameters(PolarisClient.raw_channel) == [
+        ("self", positional, required),
+        ("exchange", keyword_only, required),
+        ("event", keyword_only, required),
+        ("start", keyword_only, required),
+        ("end", keyword_only, required),
+    ]
     assert _parameters(PolarisClient.ohlcv) == [
         ("self", positional, required),
         ("source", keyword_only, required),
@@ -380,6 +389,7 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
         "Iterator[FundingRateRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
     )
     assert inspect.signature(PolarisClient.option_tickers).return_annotation == "Iterator[OptionTickerRow]"
+    assert inspect.signature(PolarisClient.raw_channel).return_annotation == "Iterator[RawCaptureRow]"
     assert inspect.signature(PolarisClient.stream).return_annotation == "RealtimeStream"
     assert (
         inspect.signature(PolarisClient.ohlcv).return_annotation
@@ -432,6 +442,7 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
     assert get_type_hints(TradeRow)["price"] is float
     assert get_type_hints(OptionTickerRow)["instrument"] is str
     assert get_type_hints(FundingRateRow)["funding_rate"] == str | None
+    assert get_type_hints(RawCaptureRow)["original_json"] is str
     assert get_type_hints(OptionTickerData)["option_type"] == Literal["call", "put"]
     assert get_type_hints(PerpetualTickerData)["funding_timestamp"] is int
     assert get_type_hints(PerpetualTickerEventV2)["data"] is PerpetualTickerData

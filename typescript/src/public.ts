@@ -56,6 +56,8 @@ export type {
   FundingRateData,
   FundingRateEvent,
   FundingRateRow,
+  RawCaptureRow,
+  RawChannelOptions,
   MarkPriceData,
   MarkPriceEvent,
   PropammQuote,

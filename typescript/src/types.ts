@@ -358,6 +358,24 @@ export interface FundingRateRow {
   premium?: string | null;
 }
 
+/** Exact raw capture from GET /raw/{exchange}/{event}. */
+export interface RawCaptureRow {
+  capture_id: string;
+  collector_timestamp: number;
+  recorder_version: string;
+  ingested_at: number;
+  additional_context: unknown;
+  /** Exact upstream JSON text, intentionally unparsed. */
+  original_json: string;
+}
+
+export interface RawChannelOptions {
+  exchange: string;
+  event: string;
+  start: number;
+  end: number;
+}
+
 export interface MarkPriceData extends Record<string, unknown> {
   series: "mark_price" | "mark_px";
   value: number | string;

@@ -207,6 +207,7 @@ Use it to inspect available data, query historical market data, and open realtim
 | `replay(source=..., market=..., from_=None, to=None, standard=True, allow_gaps=False, parallel=False, materialize_orderbooks=True, output="iterator", batch_size=65536)` | Iterator, exact Arrow batches, or Pandas DataFrame | Backfills and lossless replay-style processing |
 | `stream(source=..., markets=[...], instrument=None, include_buffer=False, materialize_orderbooks=True)` | Closeable iterator of realtime events | Open-ended normalized market data with automatic reconnection and optional exact-instrument filtering |
 | `raw(source=..., market=..., from_=None, to=None, limit=1000)` | List of raw source payloads | Inspect exchange-native payloads and compare raw vs standardized schemas |
+| `raw_channel(exchange=..., event=..., start=..., end=...)` | Iterator of `RawCaptureRow` values | Query exact captures from one venue-native channel |
 
 ### Standardized Data Schemas
 
@@ -232,6 +233,8 @@ Use it to inspect available data, query historical market data, and open realtim
 Historical row methods are single-pass iterators. Iterate them directly for bounded memory, or call `list(...)` when you intentionally want an eager result. Direct endpoint request and decode errors can occur while iterating. If you stop early, call the generator's `close()` method to promptly release its native reader. `bbo(interval="1s")` emits the last quote from each non-empty, UTC-aligned interval.
 
 `trades`, `option_tickers`, and `funding_rates` query `/historical/trades`, `/historical/options-ticker`, and `/historical/funding-rates` respectively. Their `start` and `end` bounds are inclusive Unix milliseconds, and omitted bounds use the API defaults. They follow all cursor pages and return flat rows; fields such as `price`, `funding_rate`, and option Greeks are at the top level rather than under `data`. These methods no longer accept `from_`, `to`, or `allow_gaps`. Older direct history requires an API key and these methods do not provide snapshot coverage checks or local caching.
+
+`raw_channel` queries `/raw/{exchange}/{event}` with required inclusive Unix-millisecond bounds and follows all cursor pages. For example, `list(client.raw_channel(exchange="binance", event="trades", start=1704067200000, end=1704067200000))` returns capture metadata and `original_json` as exact text. It does not parse that JSON. The route exposes the latest seven days without a key; older ranges require an API key. The existing source/market `raw` and raw replay methods retain their current interface.
 
 Standardized replay automatically prefetches and decompresses one subsequent
 snapshot file on a bounded background worker while preserving file and row

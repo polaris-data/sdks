@@ -31,6 +31,7 @@ from .models import (
     OptionTickerRow,
     PerpetualTickerEvent,
     PropammQuoteLadderEvent,
+    RawCaptureRow,
     SnapshotEntry,
     TradeRow,
 )
@@ -798,6 +799,25 @@ class PolarisClient:
             self._time(to),
             limit,
         )
+
+    def raw_channel(
+        self,
+        *,
+        exchange: str,
+        event: str,
+        start: int,
+        end: int,
+    ) -> Iterator[RawCaptureRow]:
+        """Iterate exact raw captures for one venue-native channel."""
+        if not exchange.strip() or not event.strip() or exchange in {".", ".."} or event in {".", ".."}:
+            raise ValueError("exchange and event must be non-empty channel identifiers")
+        for name, value in (("start", start), ("end", end)):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise TypeError(f"{name} must be an integer Unix millisecond timestamp")
+        if start < 0 or end < start:
+            raise ValueError("start and end must be non-negative inclusive milliseconds with start <= end")
+        iterator = self._call("raw_channel", exchange, event, start, end)
+        return self._iterate(iterator, "raw_channel")
 
     def l2_snapshots(
         self,

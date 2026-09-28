@@ -103,6 +103,7 @@ Use it to inspect available data, query historical market data, and open realtim
 | `l2Snapshots(opts)` | Array of standardised orderbook snapshot rows | Order book reconstruction and microstructure analysis |
 | `l2Updates(opts)` | Array of raw orderbook snapshots and deltas | High-throughput application-managed books |
 | `fundingRates(opts)` | Array of flat `FundingRateRow` values | Partial funding observations |
+| `rawChannel({ exchange, event, start, end })` | Array of `RawCaptureRow` values | Query exact captures from one venue-native channel |
 | `markPrices(opts)` | Array of mark-price point series rows | Basis analysis, mark tracking, and liquidation-related research |
 | `propammQuoteLadders(opts)` | Array of typed PropAMM quote-ladder events | Full-precision Ethereum execution-quote analysis |
 | `ohlcv(opts)` | Aggregated OHLCV bars | Charting, bar-based strategies, and downstream TA workflows |
@@ -470,6 +471,8 @@ import type {
 ## Snapshot-first architecture
 
 `trades`, `optionTickers`, and `fundingRates` use their direct `/historical/*` routes. Their filters are optional `source` and `market`, optional `instrument` for option tickers, and inclusive Unix-millisecond `start` and `end`. They follow all cursor pages and return flat API rows instead of event envelopes. Omitted bounds use the API defaults; older history requires an API key. These three methods do not use the local snapshot cache or provide gap guarantees. This is a breaking change from the former `from`/`to` inputs and nested `data` results.
+
+`rawChannel({ exchange, event, start, end })` uses `/raw/{exchange}/{event}` with required inclusive Unix-millisecond bounds. It follows all cursor pages and returns exact capture metadata plus an unparsed `original_json` string. The latest seven days are public; older ranges require an API key.
 
 The remaining standardised historical methods (`events`, `intents`, `perpetualTickers`, `l2Snapshots`, `l2Updates`, `markPrices`, `propammQuoteLadders`, `bbo`, `depthMetrics`, `ohlcv`, `volume`, `vwap`, `volatility`, and `replay`) use a **snapshot-first** approach:
 

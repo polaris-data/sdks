@@ -6,8 +6,8 @@ use polaris_data::{
     BboQuery, BboQuote, DepthMetricsRow, FundingRateRow, HistoricalQuery, HistoricalRowsQuery,
     IntentEvent, ListSnapshotsQuery, OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery,
     OptionTickerRow, OptionTickerRowsQuery, OrderbookBuilder, PerpetualTickerEvent,
-    PointSeriesEvent, PolarisError, PropammQuoteLadderEvent, RawQuery, RawReplayQuery, ReplayQuery,
-    StandardEvent, StreamQuery, TimeInput, TradeRow,
+    PointSeriesEvent, PolarisError, PropammQuoteLadderEvent, RawCaptureRow, RawChannelQuery,
+    RawQuery, RawReplayQuery, ReplayQuery, StandardEvent, StreamQuery, TimeInput, TradeRow,
     blocking::{self, RawReplayCacheConfig},
 };
 use pyo3::{
@@ -594,6 +594,30 @@ impl NativeClient {
             })
             .map_err(native_error)?;
         to_python(py, &result)
+    }
+
+    #[pyo3(signature = (exchange, event, start, end))]
+    fn raw_channel(
+        &self,
+        py: Python<'_>,
+        exchange: String,
+        event: String,
+        start: i64,
+        end: i64,
+    ) -> PyResult<NativeHistorical> {
+        let iterator = py
+            .detach(|| {
+                self.inner.raw_channel(RawChannelQuery {
+                    exchange,
+                    event,
+                    start,
+                    end,
+                })
+            })
+            .map_err(native_error)?;
+        Ok(NativeHistorical::new(
+            NativeHistoricalIterator::RawCaptures(iterator),
+        ))
     }
 
     #[pyo3(signature = (source, market, from_=None, to=None, limit=1000))]
@@ -1183,6 +1207,7 @@ enum NativeHistoricalIterator {
     Intents(blocking::HistoricalIterator<IntentEvent>),
     OptionTickers(blocking::HistoricalIterator<OptionTickerRow>),
     FundingRates(blocking::HistoricalIterator<FundingRateRow>),
+    RawCaptures(blocking::HistoricalIterator<RawCaptureRow>),
     PerpetualTickers(blocking::HistoricalIterator<PerpetualTickerEvent>),
     Bbo(blocking::HistoricalIterator<BboQuote>),
     Points(blocking::HistoricalIterator<PointSeriesEvent>),
@@ -1258,6 +1283,7 @@ impl NativeHistorical {
             NativeHistoricalIterator::Intents(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::OptionTickers(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::FundingRates(iterator) => next_historical(py, iterator),
+            NativeHistoricalIterator::RawCaptures(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::PerpetualTickers(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Bbo(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Points(iterator) => next_historical(py, iterator),

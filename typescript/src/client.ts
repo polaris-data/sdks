@@ -13,6 +13,8 @@ import type {
   FetchLike,
   FundingRateEvent,
   FundingRateRow,
+  RawCaptureRow,
+  RawChannelOptions,
   HistoricalQueryOptions,
   HistoricalRowsOptions,
   L2UpdatesOptions,
@@ -333,6 +335,25 @@ export class BasePolarisClient {
   /** Return flat trades from the direct historical API. */
   async trades(options: HistoricalRowsOptions = {}): Promise<TradeRow[]> {
     return this._historicalRows("/historical/trades", options, isTradeRow);
+  }
+
+  /** Return exact raw captures from one venue-native channel. */
+  async rawChannel(options: RawChannelOptions): Promise<RawCaptureRow[]> {
+    if (!options.exchange.trim() || !options.event.trim() ||
+      options.exchange === "." || options.exchange === ".." ||
+      options.event === "." || options.event === "..") {
+      throw new PolarisError("exchange and event must be non-empty channel identifiers");
+    }
+    if (!Number.isSafeInteger(options.start) || options.start < 0 ||
+      !Number.isSafeInteger(options.end) || options.end < options.start) {
+      throw new PolarisError("start and end must be non-negative inclusive milliseconds with start <= end");
+    }
+    const path = `/raw/${encodeURIComponent(options.exchange)}/${encodeURIComponent(options.event)}`;
+    return this._pagedRows(path, {
+      start: String(options.start),
+      end: String(options.end),
+      limit: "1000",
+    }, isRawCaptureRow);
   }
 
   /** Return canonical RFQ, quote, and executable-intent observations. */
@@ -1886,6 +1907,16 @@ function isFundingRateRow(value: unknown): value is FundingRateRow {
       "instrument", "funding_rate", "index_price", "mark_price", "open_interest",
       "predicted_funding_rate", "premium",
     ], "string");
+}
+
+function isRawCaptureRow(value: unknown): value is RawCaptureRow {
+  return isRecord(value) &&
+    typeof value.capture_id === "string" &&
+    Number.isSafeInteger(value.collector_timestamp) &&
+    typeof value.recorder_version === "string" &&
+    Number.isSafeInteger(value.ingested_at) &&
+    "additional_context" in value &&
+    typeof value.original_json === "string";
 }
 
 function intervalToMs(interval: string): number {

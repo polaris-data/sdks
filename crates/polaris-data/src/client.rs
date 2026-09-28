@@ -26,9 +26,10 @@ use crate::{
         OptionTickerRowsQuery, OrderbookData, OrderbookDataV2, OrderbookEvent, OrderbookEventV2,
         OrderbookLevel, PerpetualTickerData, PerpetualTickerEvent, PerpetualTickerEventV2,
         PointSeriesData, PointSeriesEvent, PointSeriesEventV2, PropammQuoteLadderData,
-        PropammQuoteLadderEvent, RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream,
-        ReplayQuery, ReplayStream, SnapshotEntry, StandardEvent, StreamQuery, TradeDataV2,
-        TradeEvent, TradeEventV2, TradeRow, VolatilityBar, VolumeBar, VwapBar,
+        PropammQuoteLadderEvent, RawCaptureRow, RawChannelQuery, RawQuery, RawReplayQuery,
+        RawReplayStream, RealtimeStream, ReplayQuery, ReplayStream, SnapshotEntry, StandardEvent,
+        StreamQuery, TradeDataV2, TradeEvent, TradeEventV2, TradeRow, VolatilityBar, VolumeBar,
+        VwapBar,
     },
     ohlcv,
     orderbook::{BookUpdate, BookView, parse_level_tuple},
@@ -358,6 +359,39 @@ impl PolarisClient {
             }
         }
         Ok(rows)
+    }
+
+    /// Stream exact captures from one venue-native raw channel.
+    pub async fn raw_channel(
+        &self,
+        query: RawChannelQuery,
+    ) -> Result<HistoricalStream<RawCaptureRow>, PolarisError> {
+        if query.exchange.trim().is_empty()
+            || query.event.trim().is_empty()
+            || matches!(query.exchange.as_str(), "." | "..")
+            || matches!(query.event.as_str(), "." | "..")
+        {
+            return Err(PolarisError::InvalidResponse(
+                "exchange and event must be non-empty".to_owned(),
+            ));
+        }
+        if query.start < 0 || query.end < 0 || query.start > query.end {
+            return Err(PolarisError::InvalidResponse(
+                "start and end must be non-negative inclusive milliseconds with start <= end"
+                    .to_owned(),
+            ));
+        }
+        let mut url = url::Url::parse("https://polaris.invalid/").expect("valid URL");
+        url.path_segments_mut()
+            .expect("URL has path segments")
+            .extend(["raw", query.exchange.as_str(), query.event.as_str()]);
+        let path = url.path().to_owned();
+        let params = vec![
+            ("start".to_owned(), query.start.to_string()),
+            ("end".to_owned(), query.end.to_string()),
+            ("limit".to_owned(), "1000".to_owned()),
+        ];
+        self.paginated_rows(path, params, AuthMode::IfAvailable)
     }
 
     pub async fn raw_replay(&self, query: RawReplayQuery) -> Result<RawReplayStream, PolarisError> {

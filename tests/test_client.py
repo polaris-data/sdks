@@ -2631,6 +2631,41 @@ def test_direct_historical_older_range_maps_missing_authentication(tmp_path) -> 
         client.close()
 
 
+def test_raw_channel_pages_exact_captures(tmp_path) -> None:
+    calls: list[httpx.Request] = []
+    capture = {
+        "capture_id": "c1", "collector_timestamp": 10, "recorder_version": "v1",
+        "ingested_at": 11, "additional_context": {"channel": "trades"},
+        "original_json": '{ "price": 1.0 }',
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        assert request.url.path == "/raw/binance/trades"
+        assert request.url.params["start"] == "10"
+        assert request.url.params["end"] == "10"
+        assert request.url.params["limit"] == "1000"
+        next_page = request.url.params.get("cursor") == "next"
+        return httpx.Response(200, json={
+            "items": [{**capture, "capture_id": "c2" if next_page else "c1"}],
+            "has_more": not next_page,
+            "next_cursor": None if next_page else "next",
+        })
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        rows = list(client.raw_channel(exchange="binance", event="trades", start=10, end=10))
+        assert [row["capture_id"] for row in rows] == ["c1", "c2"]
+        assert rows[0]["original_json"] == '{ "price": 1.0 }'
+        assert rows[0]["additional_context"] == {"channel": "trades"}
+        assert calls[0].headers["authorization"] == "Bearer polaris_key_test"
+        assert calls[1].url.params["cursor"] == "next"
+        with pytest.raises(ValueError, match="exchange and event"):
+            list(client.raw_channel(exchange="", event="trades", start=10, end=10))
+    finally:
+        client.close()
+
+
 def test_intents_are_typed_filtered_and_preserve_nested_payloads(tmp_path) -> None:
     _write_intent_fixture(tmp_path)
     client = PolarisClient(base_url="http://127.0.0.1:1", dataset_root=tmp_path)
