@@ -215,16 +215,16 @@ Use it to inspect available data, query historical market data, and open realtim
 | --- | --- | --- |
 | `events(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True, output="iterator", batch_size=65536)` | Iterator, exact Arrow batches, or Pandas DataFrame | General-purpose historical analysis and exact event transport |
 | `trades(source=None, market=None, start=None, end=None, output="iterator", batch_size=65536)` | Flat `TradeRow` iterator, Arrow batches, or Pandas DataFrame | Direct trade queries and notebook analysis |
-| `intents(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of typed intent events | Process canonical RFQ, quote, and executable-intent observations |
+| `intents(source=None, market=None, instrument=None, intent_id=None, start=None, end=None)` | Iterator of flat `IntentRow` values | Pair-shaped RFQ and intent observations |
 | `option_tickers(source=None, market=None, instrument=None, start=None, end=None)` | Iterator of flat `OptionTickerRow` values | Read an underlying's whole option chain or one exact contract |
-| `perpetual_tickers(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of typed perpetual ticker events | Read partial venue-published prices, open interest, premium, and funding state |
+| `perpetual_tickers(source=None, market=None, start=None, end=None)` | Iterator of flat `FundingRateRow` values | Read funding-bearing perpetual ticker observations |
 | `l2_snapshots(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)` | Iterator of complete orderbook rows | Order book reconstruction and microstructure analysis |
 | `l2_updates(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of raw orderbook snapshots and deltas | High-throughput application-managed books |
 | `funding_rates(source=None, market=None, start=None, end=None, output="iterator", batch_size=65536)` | Flat `FundingRateRow` iterator, Arrow batches, or Pandas DataFrame | Partial funding observations |
 | `ohlcv_rows(source=None, market=None, instrument=None, interval=None, start=None, end=None)` | Iterator of flat `OhlcvRow` values | Every venue-published candle update, including open-candle revisions |
 | `intent_rows(source=None, market=None, instrument=None, intent_id=None, start=None, end=None)` | Iterator of flat `IntentRow` values | Pair-shaped intent observations and exact intent ID filtering |
 | `quote_rows(source=None, market=None, instrument=None, observation_id=None, start=None, end=None)` | Iterator of flat `QuoteRow` values | Individual PropAMM quote points and exact observation filtering |
-| `mark_prices(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Basis analysis, mark tracking, and liquidation-related research |
+| `mark_prices(source=None, market=None, start=None, end=None, output="iterator", batch_size=65536)` | Flat `FundingRateRow` iterator, Arrow batches, or Pandas DataFrame | Mark prices published with funding observations |
 | `propamm_quote_ladders(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, exact Arrow batches, or Pandas DataFrame | PropAMM execution-quote analysis with full-precision Ethereum amounts |
 | `ohlcv(source=..., market=..., from_=None, to=None, interval=..., format=None, allow_gaps=False, output="records")` | Aggregated OHLCV records or Pandas DataFrame | Charting, bar-based strategies, and downstream TA workflows |
 | `volume(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False, output="records")` | Bucketed volume records or Pandas DataFrame | Volume profiling and participation analysis |
@@ -239,7 +239,11 @@ Historical row methods are single-pass iterators. Iterate them directly for boun
 
 `raw_channel` queries `/raw/{exchange}/{event}` with required inclusive Unix-millisecond bounds and follows all cursor pages. For example, `list(client.raw_channel(exchange="binance", event="trades", start=1704067200000, end=1704067200000))` returns capture metadata and `original_json` as exact text. It does not parse that JSON. The route exposes the latest seven days without a key; older ranges require an API key. The existing source/market `raw` and raw replay methods retain their current interface.
 
-`ohlcv_rows`, `intent_rows`, and `quote_rows` query their matching `/historical/*` routes with optional exact filters and inclusive Unix-millisecond bounds. They follow all cursor pages; omitted bounds use the API's default recent window. `ohlcv_rows` returns every published candle update and filters bounds by candle open time. `intent_rows` includes pair-shaped observations but not multi-asset intents. `quote_rows` returns individual quote points rather than complete quote ladders. The existing `ohlcv`, `intents`, and `propamm_quote_ladders` methods keep their snapshot-backed behavior.
+`ohlcv_rows`, `intent_rows`, and `quote_rows` query their matching `/historical/*` routes with optional exact filters and inclusive Unix-millisecond bounds. They follow all cursor pages; omitted bounds use the API's default recent window. `ohlcv_rows` returns every published candle update and filters bounds by candle open time. `intent_rows` includes pair-shaped observations but not multi-asset intents. `quote_rows` returns individual quote points rather than complete quote ladders. `intents` now has the same pair-shaped scope as `intent_rows`; `propamm_quote_ladders` remains snapshot-backed.
+
+`perpetual_tickers` now returns all flat funding-bearing observations from `/historical/funding-rates`. `mark_prices` returns only those rows whose nullable `mark_price` is present. These methods no longer expose the full perpetual-ticker or mark-price event streams. Their inputs are optional `source` and `market` plus inclusive Unix-millisecond `start` and `end`; `from_`, `to`, and `allow_gaps` have been removed. Use `events` or `replay` for the original event envelopes.
+
+`ohlcv`, `volume`, `vwap`, and `volatility` now read venue candle updates from `/historical/ohlcv`. For each candle, they use the latest collector revision. `ohlcv` and `volume` use the requested exact candle interval and venue base volume; missing volume or trade count is represented as zero. `vwap` divides venue quote volume by base volume, falling back to close times base volume when quote volume is absent. `volatility` calculates sample standard deviation of log returns from the finest available candle closes shorter than the requested interval; it returns no row when fewer than two returns fall in a bucket. These calculations are not trade-level aggregates. Their existing `from_` and `to` inputs are applied as inclusive candle-open bounds; `allow_gaps` remains accepted but does not trigger snapshot coverage checks.
 
 Standardized replay automatically prefetches and decompresses one subsequent
 snapshot file on a bounded background worker while preserving file and row
@@ -255,13 +259,12 @@ those fields requires one schema pass before batches are emitted.
 Trade output includes nullable `maker` and `taker` fields when the venue
 publishes account or address identifiers.
 
-Perpetual tickers preserve venue decimal values as strings and represent each
-message as a partial update; omitted fields are not accumulated from earlier
-rows:
+Perpetual ticker rows preserve venue decimal values as strings. They contain
+only values published with funding observations:
 
 ```python
-for event in client.perpetual_tickers(source="hyperliquid", market="BTC"):
-    print(event["data"].get("mark_price"), event["data"].get("funding_rate"))
+for row in client.perpetual_tickers(source="hyperliquid", market="BTC"):
+    print(row.get("mark_price"), row.get("funding_rate"))
 ```
 
 The eager aggregate methods (`ohlcv`, `volume`, `vwap`, and `volatility`)
@@ -301,20 +304,17 @@ for event in client.propamm_quote_ladders(
     print(event["data"]["values"]["quotes"])
 ```
 
-Intent recorders expose RFQs, quotes, and executable orders through the same
-canonical `IntentEvent` shape. Read each venue with the `intents` market; rows
-remain individual observations in storage order and are not lifecycle-reduced:
+`intents` returns pair-shaped flat observations from `/historical/intents`:
 
 ```python
 for source in ("uniswapx", "lifi", "cowswap"):
     for event in client.intents(
         source=source,
         market="intents",
-        from_="2024-01-01T00:00:00Z",
-        to="2024-01-01T01:00:00Z",
+        start=1704067200000,
+        end=1704070800000,
     ):
-        data = event["data"]
-        print(source, data.get("rfq_id"), data.get("intent_id"), data.get("status"))
+        print(source, event.get("rfq_id"), event.get("intent_id"), event.get("status"))
 ```
 
 When the standardized row owns the exact captured upstream payload, it is
@@ -509,7 +509,7 @@ Pass `dataset_root=...` to `PolarisClient(...)` to override the root explicitly.
 
 ## Snapshot-first replay
 
-For standardized snapshot-backed data, `replay(...)`, `events(...)`, `intents(...)`, `perpetual_tickers(...)`, `mark_prices(...)`, `propamm_quote_ladders(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, `l2_updates(...)`, `volume(...)`, and default/tradingview `ohlcv(...)` prefer `/snapshots` plus daily bulk `/download?source=...&market=...&date=...&mode=json` manifests, and reuse local snapshot files when they already exist:
+For standardized snapshot-backed data, `replay(...)`, `events(...)`, `propamm_quote_ladders(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, and `l2_updates(...)` prefer `/snapshots` plus daily bulk `/download?source=...&market=...&date=...&mode=json` manifests, and reuse local snapshot files when they already exist:
 
 ```python
 from polaris_data import PolarisClient
@@ -524,7 +524,7 @@ with PolarisClient(api_key="polaris_key_your_key") as client:
         print(row)
 ```
 
-If the requested standardized range cannot be satisfied from available standardized snapshots, these snapshot-backed methods raise by default instead of falling back. Pass `allow_gaps=True` on those methods to return only covered data and receive a warning with the missing intervals. The three direct historical row methods do not accept `allow_gaps`.
+If the requested standardized range cannot be satisfied from available standardized snapshots, these snapshot-backed methods raise by default instead of falling back. Pass `allow_gaps=True` on those methods to return only covered data and receive a warning with the missing intervals. Direct historical row methods do not accept `allow_gaps`.
 
 ## Error handling
 

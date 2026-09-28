@@ -97,9 +97,9 @@ Use it to inspect available data, query historical market data, and open realtim
 | --- | --- | --- |
 | `events(opts)` | Array of standardised historical events | General-purpose historical analysis when you want the normalized event stream in memory |
 | `trades(opts)` | Array of flat `TradeRow` values | Direct trade queries and execution studies |
-| `intents(opts)` | Array of typed intent events | Process canonical RFQ, quote, and executable-intent observations |
+| `intents(opts)` | Array of flat `IntentRow` values | Pair-shaped RFQ and intent observations |
 | `optionTickers(opts)` | Array of flat `OptionTickerRow` values | Read an underlying's whole option chain or one exact contract with `instrument` |
-| `perpetualTickers(opts)` | Array of typed perpetual ticker events | Read partial venue-published prices, open interest, premium, and funding state |
+| `perpetualTickers(opts)` | Array of flat `FundingRateRow` values | Funding-bearing perpetual ticker observations |
 | `l2Snapshots(opts)` | Array of standardised orderbook snapshot rows | Order book reconstruction and microstructure analysis |
 | `l2Updates(opts)` | Array of raw orderbook snapshots and deltas | High-throughput application-managed books |
 | `fundingRates(opts)` | Array of flat `FundingRateRow` values | Partial funding observations |
@@ -107,28 +107,26 @@ Use it to inspect available data, query historical market data, and open realtim
 | `intentRows(opts)` | Array of flat `IntentRow` values | Pair-shaped intent observations |
 | `quoteRows(opts)` | Array of flat `QuoteRow` values | Individual PropAMM quote points |
 | `rawChannel({ exchange, event, start, end })` | Array of `RawCaptureRow` values | Query exact captures from one venue-native channel |
-| `markPrices(opts)` | Array of mark-price point series rows | Basis analysis, mark tracking, and liquidation-related research |
+| `markPrices(opts)` | Array of flat `FundingRateRow` values | Mark prices published with funding observations |
 | `propammQuoteLadders(opts)` | Array of typed PropAMM quote-ladder events | Full-precision Ethereum execution-quote analysis |
 | `ohlcv(opts)` | Aggregated OHLCV bars | Charting, bar-based strategies, and downstream TA workflows |
 | `ohlcvTradingView(opts)` | TradingView-shaped OHLCV payload | Feeding TradingView-compatible chart consumers directly |
-| `volume(opts)` | Bucketed trade volume series | Volume profiling and participation analysis |
+| `volume(opts)` | Venue candle base-volume series | Volume profiling and participation analysis |
 | `vwap(opts)` | Bucketed VWAP series | Execution benchmarking and price smoothing |
-| `volatility(opts)` | Bucketed realized volatility series | Risk modeling and intraperiod volatility analysis |
+| `volatility(opts)` | Candle-close realized volatility estimates | Risk modeling and intraperiod volatility analysis |
 | `bbo(opts)` | Best bid/offer quote series | Spread tracking, quote analytics, and top-of-book monitoring |
 | `depthMetrics(opts)` | Derived depth, spread, imbalance, and slippage metrics | Liquidity analysis and market impact estimation |
 
-All snapshot-based methods accept `from` and `to` as ISO 8601 strings, `Date`, or epoch microseconds. If one or both bounds are omitted, the client infers a bounded range from catalog metadata.
+Snapshot-based methods accept `from` and `to` as ISO 8601 strings, `Date`, or epoch milliseconds. If one or both bounds are omitted, the client infers a bounded range from catalog metadata.
 `replay({ standard: false })` is not supported in the TypeScript SDK.
 
-UniswapX, LI.FI, and CoW Swap expose RFQs, quotes, and executable orders with
-the same canonical `IntentEvent` shape. `intents()` returns the individual
-stored observations in order rather than lifecycle-reduced snapshots:
+`intents()` returns pair-shaped flat observations from `/historical/intents`:
 
 ```ts
 for (const source of ["uniswapx", "lifi", "cowswap"]) {
   const observations = await client.intents({ source, market: "intents" });
-  for (const { data } of observations) {
-    console.log(source, data.rfq_id, data.intent_id, data.status);
+  for (const row of observations) {
+    console.log(source, row.rfq_id, row.intent_id, row.status);
   }
 }
 ```
@@ -253,7 +251,7 @@ const depth = await client.depthMetrics({
 console.log(depth[0]);
 ```
 
-### Direct funding and snapshot-backed mark prices
+### Funding observations and mark prices
 
 ```ts
 import { PolarisClient } from "polaris-data";
@@ -270,8 +268,8 @@ const funding = await client.fundingRates({
 const marks = await client.markPrices({
   source: "hyperliquid",
   market: "BTC",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-02T00:00:00Z",
+  start: Date.parse("2024-01-01T00:00:00Z"),
+  end: Date.parse("2024-01-02T00:00:00Z"),
 });
 
 console.log(funding.length, marks.length);
@@ -477,9 +475,13 @@ import type {
 
 `rawChannel({ exchange, event, start, end })` uses `/raw/{exchange}/{event}` with required inclusive Unix-millisecond bounds. It follows all cursor pages and returns exact capture metadata plus an unparsed `original_json` string. The latest seven days are public; older ranges require an API key.
 
-`ohlcvRows`, `intentRows`, and `quoteRows` use their matching `/historical/*` routes. They accept optional `source`, `market`, and `instrument` filters, inclusive Unix-millisecond `start` and `end`, plus `interval`, `intentId`, or `observationId` respectively. All cursor pages are returned. `ohlcvRows` includes open-candle revisions and filters on candle open time; `intentRows` contains pair-shaped observations; `quoteRows` returns individual points. The existing `ohlcv`, `intents`, and `propammQuoteLadders` methods retain their snapshot-based calculations and event results.
+`ohlcvRows`, `intentRows`, and `quoteRows` use their matching `/historical/*` routes. They accept optional `source`, `market`, and `instrument` filters, inclusive Unix-millisecond `start` and `end`, plus `interval`, `intentId`, or `observationId` respectively. All cursor pages are returned. `ohlcvRows` includes open-candle revisions and filters on candle open time; `intentRows` contains pair-shaped observations; `quoteRows` returns individual points. `intents` now has the same pair-shaped scope as `intentRows`; `propammQuoteLadders` remains snapshot-backed.
 
-The remaining standardised historical methods (`events`, `intents`, `perpetualTickers`, `l2Snapshots`, `l2Updates`, `markPrices`, `propammQuoteLadders`, `bbo`, `depthMetrics`, `ohlcv`, `volume`, `vwap`, `volatility`, and `replay`) use a **snapshot-first** approach:
+`perpetualTickers` returns flat funding-bearing observations from `/historical/funding-rates`. `markPrices` returns only rows with a present `mark_price`. Both accept optional `source` and `market` and inclusive Unix-millisecond `start` and `end`; their previous `from` and `to` inputs and event-envelope results have changed. Use `events` or `replay` for the original event shapes.
+
+`ohlcv`, `ohlcvTradingView`, `volume`, `vwap`, and `volatility` now use `/historical/ohlcv`. Each candle's latest collector revision is selected. OHLCV and volume use the requested exact venue interval and base volume; missing volume or trade count becomes zero. VWAP uses quote volume divided by base volume and falls back to close times base volume when quote volume is absent. Volatility is the sample standard deviation of log returns from the finest available candle closes shorter than the requested interval; buckets with fewer than two returns are omitted. These are candle-derived results, not trade-derived results. `from` and `to` are applied as inclusive candle-open bounds, and the aggregate methods no longer perform snapshot coverage checks.
+
+The remaining standardised historical methods (`events`, `l2Snapshots`, `l2Updates`, `propammQuoteLadders`, `bbo`, `depthMetrics`, and `replay`) use a **snapshot-first** approach:
 
 1. Hourly `.jsonl.zst` snapshot files are discovered via `GET /snapshots` and downloaded via `GET /download` on first access.
 2. Subsequent calls for the same date range read from the local cache — no network round-trips.
