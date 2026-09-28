@@ -18,11 +18,12 @@ use tokio::runtime::{Handle, Runtime};
 use crate::{
     BboQuery, BboQuote, CatalogCount, CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic,
     DownloadManifestQuery, DownloadManifestResponse, FundingRateRow, HistoricalQuery,
-    HistoricalRowsQuery, HistoricalStream, IntentEvent, ListSnapshotsQuery, OhlcvOutput,
-    OhlcvQuery, OptionTickerRow, OptionTickerRowsQuery, OrderbookEvent, PerpetualTickerEvent,
-    PointSeriesEvent, PolarisError, PropammQuoteLadderEvent, RawCaptureRow, RawChannelQuery,
-    RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, SnapshotEntry,
-    StandardEvent, StreamQuery, TimeInput, TradeEvent, TradeRow, VolatilityBar, VolumeBar, VwapBar,
+    HistoricalRowsQuery, HistoricalStream, IntentEvent, IntentRow, IntentRowsQuery,
+    ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OhlcvRow, OhlcvRowsQuery, OptionTickerRow,
+    OptionTickerRowsQuery, OrderbookEvent, PerpetualTickerEvent, PointSeriesEvent, PolarisError,
+    PropammQuoteLadderEvent, QuoteRow, QuoteRowsQuery, RawCaptureRow, RawChannelQuery, RawQuery,
+    RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, SnapshotEntry, StandardEvent,
+    StreamQuery, TimeInput, TradeEvent, TradeRow, VolatilityBar, VolumeBar, VwapBar,
     replay::{LocalExactReplayIterator, LocalReplayIterator},
 };
 
@@ -220,6 +221,30 @@ impl PolarisClient {
         query: HistoricalQuery,
     ) -> Result<HistoricalIterator<IntentEvent>, PolarisError> {
         let stream = self.run(self.inner.intents(query))?;
+        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
+    }
+
+    pub fn intent_rows(
+        &self,
+        query: IntentRowsQuery,
+    ) -> Result<HistoricalIterator<IntentRow>, PolarisError> {
+        let stream = self.run(self.inner.intent_rows(query))?;
+        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
+    }
+
+    pub fn ohlcv_rows(
+        &self,
+        query: OhlcvRowsQuery,
+    ) -> Result<HistoricalIterator<OhlcvRow>, PolarisError> {
+        let stream = self.run(self.inner.ohlcv_rows(query))?;
+        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
+    }
+
+    pub fn quote_rows(
+        &self,
+        query: QuoteRowsQuery,
+    ) -> Result<HistoricalIterator<QuoteRow>, PolarisError> {
+        let stream = self.run(self.inner.quote_rows(query))?;
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 

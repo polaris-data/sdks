@@ -298,6 +298,91 @@ class FundingRateRow(_FundingRateRowRequired, total=False):
     premium: Optional[str]
 
 
+class _OhlcvRowRequired(TypedDict):
+    event_id: str
+    source: str
+    market: str
+    collector_timestamp: int
+    source_capture_id: str
+    schema_version: int
+    interval: str
+    open_timestamp: int
+    open: float
+    high: float
+    low: float
+    close: float
+
+
+class OhlcvRow(_OhlcvRowRequired, total=False):
+    exchange_timestamp: Optional[int]
+    instrument: Optional[str]
+    close_timestamp: Optional[int]
+    base_volume: Optional[float]
+    quote_volume: Optional[float]
+    trade_count: Optional[int]
+    is_closed: Optional[bool]
+
+
+class _IntentRowRequired(TypedDict):
+    event_id: str
+    source: str
+    market: str
+    collector_timestamp: int
+    source_capture_id: str
+    schema_version: int
+
+
+class IntentRow(_IntentRowRequired, total=False):
+    exchange_timestamp: Optional[int]
+    instrument: Optional[str]
+    amount_kind: Optional[str]
+    expires_at: Optional[int]
+    input_amount: Optional[str]
+    input_asset_id: Optional[str]
+    input_chain_id: Optional[str]
+    intent_id: Optional[str]
+    output_amount: Optional[str]
+    output_asset_id: Optional[str]
+    output_chain_id: Optional[str]
+    quote_id: Optional[str]
+    quoted_input_amount: Optional[str]
+    quoted_output_amount: Optional[str]
+    rfq_id: Optional[str]
+    settled_at: Optional[int]
+    status: Optional[str]
+
+
+class _QuoteRowRequired(TypedDict):
+    event_id: str
+    source: str
+    market: str
+    instrument: str
+    collector_timestamp: int
+    source_capture_id: str
+    schema_version: int
+    observation_id: str
+    input_asset_id: str
+    input_chain_id: str
+    input_amount: str
+    input_decimals: int
+    output_asset_id: str
+    output_chain_id: str
+    output_amount: str
+    output_decimals: int
+    amount_kind: str
+    block_number: int
+    block_hash: str
+    transaction_hash: str
+    transaction_index: int
+    router: str
+
+
+class QuoteRow(_QuoteRowRequired, total=False):
+    exchange_timestamp: Optional[int]
+    oracle: Optional[str]
+    pool: Optional[str]
+
+
 class RawCaptureRow(TypedDict):
     capture_id: str
     collector_timestamp: int

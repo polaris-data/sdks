@@ -2666,6 +2666,50 @@ def test_raw_channel_pages_exact_captures(tmp_path) -> None:
         client.close()
 
 
+def test_direct_ohlcv_intent_and_quote_rows_keep_flat_observations(tmp_path) -> None:
+    calls: list[httpx.Request] = []
+    identity = {"source_capture_id": "capture", "collector_timestamp": 10, "schema_version": 1}
+    candle = {**identity, "event_id": "c1", "source": "binance", "market": "BTC-USDT",
+              "interval": "1m", "open_timestamp": 10, "open": 100.0, "high": 102.0,
+              "low": 99.0, "close": 100.0, "is_closed": False}
+    intent = {**identity, "event_id": "i1", "source": "uniswapx", "market": "intents",
+              "intent_id": "intent-1", "input_asset_id": None}
+    quote = {**identity, "event_id": "q1", "source": "propamm", "market": "ethereum",
+             "instrument": "pool-1", "observation_id": "obs-1", "input_asset_id": "ETH",
+             "input_chain_id": "1", "input_amount": "1000000000000000000", "input_decimals": 18,
+             "output_asset_id": "USDC", "output_chain_id": "1", "output_amount": "2000000",
+             "output_decimals": 6, "amount_kind": "exact_input", "block_number": 100,
+             "block_hash": "0xblock", "transaction_hash": "0xtx", "transaction_index": 0,
+             "router": "0xrouter", "pool": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path == "/historical/ohlcv":
+            second = request.url.params.get("cursor") == "next"
+            return httpx.Response(200, json={"items": [{**candle, "event_id": "c2" if second else "c1"}],
+                                             "has_more": not second, "next_cursor": None if second else "next"})
+        rows = {"/historical/intents": [intent], "/historical/quotes": [quote]}
+        return httpx.Response(200, json={"items": rows[request.url.path], "has_more": False, "next_cursor": None})
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        candles = list(client.ohlcv_rows(interval="1m", start=10, end=10))
+        assert [row["event_id"] for row in candles] == ["c1", "c2"]
+        assert candles[0]["open_timestamp"] == candles[1]["open_timestamp"]
+        assert calls[0].url.params["interval"] == "1m"
+        assert calls[1].url.params["cursor"] == "next"
+        intents = list(client.intent_rows(intent_id="intent-1"))
+        assert intents[0]["input_asset_id"] is None
+        assert calls[2].url.params["intent_id"] == "intent-1"
+        quotes = list(client.quote_rows(observation_id="obs-1", instrument="pool-1"))
+        assert quotes[0]["input_amount"] == "1000000000000000000"
+        assert calls[3].url.params["observation_id"] == "obs-1"
+        assert calls[3].url.params["instrument"] == "pool-1"
+        assert all(request.headers["authorization"] == "Bearer polaris_key_test" for request in calls)
+    finally:
+        client.close()
+
+
 def test_intents_are_typed_filtered_and_preserve_nested_payloads(tmp_path) -> None:
     _write_intent_fixture(tmp_path)
     client = PolarisClient(base_url="http://127.0.0.1:1", dataset_root=tmp_path)

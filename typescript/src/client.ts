@@ -13,6 +13,12 @@ import type {
   FetchLike,
   FundingRateEvent,
   FundingRateRow,
+  IntentRow,
+  IntentRowsOptions,
+  OhlcvRow,
+  OhlcvRowsOptions,
+  QuoteRow,
+  QuoteRowsOptions,
   RawCaptureRow,
   RawChannelOptions,
   HistoricalQueryOptions,
@@ -372,11 +378,41 @@ export class BasePolarisClient {
     return result;
   }
 
+  /** Return pair-shaped flat intent observations. */
+  async intentRows(options: IntentRowsOptions = {}): Promise<IntentRow[]> {
+    const instrument = optionalFilter("instrument", options.instrument);
+    const intentId = optionalFilter("intentId", options.intentId);
+    return this._historicalRows("/historical/intents", options, isIntentRow, {
+      ...(instrument !== undefined && { instrument }),
+      ...(intentId !== undefined && { intent_id: intentId }),
+    });
+  }
+
+  /** Return every venue-published candle update. */
+  async ohlcvRows(options: OhlcvRowsOptions = {}): Promise<OhlcvRow[]> {
+    const instrument = optionalFilter("instrument", options.instrument);
+    const interval = optionalFilter("interval", options.interval);
+    return this._historicalRows("/historical/ohlcv", options, isOhlcvRow, {
+      ...(instrument !== undefined && { instrument }),
+      ...(interval !== undefined && { interval }),
+    });
+  }
+
+  /** Return individual flat PropAMM quote points. */
+  async quoteRows(options: QuoteRowsOptions = {}): Promise<QuoteRow[]> {
+    const instrument = optionalFilter("instrument", options.instrument);
+    const observationId = optionalFilter("observationId", options.observationId);
+    return this._historicalRows("/historical/quotes", options, isQuoteRow, {
+      ...(instrument !== undefined && { instrument }),
+      ...(observationId !== undefined && { observation_id: observationId }),
+    });
+  }
+
   /** Return flat option ticker rows for a whole chain or one exact venue-native contract. */
   async optionTickers(options: OptionTickerRowsOptions = {}): Promise<OptionTickerRow[]> {
     const instrument = normalizeInstrumentFilter(options.instrument);
     return this._historicalRows(
-      "/historical/options-ticker", options, isOptionTickerRow, instrument,
+      "/historical/options-ticker", options, isOptionTickerRow, instrument ? { instrument } : {},
     );
   }
 
@@ -1334,7 +1370,7 @@ export class BasePolarisClient {
     path: string,
     options: HistoricalRowsOptions,
     isRow: (value: unknown) => value is T,
-    instrument?: string,
+    extraFilters: Record<string, string> = {},
   ): Promise<T[]> {
     for (const [name, value] of [["start", options.start], ["end", options.end]] as const) {
       if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
@@ -1349,7 +1385,7 @@ export class BasePolarisClient {
     if (options.market !== undefined) params.market = options.market;
     if (options.start !== undefined) params.start = String(options.start);
     if (options.end !== undefined) params.end = String(options.end);
-    if (instrument !== undefined) params.instrument = instrument;
+    Object.assign(params, extraFilters);
 
     return this._pagedRows(path, params, isRow);
   }
@@ -1909,6 +1945,37 @@ function isFundingRateRow(value: unknown): value is FundingRateRow {
     ], "string");
 }
 
+function isOhlcvRow(value: unknown): value is OhlcvRow {
+  return isHistoricalIdentity(value) &&
+    typeof value.interval === "string" && Number.isSafeInteger(value.open_timestamp) &&
+    ["open", "high", "low", "close"].every((key) => typeof value[key] === "number" && Number.isFinite(value[key])) &&
+    nullableFields(value, ["exchange_timestamp", "close_timestamp", "trade_count"], "number") &&
+    nullableFields(value, ["instrument"], "string") &&
+    nullableFields(value, ["is_closed"], "boolean") &&
+    ["base_volume", "quote_volume"].every((key) => value[key] === undefined || value[key] === null ||
+      (typeof value[key] === "number" && Number.isFinite(value[key])));
+}
+
+function isIntentRow(value: unknown): value is IntentRow {
+  return isHistoricalIdentity(value) &&
+    nullableFields(value, ["exchange_timestamp", "expires_at", "settled_at"], "number") &&
+    nullableFields(value, ["instrument", "amount_kind", "input_amount", "input_asset_id", "input_chain_id",
+      "intent_id", "output_amount", "output_asset_id", "output_chain_id", "quote_id", "quoted_input_amount",
+      "quoted_output_amount", "rfq_id", "status"], "string");
+}
+
+function isQuoteRow(value: unknown): value is QuoteRow {
+  return isHistoricalIdentity(value) &&
+    ["instrument", "observation_id", "input_asset_id", "input_chain_id", "input_amount",
+      "output_asset_id", "output_chain_id", "output_amount", "amount_kind", "block_hash",
+      "transaction_hash", "router"].every((key) => typeof value[key] === "string") &&
+    ["input_decimals", "output_decimals", "block_number", "transaction_index"].every(
+      (key) => Number.isSafeInteger(value[key]) && (value[key] as number) >= 0,
+    ) &&
+    nullableFields(value, ["exchange_timestamp"], "number") &&
+    nullableFields(value, ["oracle", "pool"], "string");
+}
+
 function isRawCaptureRow(value: unknown): value is RawCaptureRow {
   return isRecord(value) &&
     typeof value.capture_id === "string" &&
@@ -1961,6 +2028,13 @@ function normalizeInstrumentFilter(instrument: string | undefined): string | und
   if (normalized.length === 0) {
     throw new PolarisError("instrument must be non-empty");
   }
+  return normalized;
+}
+
+function optionalFilter(name: string, value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim();
+  if (!normalized) throw new PolarisError(`${name} must be non-empty`);
   return normalized;
 }
 

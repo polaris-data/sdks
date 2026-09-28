@@ -20,13 +20,14 @@ use crate::{
         BboQuery, BboQuote, CatalogAccess, CatalogCount, CatalogInstrument, CatalogMarket,
         CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic, DownloadManifestQuery,
         DownloadManifestResponse, FundingRateRow, HistoricalQuery, HistoricalRowsQuery,
-        HistoricalStream, IntentData, IntentEvent, IntentEventV2, LegacyIntentEvent,
-        LegacyOrderbookEvent, LegacyPerpetualTickerEvent, LegacyPointSeriesEvent, LegacyTradeData,
-        LegacyTradeEvent, ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OptionTickerRow,
-        OptionTickerRowsQuery, OrderbookData, OrderbookDataV2, OrderbookEvent, OrderbookEventV2,
-        OrderbookLevel, PerpetualTickerData, PerpetualTickerEvent, PerpetualTickerEventV2,
-        PointSeriesData, PointSeriesEvent, PointSeriesEventV2, PropammQuoteLadderData,
-        PropammQuoteLadderEvent, RawCaptureRow, RawChannelQuery, RawQuery, RawReplayQuery,
+        HistoricalStream, IntentData, IntentEvent, IntentEventV2, IntentRow, IntentRowsQuery,
+        LegacyIntentEvent, LegacyOrderbookEvent, LegacyPerpetualTickerEvent,
+        LegacyPointSeriesEvent, LegacyTradeData, LegacyTradeEvent, ListSnapshotsQuery, OhlcvOutput,
+        OhlcvQuery, OhlcvRow, OhlcvRowsQuery, OptionTickerRow, OptionTickerRowsQuery,
+        OrderbookData, OrderbookDataV2, OrderbookEvent, OrderbookEventV2, OrderbookLevel,
+        PerpetualTickerData, PerpetualTickerEvent, PerpetualTickerEventV2, PointSeriesData,
+        PointSeriesEvent, PointSeriesEventV2, PropammQuoteLadderData, PropammQuoteLadderEvent,
+        QuoteRow, QuoteRowsQuery, RawCaptureRow, RawChannelQuery, RawQuery, RawReplayQuery,
         RawReplayStream, RealtimeStream, ReplayQuery, ReplayStream, SnapshotEntry, StandardEvent,
         StreamQuery, TradeDataV2, TradeEvent, TradeEventV2, TradeRow, VolatilityBar, VolumeBar,
         VwapBar,
@@ -413,7 +414,7 @@ impl PolarisClient {
         &self,
         query: HistoricalRowsQuery,
     ) -> Result<HistoricalStream<TradeRow>, PolarisError> {
-        self.historical_rows("/historical/trades", query, None)
+        self.historical_rows("/historical/trades", query, vec![])
     }
 
     async fn snapshot_trades(
@@ -437,7 +438,7 @@ impl PolarisClient {
         &self,
         path: &'static str,
         query: HistoricalRowsQuery,
-        instrument: Option<String>,
+        filters: Vec<(&str, String)>,
     ) -> Result<HistoricalStream<T>, PolarisError>
     where
         T: DeserializeOwned + Send + 'static,
@@ -464,8 +465,8 @@ impl PolarisClient {
         if let Some(end) = query.end {
             params.push(("end".to_owned(), end.to_string()));
         }
-        if let Some(instrument) = instrument {
-            params.push(("instrument".to_owned(), instrument));
+        for (name, value) in filters {
+            params.push((name.to_owned(), value));
         }
         self.paginated_rows(path.to_owned(), params, AuthMode::IfAvailable)
     }
@@ -531,6 +532,78 @@ impl PolarisClient {
         }))
     }
 
+    /// Stream pair-shaped intent observations from the direct historical API.
+    pub async fn intent_rows(
+        &self,
+        query: IntentRowsQuery,
+    ) -> Result<HistoricalStream<IntentRow>, PolarisError> {
+        let mut filters = Vec::new();
+        if let Some(value) = validate_optional_filter("instrument", query.instrument)? {
+            filters.push(("instrument", value));
+        }
+        if let Some(value) = validate_optional_filter("intent_id", query.intent_id)? {
+            filters.push(("intent_id", value));
+        }
+        self.historical_rows(
+            "/historical/intents",
+            HistoricalRowsQuery {
+                source: query.source,
+                market: query.market,
+                start: query.start,
+                end: query.end,
+            },
+            filters,
+        )
+    }
+
+    /// Stream venue-published candle updates from the direct historical API.
+    pub async fn ohlcv_rows(
+        &self,
+        query: OhlcvRowsQuery,
+    ) -> Result<HistoricalStream<OhlcvRow>, PolarisError> {
+        let mut filters = Vec::new();
+        if let Some(value) = validate_optional_filter("instrument", query.instrument)? {
+            filters.push(("instrument", value));
+        }
+        if let Some(value) = validate_optional_filter("interval", query.interval)? {
+            filters.push(("interval", value));
+        }
+        self.historical_rows(
+            "/historical/ohlcv",
+            HistoricalRowsQuery {
+                source: query.source,
+                market: query.market,
+                start: query.start,
+                end: query.end,
+            },
+            filters,
+        )
+    }
+
+    /// Stream individual PropAMM quote points from the direct historical API.
+    pub async fn quote_rows(
+        &self,
+        query: QuoteRowsQuery,
+    ) -> Result<HistoricalStream<QuoteRow>, PolarisError> {
+        let mut filters = Vec::new();
+        if let Some(value) = validate_optional_filter("instrument", query.instrument)? {
+            filters.push(("instrument", value));
+        }
+        if let Some(value) = validate_optional_filter("observation_id", query.observation_id)? {
+            filters.push(("observation_id", value));
+        }
+        self.historical_rows(
+            "/historical/quotes",
+            HistoricalRowsQuery {
+                source: query.source,
+                market: query.market,
+                start: query.start,
+                end: query.end,
+            },
+            filters,
+        )
+    }
+
     /// Return standardized option ticker events for an underlying market.
     ///
     /// When `query.instrument` is omitted, all contracts in the option chain
@@ -548,7 +621,9 @@ impl PolarisClient {
                 start: query.start,
                 end: query.end,
             },
-            instrument,
+            instrument
+                .map(|value| vec![("instrument", value)])
+                .unwrap_or_default(),
         )
     }
 
@@ -1291,7 +1366,7 @@ impl PolarisClient {
         &self,
         query: HistoricalRowsQuery,
     ) -> Result<HistoricalStream<FundingRateRow>, PolarisError> {
-        self.historical_rows("/historical/funding-rates", query, None)
+        self.historical_rows("/historical/funding-rates", query, vec![])
     }
 
     /// Return standardized mark-price point-series events for a time range.
@@ -2496,14 +2571,21 @@ struct VolatilityBucket {
 fn validate_optional_instrument(
     instrument: Option<String>,
 ) -> Result<Option<String>, PolarisError> {
-    if let Some(instrument) = instrument {
-        let instrument = instrument.trim().to_owned();
-        if instrument.is_empty() {
-            return Err(PolarisError::InvalidResponse(
-                "instrument must be non-empty".to_owned(),
-            ));
+    validate_optional_filter("instrument", instrument)
+}
+
+fn validate_optional_filter(
+    name: &str,
+    value: Option<String>,
+) -> Result<Option<String>, PolarisError> {
+    if let Some(value) = value {
+        let value = value.trim().to_owned();
+        if value.is_empty() {
+            return Err(PolarisError::InvalidResponse(format!(
+                "{name} must be non-empty"
+            )));
         }
-        return Ok(Some(instrument));
+        return Ok(Some(value));
     }
     Ok(None)
 }

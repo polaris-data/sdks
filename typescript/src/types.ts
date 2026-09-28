@@ -358,6 +358,42 @@ export interface FundingRateRow {
   premium?: string | null;
 }
 
+/** Venue-published candle update from /historical/ohlcv. */
+export interface OhlcvRow {
+  event_id: string; source: string; market: string; collector_timestamp: number;
+  source_capture_id: string; schema_version: number; interval: string;
+  open_timestamp: number; open: number; high: number; low: number; close: number;
+  exchange_timestamp?: number | null; instrument?: string | null;
+  close_timestamp?: number | null; base_volume?: number | null;
+  quote_volume?: number | null; trade_count?: number | null; is_closed?: boolean | null;
+}
+
+/** Pair-shaped intent observation from /historical/intents. */
+export interface IntentRow {
+  event_id: string; source: string; market: string; collector_timestamp: number;
+  source_capture_id: string; schema_version: number;
+  exchange_timestamp?: number | null; instrument?: string | null;
+  amount_kind?: string | null; expires_at?: number | null;
+  input_amount?: string | null; input_asset_id?: string | null;
+  input_chain_id?: string | null; intent_id?: string | null;
+  output_amount?: string | null; output_asset_id?: string | null;
+  output_chain_id?: string | null; quote_id?: string | null;
+  quoted_input_amount?: string | null; quoted_output_amount?: string | null;
+  rfq_id?: string | null; settled_at?: number | null; status?: string | null;
+}
+
+/** Individual PropAMM quote point from /historical/quotes. */
+export interface QuoteRow {
+  event_id: string; source: string; market: string; instrument: string;
+  collector_timestamp: number; source_capture_id: string; schema_version: number;
+  observation_id: string; input_asset_id: string; input_chain_id: string;
+  input_amount: string; input_decimals: number; output_asset_id: string;
+  output_chain_id: string; output_amount: string; output_decimals: number;
+  amount_kind: string; block_number: number; block_hash: string;
+  transaction_hash: string; transaction_index: number; router: string;
+  exchange_timestamp?: number | null; oracle?: string | null; pool?: string | null;
+}
+
 /** Exact raw capture from GET /raw/{exchange}/{event}. */
 export interface RawCaptureRow {
   capture_id: string;
@@ -651,6 +687,21 @@ export interface HistoricalRowsOptions {
 
 export interface OptionTickerRowsOptions extends HistoricalRowsOptions {
   instrument?: string;
+}
+
+export interface OhlcvRowsOptions extends HistoricalRowsOptions {
+  instrument?: string;
+  interval?: string;
+}
+
+export interface IntentRowsOptions extends HistoricalRowsOptions {
+  instrument?: string;
+  intentId?: string;
+}
+
+export interface QuoteRowsOptions extends HistoricalRowsOptions {
+  instrument?: string;
+  observationId?: string;
 }
 
 /** Options for raw snapshot-and-delta orderbook reads. */

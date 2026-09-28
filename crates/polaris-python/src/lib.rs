@@ -4,10 +4,11 @@ mod columnar;
 
 use polaris_data::{
     BboQuery, BboQuote, DepthMetricsRow, FundingRateRow, HistoricalQuery, HistoricalRowsQuery,
-    IntentEvent, ListSnapshotsQuery, OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery,
-    OptionTickerRow, OptionTickerRowsQuery, OrderbookBuilder, PerpetualTickerEvent,
-    PointSeriesEvent, PolarisError, PropammQuoteLadderEvent, RawCaptureRow, RawChannelQuery,
-    RawQuery, RawReplayQuery, ReplayQuery, StandardEvent, StreamQuery, TimeInput, TradeRow,
+    IntentEvent, IntentRow, IntentRowsQuery, ListSnapshotsQuery, OhlcvFormat, OhlcvInterval,
+    OhlcvOutput, OhlcvQuery, OhlcvRow, OhlcvRowsQuery, OptionTickerRow, OptionTickerRowsQuery,
+    OrderbookBuilder, PerpetualTickerEvent, PointSeriesEvent, PolarisError,
+    PropammQuoteLadderEvent, QuoteRow, QuoteRowsQuery, RawCaptureRow, RawChannelQuery, RawQuery,
+    RawReplayQuery, ReplayQuery, StandardEvent, StreamQuery, TimeInput, TradeRow,
     blocking::{self, RawReplayCacheConfig},
 };
 use pyo3::{
@@ -442,6 +443,90 @@ impl NativeClient {
             })
             .map_err(native_error)?;
         Ok(NativeHistorical::new(NativeHistoricalIterator::Intents(
+            iterator,
+        )))
+    }
+
+    #[pyo3(signature = (source=None, market=None, instrument=None, intent_id=None, start=None, end=None))]
+    fn intent_rows(
+        &self,
+        py: Python<'_>,
+        source: Option<String>,
+        market: Option<String>,
+        instrument: Option<String>,
+        intent_id: Option<String>,
+        start: Option<i64>,
+        end: Option<i64>,
+    ) -> PyResult<NativeHistorical> {
+        let iterator = py
+            .detach(|| {
+                self.inner.intent_rows(IntentRowsQuery {
+                    source,
+                    market,
+                    instrument,
+                    intent_id,
+                    start,
+                    end,
+                })
+            })
+            .map_err(native_error)?;
+        Ok(NativeHistorical::new(NativeHistoricalIterator::IntentRows(
+            iterator,
+        )))
+    }
+
+    #[pyo3(signature = (source=None, market=None, instrument=None, interval=None, start=None, end=None))]
+    fn ohlcv_rows(
+        &self,
+        py: Python<'_>,
+        source: Option<String>,
+        market: Option<String>,
+        instrument: Option<String>,
+        interval: Option<String>,
+        start: Option<i64>,
+        end: Option<i64>,
+    ) -> PyResult<NativeHistorical> {
+        let iterator = py
+            .detach(|| {
+                self.inner.ohlcv_rows(OhlcvRowsQuery {
+                    source,
+                    market,
+                    instrument,
+                    interval,
+                    start,
+                    end,
+                })
+            })
+            .map_err(native_error)?;
+        Ok(NativeHistorical::new(NativeHistoricalIterator::OhlcvRows(
+            iterator,
+        )))
+    }
+
+    #[pyo3(signature = (source=None, market=None, instrument=None, observation_id=None, start=None, end=None))]
+    fn quote_rows(
+        &self,
+        py: Python<'_>,
+        source: Option<String>,
+        market: Option<String>,
+        instrument: Option<String>,
+        observation_id: Option<String>,
+        start: Option<i64>,
+        end: Option<i64>,
+    ) -> PyResult<NativeHistorical> {
+        let iterator = py
+            .detach(|| {
+                self.inner.quote_rows(QuoteRowsQuery {
+                    source,
+                    market,
+                    instrument,
+                    observation_id,
+                    start,
+                    end,
+                })
+            })
+            .map_err(native_error)?;
+        Ok(NativeHistorical::new(NativeHistoricalIterator::QuoteRows(
             iterator,
         )))
     }
@@ -1205,6 +1290,9 @@ enum NativeHistoricalIterator {
     L2Events(blocking::HistoricalIterator<StandardEvent>),
     Trades(blocking::HistoricalIterator<TradeRow>),
     Intents(blocking::HistoricalIterator<IntentEvent>),
+    IntentRows(blocking::HistoricalIterator<IntentRow>),
+    OhlcvRows(blocking::HistoricalIterator<OhlcvRow>),
+    QuoteRows(blocking::HistoricalIterator<QuoteRow>),
     OptionTickers(blocking::HistoricalIterator<OptionTickerRow>),
     FundingRates(blocking::HistoricalIterator<FundingRateRow>),
     RawCaptures(blocking::HistoricalIterator<RawCaptureRow>),
@@ -1281,6 +1369,9 @@ impl NativeHistorical {
             NativeHistoricalIterator::L2Events(iterator) => next_l2_event(py, iterator),
             NativeHistoricalIterator::Trades(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Intents(iterator) => next_historical(py, iterator),
+            NativeHistoricalIterator::IntentRows(iterator) => next_historical(py, iterator),
+            NativeHistoricalIterator::OhlcvRows(iterator) => next_historical(py, iterator),
+            NativeHistoricalIterator::QuoteRows(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::OptionTickers(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::FundingRates(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::RawCaptures(iterator) => next_historical(py, iterator),

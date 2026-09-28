@@ -27,10 +27,13 @@ from .models import (
     CatalogCount,
     CatalogResponse,
     FundingRateRow,
+    IntentRow,
     JSONDict,
     OptionTickerRow,
+    OhlcvRow,
     PerpetualTickerEvent,
     PropammQuoteLadderEvent,
+    QuoteRow,
     RawCaptureRow,
     SnapshotEntry,
     TradeRow,
@@ -737,6 +740,33 @@ class PolarisClient:
             allow_gaps,
         )
         return self._iterate(iterator, "intents")
+
+    def intent_rows(
+        self, *, source: str | None = None, market: str | None = None,
+        instrument: str | None = None, intent_id: str | None = None,
+        start: int | None = None, end: int | None = None,
+    ) -> Iterator[IntentRow]:
+        """Read flat pair-shaped intent observations from the direct API."""
+        iterator = self._call("intent_rows", source, market, instrument, intent_id, start, end)
+        return self._iterate(iterator, "intent_rows")
+
+    def ohlcv_rows(
+        self, *, source: str | None = None, market: str | None = None,
+        instrument: str | None = None, interval: str | None = None,
+        start: int | None = None, end: int | None = None,
+    ) -> Iterator[OhlcvRow]:
+        """Read every venue-published candle update from the direct API."""
+        iterator = self._call("ohlcv_rows", source, market, instrument, interval, start, end)
+        return self._iterate(iterator, "ohlcv_rows")
+
+    def quote_rows(
+        self, *, source: str | None = None, market: str | None = None,
+        instrument: str | None = None, observation_id: str | None = None,
+        start: int | None = None, end: int | None = None,
+    ) -> Iterator[QuoteRow]:
+        """Read individual flat PropAMM quote points from the direct API."""
+        iterator = self._call("quote_rows", source, market, instrument, observation_id, start, end)
+        return self._iterate(iterator, "quote_rows")
 
     def option_tickers(
         self,

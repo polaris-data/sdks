@@ -117,6 +117,145 @@ pub struct OptionTickerRowsQuery {
     pub end: Option<i64>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OhlcvRowsQuery {
+    pub source: Option<String>,
+    pub market: Option<String>,
+    pub instrument: Option<String>,
+    pub interval: Option<String>,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IntentRowsQuery {
+    pub source: Option<String>,
+    pub market: Option<String>,
+    pub instrument: Option<String>,
+    pub intent_id: Option<String>,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QuoteRowsQuery {
+    pub source: Option<String>,
+    pub market: Option<String>,
+    pub instrument: Option<String>,
+    pub observation_id: Option<String>,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+}
+
+/// One venue-published candle update from `/historical/ohlcv`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OhlcvRow {
+    pub event_id: String,
+    pub source: String,
+    pub market: String,
+    pub collector_timestamp: i64,
+    pub source_capture_id: String,
+    pub schema_version: u32,
+    pub interval: String,
+    pub open_timestamp: i64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    #[serde(default)]
+    pub exchange_timestamp: Option<i64>,
+    #[serde(default)]
+    pub instrument: Option<String>,
+    #[serde(default)]
+    pub close_timestamp: Option<i64>,
+    #[serde(default)]
+    pub base_volume: Option<f64>,
+    #[serde(default)]
+    pub quote_volume: Option<f64>,
+    #[serde(default)]
+    pub trade_count: Option<u64>,
+    #[serde(default)]
+    pub is_closed: Option<bool>,
+}
+
+/// One pair-shaped intent observation from `/historical/intents`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntentRow {
+    pub event_id: String,
+    pub source: String,
+    pub market: String,
+    pub collector_timestamp: i64,
+    pub source_capture_id: String,
+    pub schema_version: u32,
+    #[serde(default)]
+    pub exchange_timestamp: Option<i64>,
+    #[serde(default)]
+    pub instrument: Option<String>,
+    #[serde(default)]
+    pub amount_kind: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<i64>,
+    #[serde(default)]
+    pub input_amount: Option<String>,
+    #[serde(default)]
+    pub input_asset_id: Option<String>,
+    #[serde(default)]
+    pub input_chain_id: Option<String>,
+    #[serde(default)]
+    pub intent_id: Option<String>,
+    #[serde(default)]
+    pub output_amount: Option<String>,
+    #[serde(default)]
+    pub output_asset_id: Option<String>,
+    #[serde(default)]
+    pub output_chain_id: Option<String>,
+    #[serde(default)]
+    pub quote_id: Option<String>,
+    #[serde(default)]
+    pub quoted_input_amount: Option<String>,
+    #[serde(default)]
+    pub quoted_output_amount: Option<String>,
+    #[serde(default)]
+    pub rfq_id: Option<String>,
+    #[serde(default)]
+    pub settled_at: Option<i64>,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+/// One PropAMM quote point from `/historical/quotes`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuoteRow {
+    pub event_id: String,
+    pub source: String,
+    pub market: String,
+    pub instrument: String,
+    pub collector_timestamp: i64,
+    pub source_capture_id: String,
+    pub schema_version: u32,
+    pub observation_id: String,
+    pub input_asset_id: String,
+    pub input_chain_id: String,
+    pub input_amount: String,
+    pub input_decimals: u32,
+    pub output_asset_id: String,
+    pub output_chain_id: String,
+    pub output_amount: String,
+    pub output_decimals: u32,
+    pub amount_kind: String,
+    pub block_number: u64,
+    pub block_hash: String,
+    pub transaction_hash: String,
+    pub transaction_index: u64,
+    pub router: String,
+    #[serde(default)]
+    pub exchange_timestamp: Option<i64>,
+    #[serde(default)]
+    pub oracle: Option<String>,
+    #[serde(default)]
+    pub pool: Option<String>,
+}
+
 /// One flat row from `/historical/trades`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TradeRow {

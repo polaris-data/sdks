@@ -129,6 +129,44 @@ test("rawChannel pages exact captures with required channel and time bounds", as
   client.close();
 });
 
+test("flat OHLCV, intent, and quote rows use their distinct direct routes", async () => {
+  const { PolarisClient } = await import("../dist/node/index.js");
+  const identity = { collector_timestamp: 10, source_capture_id: "capture", schema_version: 1 };
+  const candle = { ...identity, event_id: "c1", source: "binance", market: "BTC-USDT",
+    interval: "1m", open_timestamp: 10, open: 100, high: 102, low: 99, close: 100, is_closed: false };
+  const intent = { ...identity, event_id: "i1", source: "uniswapx", market: "intents",
+    intent_id: "intent-1", input_asset_id: null };
+  const quote = { ...identity, event_id: "q1", source: "propamm", market: "ethereum",
+    instrument: "pool-1", observation_id: "obs-1", input_asset_id: "ETH", input_chain_id: "1",
+    input_amount: "1000000000000000000", input_decimals: 18, output_asset_id: "USDC",
+    output_chain_id: "1", output_amount: "2000000", output_decimals: 6,
+    amount_kind: "exact_input", block_number: 100, block_hash: "0xblock",
+    transaction_hash: "0xtx", transaction_index: 0, router: "0xrouter", pool: null };
+  const calls = [];
+  const client = new PolarisClient({ baseUrl: "https://api.example", apiKey: "secret", fetch: async (input, init) => {
+    const url = new URL(input);
+    calls.push({ url, headers: init.headers });
+    const second = url.searchParams.has("cursor");
+    const body = url.pathname === "/historical/ohlcv"
+      ? { items: [{ ...candle, event_id: second ? "c2" : "c1" }], has_more: !second, next_cursor: second ? null : "next" }
+      : { items: [url.pathname === "/historical/intents" ? intent : quote], has_more: false, next_cursor: null };
+    return new Response(JSON.stringify(body), { status: 200 });
+  } });
+  const candles = await client.ohlcvRows({ interval: "1m", start: 10, end: 10 });
+  assert.deepEqual(candles.map((row) => row.event_id), ["c1", "c2"]);
+  assert.equal(candles[0].open_timestamp, candles[1].open_timestamp);
+  assert.equal(calls[0].url.searchParams.get("interval"), "1m");
+  assert.equal(calls[1].url.searchParams.get("cursor"), "next");
+  assert.deepEqual(await client.intentRows({ intentId: "intent-1" }), [intent]);
+  assert.equal(calls[2].url.searchParams.get("intent_id"), "intent-1");
+  assert.deepEqual(await client.quoteRows({ observationId: "obs-1", instrument: "pool-1" }), [quote]);
+  assert.equal(calls[3].url.searchParams.get("observation_id"), "obs-1");
+  assert.equal(calls[3].url.searchParams.get("instrument"), "pool-1");
+  assert.equal(calls[3].headers.Authorization, "Bearer secret");
+  await assert.rejects(client.intentRows({ intentId: " " }), /intentId must be non-empty/);
+  client.close();
+});
+
 test("new event shapes are typed, filtered, and accepted by v2 decoding", async () => {
   const { PolarisClient } = await import("../dist/node/index.js");
   const fixture = await readFile(

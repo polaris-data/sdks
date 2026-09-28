@@ -4,9 +4,10 @@ use futures_util::StreamExt;
 use log::Level;
 use logtest::Logger;
 use polaris_data::{
-    AmountKind, CatalogQuery, HistoricalQuery, HistoricalRowsQuery, HistoricalStream, IntentStatus,
-    OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery, OptionTickerRowsQuery, PolarisClient,
-    PolarisError, RawChannelQuery, ReplayQuery, blocking,
+    AmountKind, CatalogQuery, HistoricalQuery, HistoricalRowsQuery, HistoricalStream,
+    IntentRowsQuery, IntentStatus, OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery,
+    OhlcvRowsQuery, OptionTickerRowsQuery, PolarisClient, PolarisError, QuoteRowsQuery,
+    RawChannelQuery, ReplayQuery, blocking,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -768,6 +769,106 @@ async fn raw_channel_paginates_exact_text_and_keeps_legacy_raw_separate() {
             .unwrap()
             .iter()
             .all(|request| request.url.path() != "/raw")
+    );
+}
+
+#[tokio::test]
+async fn direct_ohlcv_intent_and_quote_rows_keep_published_observations() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().expect("tempdir");
+    let client = PolarisClient::builder()
+        .base_url(server.uri())
+        .api_key("secret")
+        .dataset_root(root.path())
+        .build()
+        .expect("client");
+    Mock::given(method("GET")).and(path("/historical/ohlcv"))
+        .and(query_param("interval", "1m")).and(query_param("start", "10"))
+        .and(query_param("end", "10")).and(header("authorization", "Bearer secret"))
+        .respond_with(|request: &wiremock::Request| {
+            let second = request.url.query_pairs().any(|(key, value)| key == "cursor" && value == "next");
+            ResponseTemplate::new(200).set_body_json(json!({
+                "items": [{"event_id": if second { "c2" } else { "c1" }, "source": "binance", "market": "BTC-USDT",
+                    "collector_timestamp": 10, "source_capture_id": "capture", "schema_version": 1,
+                    "interval": "1m", "open_timestamp": 10, "open": 100.0, "high": 102.0,
+                    "low": 99.0, "close": if second { 101.0 } else { 100.0 }, "is_closed": second}],
+                "has_more": !second, "next_cursor": if second { None } else { Some("next") }
+            }))
+        }).mount(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/historical/intents"))
+        .and(query_param("intent_id", "intent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{"event_id": "i1", "source": "uniswapx", "market": "intents",
+                "collector_timestamp": 10, "source_capture_id": "capture", "schema_version": 1,
+                "intent_id": "intent-1", "input_asset_id": null}],
+            "has_more": false, "next_cursor": null
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET")).and(path("/historical/quotes"))
+        .and(query_param("observation_id", "obs-1"))
+        .and(query_param("instrument", "pool-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{"event_id": "q1", "source": "propamm", "market": "ethereum", "instrument": "pool-1",
+                "collector_timestamp": 10, "source_capture_id": "capture", "schema_version": 1,
+                "observation_id": "obs-1", "input_asset_id": "ETH", "input_chain_id": "1", "input_amount": "1000000000000000000",
+                "input_decimals": 18, "output_asset_id": "USDC", "output_chain_id": "1", "output_amount": "2000000",
+                "output_decimals": 6, "amount_kind": "exact_input", "block_number": 100, "block_hash": "0xblock",
+                "transaction_hash": "0xtx", "transaction_index": 0, "router": "0xrouter", "pool": null}],
+            "has_more": false, "next_cursor": null
+        }))).mount(&server).await;
+
+    let candles = collect_stream(
+        client
+            .ohlcv_rows(OhlcvRowsQuery {
+                interval: Some("1m".into()),
+                start: Some(10),
+                end: Some(10),
+                ..Default::default()
+            })
+            .await
+            .expect("ohlcv rows"),
+    )
+    .await
+    .expect("candles");
+    assert_eq!(candles.len(), 2);
+    assert_eq!(candles[0].open_timestamp, candles[1].open_timestamp);
+    assert_eq!(candles[0].is_closed, Some(false));
+    let intents = collect_stream(
+        client
+            .intent_rows(IntentRowsQuery {
+                intent_id: Some("intent-1".into()),
+                ..Default::default()
+            })
+            .await
+            .expect("intent rows"),
+    )
+    .await
+    .expect("intents");
+    assert_eq!(intents[0].input_asset_id, None);
+    let quotes = collect_stream(
+        client
+            .quote_rows(QuoteRowsQuery {
+                observation_id: Some("obs-1".into()),
+                instrument: Some("pool-1".into()),
+                ..Default::default()
+            })
+            .await
+            .expect("quote rows"),
+    )
+    .await
+    .expect("quotes");
+    assert_eq!(quotes[0].input_amount, "1000000000000000000");
+    assert_eq!(quotes[0].pool, None);
+    assert!(
+        client
+            .intent_rows(IntentRowsQuery {
+                intent_id: Some(" ".into()),
+                ..Default::default()
+            })
+            .await
+            .is_err()
     );
 }
 

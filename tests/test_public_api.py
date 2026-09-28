@@ -20,6 +20,9 @@ from polaris_data import (
     CatalogMarketEntry,
     CatalogResponse,
     FundingRateRow,
+    IntentRow,
+    OhlcvRow,
+    QuoteRow,
     IntentData,
     IntentEvent,
     IntentEventV2,
@@ -81,6 +84,9 @@ def test_top_level_exports_are_stable() -> None:
         "CatalogMarketEntry",
         "CatalogResponse",
         "FundingRateRow",
+        "IntentRow",
+        "OhlcvRow",
+        "QuoteRow",
         "LegacyOptionTickerEvent",
         "LegacyPerpetualTickerEvent",
         "LegacyTradeData",
@@ -291,6 +297,20 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("start", keyword_only, required),
         ("end", keyword_only, required),
     ]
+    for method, extra in [
+        (PolarisClient.intent_rows, "intent_id"),
+        (PolarisClient.ohlcv_rows, "interval"),
+        (PolarisClient.quote_rows, "observation_id"),
+    ]:
+        assert _parameters(method) == [
+            ("self", positional, required),
+            ("source", keyword_only, None),
+            ("market", keyword_only, None),
+            ("instrument", keyword_only, None),
+            (extra, keyword_only, None),
+            ("start", keyword_only, None),
+            ("end", keyword_only, None),
+        ]
     assert _parameters(PolarisClient.ohlcv) == [
         ("self", positional, required),
         ("source", keyword_only, required),
@@ -390,6 +410,9 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
     )
     assert inspect.signature(PolarisClient.option_tickers).return_annotation == "Iterator[OptionTickerRow]"
     assert inspect.signature(PolarisClient.raw_channel).return_annotation == "Iterator[RawCaptureRow]"
+    assert inspect.signature(PolarisClient.ohlcv_rows).return_annotation == "Iterator[OhlcvRow]"
+    assert inspect.signature(PolarisClient.intent_rows).return_annotation == "Iterator[IntentRow]"
+    assert inspect.signature(PolarisClient.quote_rows).return_annotation == "Iterator[QuoteRow]"
     assert inspect.signature(PolarisClient.stream).return_annotation == "RealtimeStream"
     assert (
         inspect.signature(PolarisClient.ohlcv).return_annotation
