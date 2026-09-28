@@ -647,6 +647,10 @@ async fn direct_trades_and_funding_paginate_and_keep_nullable_fields() {
                 "event_id": "f1", "source": "binance", "market": "BTC-USDT",
                 "collector_timestamp": 10, "source_capture_id": "capture",
                 "schema_version": 1, "funding_rate": null, "mark_price": "100"
+            }, {
+                "event_id": "f2", "source": "binance", "market": "BTC-USDT",
+                "collector_timestamp": 11, "source_capture_id": "capture",
+                "schema_version": 1, "funding_rate": "0.0001", "mark_price": null
             }],
             "has_more": false, "next_cursor": null
         })))
@@ -684,6 +688,24 @@ async fn direct_trades_and_funding_paginate_and_keep_nullable_fields() {
     .expect("funding rows");
     assert_eq!(funding[0].funding_rate, None);
     assert_eq!(funding[0].mark_price.as_deref(), Some("100"));
+    let tickers = collect_stream(
+        client
+            .perpetual_tickers(HistoricalRowsQuery::default())
+            .await
+            .expect("tickers"),
+    )
+    .await
+    .expect("ticker rows");
+    let marks = collect_stream(
+        client
+            .mark_prices(HistoricalRowsQuery::default())
+            .await
+            .expect("marks"),
+    )
+    .await
+    .expect("mark rows");
+    assert_eq!(tickers, funding);
+    assert_eq!(marks, vec![funding[0].clone()]);
     let requests = server.received_requests().await.expect("requests");
     let funding_request = requests
         .iter()
@@ -847,6 +869,18 @@ async fn direct_ohlcv_intent_and_quote_rows_keep_published_observations() {
     .await
     .expect("intents");
     assert_eq!(intents[0].input_asset_id, None);
+    let alias = collect_stream(
+        client
+            .intents(IntentRowsQuery {
+                intent_id: Some("intent-1".into()),
+                ..Default::default()
+            })
+            .await
+            .expect("intents alias"),
+    )
+    .await
+    .expect("intent rows");
+    assert_eq!(alias, intents);
     let quotes = collect_stream(
         client
             .quote_rows(QuoteRowsQuery {
@@ -909,21 +943,6 @@ async fn new_event_shapes_are_typed_and_supported_by_default() {
         ]
     );
 
-    let tickers = collect_stream(
-        client
-            .perpetual_tickers(query.clone())
-            .await
-            .expect("perpetual tickers"),
-    )
-    .await
-    .expect("perpetual ticker rows");
-    assert_eq!(tickers.len(), 2);
-    assert_eq!(tickers[0].source(), "hyperliquid");
-    assert_eq!(tickers[0].market(), "BTC");
-    assert_eq!(tickers[0].data().mark_price.as_deref(), Some("98750.3"));
-    assert_eq!(tickers[0].data().funding_timestamp, Some(1_704_069_000_000));
-    assert_eq!(tickers[1].data().funding_rate.as_deref(), Some("-0.000025"));
-
     let trade_events = events
         .iter()
         .filter(|event| event.event_type() == "trade")
@@ -933,7 +952,7 @@ async fn new_event_shapes_are_typed_and_supported_by_default() {
     assert_eq!(trade_events[0].data()["taker"], "0xtaker");
 
     let root_path = root.path().to_owned();
-    let (prepared, blocking) = std::thread::spawn(move || {
+    let prepared = std::thread::spawn(move || {
         let client = blocking::PolarisClient::builder()
             .base_url("http://127.0.0.1:1")
             .dataset_root(root_path)
@@ -943,16 +962,12 @@ async fn new_event_shapes_are_typed_and_supported_by_default() {
             .prepare_historical(query.clone())?
             .perpetual_tickers()
             .collect::<Result<Vec<_>, _>>()?;
-        let blocking = client
-            .perpetual_tickers(query)?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok::<_, PolarisError>((prepared, blocking))
+        Ok::<_, PolarisError>(prepared)
     })
     .join()
     .expect("blocking thread")
     .expect("blocking rows");
     assert_eq!(prepared.len(), 2);
-    assert_eq!(blocking.len(), 2);
 }
 
 #[tokio::test]
@@ -996,13 +1011,11 @@ async fn malformed_perpetual_tickers_are_rejected() {
 
 #[tokio::test]
 async fn intents_are_typed_filtered_and_available_from_prepared_replay() {
-    let server = MockServer::start().await;
     let root = TempDir::new().expect("tempdir");
     write_intent_fixture(
         &root,
         include_str!("../../../tests/fixtures/events/intents-v2.jsonl"),
     );
-    let client = build_client(&server, &root);
     let query = HistoricalQuery {
         source: "uniswapx".to_owned(),
         market: "intents".to_owned(),
@@ -1012,30 +1025,8 @@ async fn intents_are_typed_filtered_and_available_from_prepared_replay() {
         materialize_orderbooks: true,
     };
 
-    let rows = collect_stream(client.intents(query.clone()).await.expect("intents"))
-        .await
-        .expect("intent rows");
-    assert_eq!(rows.len(), 4);
-    assert_eq!(rows[0].source(), "uniswapx");
-    assert_eq!(rows[0].market(), "intents");
-    assert_eq!(rows[0].data().rfq_id.as_deref(), Some("rfq-1"));
-    assert_eq!(rows[0].data().amount_kind, Some(AmountKind::ExactInput));
-    assert_eq!(rows[0].data().quote.as_ref().unwrap().quote_id, "quote-1");
-    assert_eq!(rows[0].data().inputs[0].extra["token_symbol"], "AAA");
-    assert_eq!(rows[0].data().extra["venue_context"], "rfq");
-    assert_eq!(rows[0].raw().unwrap()["requestId"], "rfq-1");
-    assert_eq!(rows[0].raw().unwrap()["venuePayload"]["token"], "0xaaa");
-    assert!(rows[1].raw().is_none());
-    assert_eq!(rows[1].data().amount_kind, Some(AmountKind::ExactOutput));
-    assert_eq!(rows[2].data().status, Some(IntentStatus::Settled));
-    assert_eq!(
-        rows[2].data().transactions[0].transaction_hash,
-        "0xsettlement"
-    );
-    assert_eq!(rows[2].data().transactions[0].extra["block_number"], "123");
-
     let root_path = root.path().to_owned();
-    let (prepared_rows, blocking_rows) = std::thread::spawn(move || {
+    let prepared_rows = std::thread::spawn(move || {
         let client = blocking::PolarisClient::builder()
             .base_url("http://127.0.0.1:1")
             .dataset_root(root_path)
@@ -1046,17 +1037,19 @@ async fn intents_are_typed_filtered_and_available_from_prepared_replay() {
             .expect("prepared replay")
             .intents()
             .collect::<Result<Vec<_>, _>>()?;
-        let blocking_rows = client
-            .intents(query)
-            .expect("blocking intents")
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok::<_, PolarisError>((prepared_rows, blocking_rows))
+        Ok::<_, PolarisError>(prepared_rows)
     })
     .join()
     .expect("blocking thread")
     .expect("blocking rows");
     assert_eq!(prepared_rows.len(), 4);
-    assert_eq!(blocking_rows.len(), 4);
+    assert_eq!(prepared_rows[0].source(), "uniswapx");
+    assert_eq!(prepared_rows[0].data().rfq_id.as_deref(), Some("rfq-1"));
+    assert_eq!(
+        prepared_rows[0].data().amount_kind,
+        Some(AmountKind::ExactInput)
+    );
+    assert_eq!(prepared_rows[2].data().status, Some(IntentStatus::Settled));
 
     let malformed_root = TempDir::new().expect("tempdir");
     let mut fixture = include_str!("../../../tests/fixtures/events/intents-v2.jsonl")
@@ -1075,10 +1068,15 @@ async fn intents_are_typed_filtered_and_available_from_prepared_replay() {
             .collect::<Vec<_>>()
             .join("\n"),
     );
-    let malformed_client = build_client(&server, &malformed_root);
-    let error = collect_stream(
-        malformed_client
-            .intents(HistoricalQuery {
+    let malformed_path = malformed_root.path().to_owned();
+    let error = std::thread::spawn(move || {
+        let client = blocking::PolarisClient::builder()
+            .base_url("http://127.0.0.1:1")
+            .dataset_root(malformed_path)
+            .build()
+            .expect("blocking client");
+        client
+            .prepare_historical(HistoricalQuery {
                 source: "uniswapx".to_owned(),
                 market: "intents".to_owned(),
                 from: Some("2024-01-01T00:00:00Z".into()),
@@ -1086,10 +1084,12 @@ async fn intents_are_typed_filtered_and_available_from_prepared_replay() {
                 allow_gaps: false,
                 materialize_orderbooks: false,
             })
-            .await
-            .expect("malformed stream"),
-    )
-    .await
+            .expect("prepared replay")
+            .intents()
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .join()
+    .expect("blocking thread")
     .expect_err("missing asset_id must fail");
     assert!(error.to_string().contains("invalid v2 intent payload"));
 }
@@ -1391,39 +1391,17 @@ async fn ohlcv_returns_tradingview_output() {
     let server = MockServer::start().await;
     let root = TempDir::new().expect("tempdir");
     let client = build_client(&server, &root);
-    let key = "standard-binance-BTC-USDT-2024-01-01-000000";
     Mock::given(method("GET"))
-        .and(path("/snapshots"))
+        .and(path("/historical/ohlcv"))
+        .and(query_param("interval", "1m"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "snapshots": [{"key": key, "date": "2024-01-01"}]
+            "items": [{"event_id": "c1", "source": "binance", "market": "BTC-USDT",
+                "collector_timestamp": 1_704_067_240_000_i64, "source_capture_id": "capture",
+                "schema_version": 1, "interval": "1m", "open_timestamp": 1_704_067_200_000_i64,
+                "open": 100.0, "high": 101.0, "low": 100.0, "close": 101.0,
+                "base_volume": 2.0, "trade_count": 2}],
+            "has_more": false, "next_cursor": null
         })))
-        .mount(&server)
-        .await;
-
-    Mock::given(method("GET"))
-        .and(path("/download"))
-        .and(query_param("source", "binance"))
-        .and(query_param("market", "BTC-USDT"))
-        .and(query_param("date", "2024-01-01"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(download_manifest(
-            "binance",
-            "BTC-USDT",
-            "2024-01-01",
-            vec![manifest_snapshot(
-                "2024-01-01",
-                "000000",
-                key,
-                format!("{}/objects/ohlcv", server.uri()),
-            )],
-        )))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/objects/ohlcv"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(zstd_ndjson(&[
-            json!({"timestamp": 1_704_067_200_000_000_i64, "source": "binance", "market": "BTC-USDT", "type": "trade", "data": {"price": 100.0, "quantity": 1.5, "side": "buy"}}),
-            json!({"timestamp": 1_704_067_230_000_000_i64, "source": "binance", "market": "BTC-USDT", "type": "trade", "data": {"price": 101.0, "quantity": 0.5, "side": "sell"}}),
-        ])))
         .mount(&server)
         .await;
 
@@ -1449,6 +1427,22 @@ async fn ohlcv_returns_tradingview_output() {
         }
         other => panic!("unexpected output: {other:?}"),
     }
+    let query = OhlcvQuery {
+        source: "binance".to_owned(),
+        market: "BTC-USDT".to_owned(),
+        from: Some("2024-01-01T00:00:00Z".into()),
+        to: Some("2024-01-01T01:00:00Z".into()),
+        interval: OhlcvInterval::M1,
+        format: OhlcvFormat::Bars,
+        allow_gaps: false,
+    };
+    assert_eq!(
+        client.volume(query.clone()).await.expect("volume")[0].volume,
+        2.0
+    );
+    let vwap = client.vwap(query).await.expect("vwap");
+    assert_eq!(vwap[0].vwap, Some(101.0));
+    assert_eq!(vwap[0].trades, 2);
 }
 
 #[tokio::test]

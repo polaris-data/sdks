@@ -57,6 +57,7 @@ test("direct historical rows paginate, filter, and keep flat nullable fields", a
   const trade = { ...identity, event_id: "t1", collector_timestamp: 10, price: 100, quantity: 2, side: null };
   const option = { ...identity, event_id: "o1", collector_timestamp: 10, instrument: "BTC-29MAR24-50000-C", delta: "0.431", mark_price: null };
   const funding = { ...identity, event_id: "f1", collector_timestamp: 10, funding_rate: null, mark_price: "100" };
+  const fundingWithoutMark = { ...identity, event_id: "f2", collector_timestamp: 11, funding_rate: "0.0001", mark_price: null };
   const calls = [];
   const client = new PolarisClient({ baseUrl: "https://api.example", apiKey: "secret", fetch: async (input, init) => {
     const url = new URL(input);
@@ -69,7 +70,7 @@ test("direct historical rows paginate, filter, and keep flat nullable fields", a
     } else if (url.pathname === "/historical/options-ticker") {
       body = { items: [option], has_more: false, next_cursor: null };
     } else {
-      body = { items: [funding], has_more: false, next_cursor: null };
+      body = { items: [funding, fundingWithoutMark], has_more: false, next_cursor: null };
     }
     return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
   } });
@@ -88,7 +89,9 @@ test("direct historical rows paginate, filter, and keep flat nullable fields", a
   });
   assert.deepEqual(exact, [option]);
   assert.equal(calls[2].url.searchParams.get("instrument"), option.instrument);
-  assert.deepEqual(await client.fundingRates({}), [funding]);
+  assert.deepEqual(await client.fundingRates({}), [funding, fundingWithoutMark]);
+  assert.deepEqual(await client.perpetualTickers({}), [funding, fundingWithoutMark]);
+  assert.deepEqual(await client.markPrices({}), [funding]);
   assert.equal(calls[3].url.searchParams.has("start"), false);
   await assert.rejects(
     client.optionTickers({ source: "deribit", market: "BTC", instrument: "" }),
@@ -158,12 +161,50 @@ test("flat OHLCV, intent, and quote rows use their distinct direct routes", asyn
   assert.equal(calls[0].url.searchParams.get("interval"), "1m");
   assert.equal(calls[1].url.searchParams.get("cursor"), "next");
   assert.deepEqual(await client.intentRows({ intentId: "intent-1" }), [intent]);
+  assert.deepEqual(await client.intents({ intentId: "intent-1" }), [intent]);
   assert.equal(calls[2].url.searchParams.get("intent_id"), "intent-1");
   assert.deepEqual(await client.quoteRows({ observationId: "obs-1", instrument: "pool-1" }), [quote]);
-  assert.equal(calls[3].url.searchParams.get("observation_id"), "obs-1");
-  assert.equal(calls[3].url.searchParams.get("instrument"), "pool-1");
-  assert.equal(calls[3].headers.Authorization, "Bearer secret");
+  assert.equal(calls[4].url.searchParams.get("observation_id"), "obs-1");
+  assert.equal(calls[4].url.searchParams.get("instrument"), "pool-1");
+  assert.equal(calls[4].headers.Authorization, "Bearer secret");
   await assert.rejects(client.intentRows({ intentId: " " }), /intentId must be non-empty/);
+  client.close();
+});
+
+test("venue candle aggregates use latest revisions and reported volumes", async () => {
+  const { PolarisClient } = await import("../dist/node/index.js");
+  const start = 1_704_067_200_000;
+  const identity = { source: "binance", market: "BTC-USDT", source_capture_id: "capture", schema_version: 1 };
+  const first = { ...identity, event_id: "open", collector_timestamp: start + 1,
+    interval: "1m", open_timestamp: start, open: 100, high: 101, low: 99, close: 101,
+    base_volume: 1, quote_volume: 101, trade_count: 2 };
+  const final = { ...first, event_id: "closed", collector_timestamp: start + 2,
+    high: 103, close: 102, base_volume: 2, quote_volume: 204, trade_count: 5, is_closed: true };
+  const fine = [100, 110, 99, 108.9].map((price, i) => ({ ...identity,
+    event_id: `fine-${i}`, collector_timestamp: start + i, interval: "10s",
+    open_timestamp: start + i * 10_000, open: price, high: price, low: price, close: price }));
+  const client = new PolarisClient({ baseUrl: "https://api.example", fetch: async (input) => {
+    const url = new URL(input);
+    assert.equal(url.pathname, "/historical/ohlcv");
+    assert.equal(url.searchParams.get("start"), String(start));
+    assert.equal(url.searchParams.get("end"), String(start + 60_000));
+    const second = url.searchParams.has("cursor");
+    const body = url.searchParams.get("interval") === "1m"
+      ? { items: [second ? final : first], has_more: !second, next_cursor: second ? null : "next" }
+      : { items: fine, has_more: false, next_cursor: null };
+    return new Response(JSON.stringify(body), { status: 200 });
+  } });
+  const options = { source: "binance", market: "BTC-USDT", interval: "1m",
+    from: "2024-01-01T00:00:00Z", to: "2024-01-01T00:01:00Z" };
+  assert.deepEqual(await client.ohlcv(options), [{ timestamp: start, open: 100, high: 103,
+    low: 99, close: 102, volume: 2, trades: 5 }]);
+  assert.deepEqual(await client.volume(options), [{ timestamp: start, volume: 2 }]);
+  assert.deepEqual(await client.vwap(options), [{ timestamp: start, vwap: 102,
+    volume: 2, quote_volume: 204, trades: 5 }]);
+  assert.equal((await client.ohlcvTradingView(options)).candles[0].c, 102);
+  const volatility = await client.volatility(options);
+  assert.equal(volatility[0].returns, 3);
+  assert.ok(volatility[0].volatility > 0);
   client.close();
 });
 
@@ -196,12 +237,6 @@ test("new event shapes are typed, filtered, and accepted by v2 decoding", async 
   client._readSnapshotEvents = async function* (_source, _market, _from, _to, filter) {
     for (const row of decoded) if (!filter || filter(row)) yield structuredClone(row);
   };
-  const tickers = await client.perpetualTickers({ source: "hyperliquid", market: "BTC" });
-  assert.equal(tickers.length, 2);
-  assert.equal(tickers[0].data.mark_price, "98750.3");
-  assert.equal(tickers[0].data.funding_timestamp, 1_704_069_000_000);
-  assert.equal(tickers[1].data.funding_rate, "-0.000025");
-
   for (const badData of [{}, { funding_rate: 0.1 }]) {
     const malformed = [...lines];
     const row = JSON.parse(malformed[1]);
@@ -212,64 +247,6 @@ test("new event shapes are typed, filtered, and accepted by v2 decoding", async 
       /Invalid v2 perpetual ticker payload/,
     );
   }
-  client.close();
-});
-
-test("intents filter mixed events and preserve canonical nested observations", async () => {
-  const { PolarisClient } = await import("../dist/node/index.js");
-  const rows = [
-    {
-      collector_timestamp: 1,
-      collector_sequence: 1,
-      exchange_timestamp: null,
-      exchange_sequence: null,
-      source: "uniswapx",
-      market: "intents",
-      type: "intent",
-      data: {
-        rfq_id: "rfq-1",
-        inputs: [{ asset_id: "eip155:1/erc20:0xaaa", amount: "100", symbol: "AAA" }],
-        outputs: [{ asset_id: "eip155:1/erc20:0xbbb", amount: "95" }],
-        amount_kind: "exact_input",
-        quote: { quote_id: "quote-1", response: [], solver: "solver-a" },
-        transactions: [],
-        venue_context: "rfq",
-      },
-      raw: { requestId: "rfq-1", venuePayload: { token: "0xaaa" } },
-    },
-    { timestamp: 2, source: "uniswapx", market: "intents", type: "trade", data: {} },
-    {
-      collector_timestamp: 3,
-      collector_sequence: 3,
-      exchange_timestamp: null,
-      exchange_sequence: "intent-1",
-      source: "uniswapx",
-      market: "intents",
-      type: "intent",
-      data: {
-        intent_id: "intent-1",
-        inputs: [],
-        outputs: [],
-        status: "settled",
-        transactions: [{ transaction_hash: "0xtx", block_number: "123" }],
-      },
-    },
-  ];
-  const client = new PolarisClient({ baseUrl: "https://api.example" });
-  client._resolveHistoricalRange = async () => ({ fromMs: 0, toMs: 10 });
-  client._readSnapshotEvents = async function* (_source, _market, _from, _to, filter) {
-    for (const row of rows) if (!filter || filter(row)) yield structuredClone(row);
-  };
-
-  const intents = await client.intents({ source: "uniswapx", market: "intents" });
-  assert.equal(intents.length, 2);
-  assert.equal(intents[0].data.quote.quote_id, "quote-1");
-  assert.equal(intents[0].data.inputs[0].symbol, "AAA");
-  assert.equal(intents[0].data.venue_context, "rfq");
-  assert.equal(intents[0].raw.requestId, "rfq-1");
-  assert.equal(intents[0].raw.venuePayload.token, "0xaaa");
-  assert.equal("raw" in intents[1], false);
-  assert.equal(intents[1].data.transactions[0].block_number, "123");
   client.close();
 });
 
@@ -325,26 +302,6 @@ test("v2 decoder consumes metadata and materializes unified books without changi
     1704067200300,
     1704067200550,
   ]);
-  const bars = await client.ohlcv({ source: "lighter", market: "BTC-USD", interval: "1m" });
-  assert.deepEqual(bars, [{
-    timestamp: 1704067200000,
-    open: 100.5,
-    high: 102,
-    low: 99,
-    close: 99,
-    volume: 6.25,
-    trades: 3,
-  }]);
-  const volatility = await client.volatility({
-    source: "lighter",
-    market: "BTC-USD",
-    interval: "1m",
-  });
-  assert.equal(volatility[0].returns, 2);
-  const marks = await client.markPrices({ source: "lighter", market: "BTC-USD" });
-  assert.equal(marks.length, 1);
-  assert.equal(marks[0].data.series, "mark_px");
-
   const unsupported = [...lines];
   unsupported[0] = unsupported[0].replace('"v2"', '"v3"');
   assert.throws(

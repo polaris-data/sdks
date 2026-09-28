@@ -362,7 +362,7 @@ class PolarisClient:
 
     def _direct_row_output(
         self,
-        method: Literal["trades", "funding_rates"],
+        method: Literal["trades", "funding_rates", "mark_prices"],
         source: str | None,
         market: str | None,
         start: int | None,
@@ -724,21 +724,15 @@ class PolarisClient:
     def intents(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-    ) -> Iterator[IntentEvent]:
-        """Iterate canonical RFQ, quote, and executable-intent observations."""
-        iterator = self._call(
-            "intents",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            allow_gaps,
-        )
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+        intent_id: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+    ) -> Iterator[IntentRow]:
+        """Iterate pair-shaped intent observations from the direct API."""
+        iterator = self._call("intents", source, market, instrument, intent_id, start, end)
         return self._iterate(iterator, "intents")
 
     def intent_rows(
@@ -793,21 +787,13 @@ class PolarisClient:
     def perpetual_tickers(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-    ) -> Iterator[PerpetualTickerEvent]:
-        """Iterate partial venue-published perpetual market-state updates."""
-        iterator = self._call(
-            "perpetual_tickers",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            allow_gaps,
-        )
+        source: str | None = None,
+        market: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+    ) -> Iterator[FundingRateRow]:
+        """Iterate funding-bearing perpetual ticker observations."""
+        iterator = self._call("perpetual_tickers", source, market, start, end)
         return self._iterate(iterator, "perpetual_tickers")
 
     def raw(
@@ -945,24 +931,22 @@ class PolarisClient:
     def mark_prices(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
+        source: str | None = None,
+        market: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
         output: Literal["iterator"] = "iterator",
         batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict]: ...
+    ) -> Iterator[FundingRateRow]: ...
 
     @overload
     def mark_prices(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
+        source: str | None = None,
+        market: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
         output: Literal["batches"],
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> Iterator[pyarrow.RecordBatch]: ...
@@ -971,11 +955,10 @@ class PolarisClient:
     def mark_prices(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
+        source: str | None = None,
+        market: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
         output: Literal["dataframe"],
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> pandas.DataFrame: ...
@@ -983,23 +966,16 @@ class PolarisClient:
     def mark_prices(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
+        source: str | None = None,
+        market: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
         output: OutputFormat = "iterator",
         batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        return self._typed_historical(
-            "mark_prices",
-            source,
-            market,
-            from_,
-            to,
-            allow_gaps,
-            output,
-            batch_size,
+    ) -> Iterator[FundingRateRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
+        """Read funding observations carrying a mark price."""
+        return self._direct_row_output(
+            "mark_prices", source, market, start, end, output, batch_size
         )
 
     @overload

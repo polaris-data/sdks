@@ -4,11 +4,11 @@ mod columnar;
 
 use polaris_data::{
     BboQuery, BboQuote, DepthMetricsRow, FundingRateRow, HistoricalQuery, HistoricalRowsQuery,
-    IntentEvent, IntentRow, IntentRowsQuery, ListSnapshotsQuery, OhlcvFormat, OhlcvInterval,
-    OhlcvOutput, OhlcvQuery, OhlcvRow, OhlcvRowsQuery, OptionTickerRow, OptionTickerRowsQuery,
-    OrderbookBuilder, PerpetualTickerEvent, PointSeriesEvent, PolarisError,
-    PropammQuoteLadderEvent, QuoteRow, QuoteRowsQuery, RawCaptureRow, RawChannelQuery, RawQuery,
-    RawReplayQuery, ReplayQuery, StandardEvent, StreamQuery, TimeInput, TradeRow,
+    IntentRow, IntentRowsQuery, ListSnapshotsQuery, OhlcvFormat, OhlcvInterval, OhlcvOutput,
+    OhlcvQuery, OhlcvRow, OhlcvRowsQuery, OptionTickerRow, OptionTickerRowsQuery, OrderbookBuilder,
+    PolarisError, PropammQuoteLadderEvent, QuoteRow, QuoteRowsQuery, RawCaptureRow,
+    RawChannelQuery, RawQuery, RawReplayQuery, ReplayQuery, StandardEvent, StreamQuery, TimeInput,
+    TradeRow,
     blocking::{self, RawReplayCacheConfig},
 };
 use pyo3::{
@@ -426,20 +426,27 @@ impl NativeClient {
         )))
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
+    #[pyo3(signature = (source=None, market=None, instrument=None, intent_id=None, start=None, end=None))]
     fn intents<'py>(
         &self,
         py: Python<'py>,
-        source: String,
-        market: String,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
+        source: Option<String>,
+        market: Option<String>,
+        instrument: Option<String>,
+        intent_id: Option<String>,
+        start: Option<i64>,
+        end: Option<i64>,
     ) -> PyResult<NativeHistorical> {
         let iterator = py
             .detach(|| {
-                self.inner
-                    .intents(historical_query(source, market, from_, to, allow_gaps))
+                self.inner.intents(IntentRowsQuery {
+                    source,
+                    market,
+                    instrument,
+                    intent_id,
+                    start,
+                    end,
+                })
             })
             .map_err(native_error)?;
         Ok(NativeHistorical::new(NativeHistoricalIterator::Intents(
@@ -580,20 +587,23 @@ impl NativeClient {
         ))
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
+    #[pyo3(signature = (source=None, market=None, start=None, end=None))]
     fn perpetual_tickers(
         &self,
         py: Python<'_>,
-        source: String,
-        market: String,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
+        source: Option<String>,
+        market: Option<String>,
+        start: Option<i64>,
+        end: Option<i64>,
     ) -> PyResult<NativeHistorical> {
         let iterator = py
             .detach(|| {
-                self.inner
-                    .perpetual_tickers(historical_query(source, market, from_, to, allow_gaps))
+                self.inner.perpetual_tickers(HistoricalRowsQuery {
+                    source,
+                    market,
+                    start,
+                    end,
+                })
             })
             .map_err(native_error)?;
         Ok(NativeHistorical::new(
@@ -1003,23 +1013,26 @@ impl NativeClient {
         )
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
+    #[pyo3(signature = (source=None, market=None, start=None, end=None))]
     fn mark_prices<'py>(
         &self,
         py: Python<'py>,
-        source: String,
-        market: String,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
+        source: Option<String>,
+        market: Option<String>,
+        start: Option<i64>,
+        end: Option<i64>,
     ) -> PyResult<NativeHistorical> {
         let iterator = py
             .detach(|| {
-                self.inner
-                    .mark_prices(historical_query(source, market, from_, to, allow_gaps))
+                self.inner.mark_prices(HistoricalRowsQuery {
+                    source,
+                    market,
+                    start,
+                    end,
+                })
             })
             .map_err(native_error)?;
-        Ok(NativeHistorical::new(NativeHistoricalIterator::Points(
+        Ok(NativeHistorical::new(NativeHistoricalIterator::MarkPrices(
             iterator,
         )))
     }
@@ -1289,16 +1302,16 @@ enum NativeHistoricalIterator {
     Events(blocking::HistoricalIterator<StandardEvent>),
     L2Events(blocking::HistoricalIterator<StandardEvent>),
     Trades(blocking::HistoricalIterator<TradeRow>),
-    Intents(blocking::HistoricalIterator<IntentEvent>),
+    Intents(blocking::HistoricalIterator<IntentRow>),
     IntentRows(blocking::HistoricalIterator<IntentRow>),
     OhlcvRows(blocking::HistoricalIterator<OhlcvRow>),
     QuoteRows(blocking::HistoricalIterator<QuoteRow>),
     OptionTickers(blocking::HistoricalIterator<OptionTickerRow>),
     FundingRates(blocking::HistoricalIterator<FundingRateRow>),
     RawCaptures(blocking::HistoricalIterator<RawCaptureRow>),
-    PerpetualTickers(blocking::HistoricalIterator<PerpetualTickerEvent>),
+    PerpetualTickers(blocking::HistoricalIterator<FundingRateRow>),
     Bbo(blocking::HistoricalIterator<BboQuote>),
-    Points(blocking::HistoricalIterator<PointSeriesEvent>),
+    MarkPrices(blocking::HistoricalIterator<FundingRateRow>),
     PropammQuoteLadders(blocking::HistoricalIterator<PropammQuoteLadderEvent>),
     Depth(blocking::HistoricalIterator<DepthMetricsRow>),
 }
@@ -1377,7 +1390,7 @@ impl NativeHistorical {
             NativeHistoricalIterator::RawCaptures(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::PerpetualTickers(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Bbo(iterator) => next_historical(py, iterator),
-            NativeHistoricalIterator::Points(iterator) => next_historical(py, iterator),
+            NativeHistoricalIterator::MarkPrices(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::PropammQuoteLadders(iterator) => {
                 next_historical(py, iterator)
             }

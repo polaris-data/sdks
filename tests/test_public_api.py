@@ -195,20 +195,20 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
 
     assert _parameters(PolarisClient.intents) == [
         ("self", positional, required),
-        ("source", keyword_only, required),
-        ("market", keyword_only, required),
-        ("from_", keyword_only, None),
-        ("to", keyword_only, None),
-        ("allow_gaps", keyword_only, False),
+        ("source", keyword_only, None),
+        ("market", keyword_only, None),
+        ("instrument", keyword_only, None),
+        ("intent_id", keyword_only, None),
+        ("start", keyword_only, None),
+        ("end", keyword_only, None),
     ]
 
     assert _parameters(PolarisClient.perpetual_tickers) == [
         ("self", positional, required),
-        ("source", keyword_only, required),
-        ("market", keyword_only, required),
-        ("from_", keyword_only, None),
-        ("to", keyword_only, None),
-        ("allow_gaps", keyword_only, False),
+        ("source", keyword_only, None),
+        ("market", keyword_only, None),
+        ("start", keyword_only, None),
+        ("end", keyword_only, None),
     ]
 
     assert _parameters(PolarisClient.events) == [
@@ -241,7 +241,7 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("allow_gaps", keyword_only, False),
     ]
 
-    direct_methods = [PolarisClient.trades, PolarisClient.funding_rates]
+    direct_methods = [PolarisClient.trades, PolarisClient.funding_rates, PolarisClient.mark_prices]
     for method in direct_methods:
         assert _parameters(method) == [
             ("self", positional, required),
@@ -253,10 +253,7 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
             ("batch_size", keyword_only, 65_536),
         ]
 
-    historical_methods = [
-        PolarisClient.mark_prices,
-        PolarisClient.propamm_quote_ladders,
-    ]
+    historical_methods = [PolarisClient.propamm_quote_ladders]
     for method in historical_methods:
         assert _parameters(method) == [
             ("self", positional, required),
@@ -384,9 +381,9 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
     assert inspect.signature(PolarisClient.propamm_quote_ladders).return_annotation == (
         "Iterator[PropammQuoteLadderEvent] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
     )
-    assert inspect.signature(PolarisClient.intents).return_annotation == "Iterator[IntentEvent]"
+    assert inspect.signature(PolarisClient.intents).return_annotation == "Iterator[IntentRow]"
     assert inspect.signature(PolarisClient.perpetual_tickers).return_annotation == (
-        "Iterator[PerpetualTickerEvent]"
+        "Iterator[FundingRateRow]"
     )
     for method in [
         PolarisClient.l2_snapshots,
@@ -395,7 +392,6 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
         assert inspect.signature(method).return_annotation == "Iterator[JSONDict]"
     for method in [
         PolarisClient.events,
-        PolarisClient.mark_prices,
         PolarisClient.bbo,
         PolarisClient.depth_metrics,
     ]:
@@ -406,6 +402,9 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
         "Iterator[TradeRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
     )
     assert inspect.signature(PolarisClient.funding_rates).return_annotation == (
+        "Iterator[FundingRateRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
+    )
+    assert inspect.signature(PolarisClient.mark_prices).return_annotation == (
         "Iterator[FundingRateRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
     )
     assert inspect.signature(PolarisClient.option_tickers).return_annotation == "Iterator[OptionTickerRow]"

@@ -218,8 +218,8 @@ impl PolarisClient {
 
     pub fn intents(
         &self,
-        query: HistoricalQuery,
-    ) -> Result<HistoricalIterator<IntentEvent>, PolarisError> {
+        query: IntentRowsQuery,
+    ) -> Result<HistoricalIterator<IntentRow>, PolarisError> {
         let stream = self.run(self.inner.intents(query))?;
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
@@ -258,8 +258,8 @@ impl PolarisClient {
 
     pub fn perpetual_tickers(
         &self,
-        query: HistoricalQuery,
-    ) -> Result<HistoricalIterator<PerpetualTickerEvent>, PolarisError> {
+        query: HistoricalRowsQuery,
+    ) -> Result<HistoricalIterator<FundingRateRow>, PolarisError> {
         let stream = self.run(self.inner.perpetual_tickers(query))?;
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
@@ -418,8 +418,8 @@ impl PolarisClient {
 
     pub fn mark_prices(
         &self,
-        query: HistoricalQuery,
-    ) -> Result<HistoricalIterator<PointSeriesEvent>, PolarisError> {
+        query: HistoricalRowsQuery,
+    ) -> Result<HistoricalIterator<FundingRateRow>, PolarisError> {
         let stream = self.run(self.inner.mark_prices(query))?;
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }

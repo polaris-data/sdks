@@ -39,7 +39,7 @@ def _write_fixture(root: Path, rows: list[dict]) -> Path:
 
 
 def _query(client: PolarisClient, method: str, **kwargs):
-    if method in {"trades", "funding_rates"}:
+    if method in {"trades", "funding_rates", "mark_prices"}:
         return getattr(client, method)(
             source=SOURCE,
             market=MARKET,
@@ -420,41 +420,15 @@ def test_trade_dataframe_uses_flat_api_fields(tmp_path) -> None:
 
 
 def test_point_series_columnar_outputs_use_endpoint_value_names(tmp_path) -> None:
-    _write_fixture(
-        tmp_path,
-        [
-            {
-                "timestamp": START_MS,
-                "type": "point",
-                "data": {
-                    "series": "funding_rate",
-                    "value": 0.0001,
-                    "interval_seconds": 28_800,
-                },
-            },
-            {
-                "timestamp": START_MS + 1,
-                "type": "point",
-                "data": {
-                    "series": "mark_price",
-                    "value": 43_123.5,
-                    "estimated": True,
-                },
-            },
-        ],
-    )
-
-    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
+    row = {"event_id": "mark", "source": SOURCE, "market": MARKET,
+           "collector_timestamp": START_MS, "source_capture_id": "capture",
+           "schema_version": 1, "mark_price": "43123.5"}
+    with PolarisClient(base_url="http://127.0.0.1:1") as client:
+        client._call = lambda method, *args: iter([row])
         marks = list(_query(client, "mark_prices", output="batches"))
 
-    assert marks[0].schema.names == [
-        "timestamp",
-        "source",
-        "market",
-        "mark_price",
-        "extra.estimated",
-    ]
-    assert marks[0].column("mark_price").to_pylist() == [43_123.5]
+    assert "collector_timestamp" in marks[0].schema.names
+    assert marks[0].column("mark_price").to_pylist() == ["43123.5"]
 
 
 def test_bbo_and_depth_metrics_have_fixed_columnar_schemas(tmp_path) -> None:
@@ -507,24 +481,13 @@ def test_bbo_and_depth_metrics_have_fixed_columnar_schemas(tmp_path) -> None:
 
 
 def test_empty_dataframe_preserves_schema_and_dtypes(tmp_path) -> None:
-    _write_fixture(
-        tmp_path,
-        [
-            {
-                "timestamp": START_MS,
-                "type": "trade",
-                "data": {"price": 100, "quantity": 1},
-            }
-        ],
-    )
-
-    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
+    with PolarisClient(base_url="http://127.0.0.1:1") as client:
+        client._call = lambda method, *args: iter(())
         frame = _query(client, "mark_prices", output="dataframe")
 
     assert frame.empty
-    assert frame.columns.tolist() == ["timestamp", "source", "market", "mark_price"]
-    assert str(frame.dtypes["timestamp"]) == "datetime64[ms, UTC]"
-    assert isinstance(frame.dtypes["source"], pd.CategoricalDtype)
+    assert "collector_timestamp" in frame.columns
+    assert "mark_price" in frame.columns
 
 
 def test_aggregate_dataframes_have_stable_notebook_ready_schemas(tmp_path) -> None:
@@ -550,6 +513,11 @@ def test_aggregate_dataframes_have_stable_notebook_ready_schemas(tmp_path) -> No
     )
 
     with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
+        client._call = lambda method, *args: [{
+            "timestamp": START_MS, "open": 100.0, "high": 101.0, "low": 99.0,
+            "close": 100.0, "volume": 6.0, "trades": 3, "vwap": 100.0,
+            "quote_volume": 600.0, "volatility": 0.1, "returns": 2,
+        } if method != "volume" else {"timestamp": START_MS, "volume": 6.0}]
         ohlcv = _query(client, "ohlcv", interval="100ms", output="dataframe")
         volume = _query(client, "volume", interval="100ms", output="dataframe")
         vwap = _query(client, "vwap", interval="100ms", output="dataframe")
@@ -612,6 +580,7 @@ def test_empty_aggregate_dataframes_preserve_schema_and_dtypes(
     )
 
     with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
+        client._call = lambda method, *args: []
         frame = _query(client, method, interval="100ms", output="dataframe")
 
     assert frame.empty

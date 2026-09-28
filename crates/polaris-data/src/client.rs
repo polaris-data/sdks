@@ -22,15 +22,15 @@ use crate::{
         DownloadManifestResponse, FundingRateRow, HistoricalQuery, HistoricalRowsQuery,
         HistoricalStream, IntentData, IntentEvent, IntentEventV2, IntentRow, IntentRowsQuery,
         LegacyIntentEvent, LegacyOrderbookEvent, LegacyPerpetualTickerEvent,
-        LegacyPointSeriesEvent, LegacyTradeData, LegacyTradeEvent, ListSnapshotsQuery, OhlcvOutput,
-        OhlcvQuery, OhlcvRow, OhlcvRowsQuery, OptionTickerRow, OptionTickerRowsQuery,
-        OrderbookData, OrderbookDataV2, OrderbookEvent, OrderbookEventV2, OrderbookLevel,
-        PerpetualTickerData, PerpetualTickerEvent, PerpetualTickerEventV2, PointSeriesData,
-        PointSeriesEvent, PointSeriesEventV2, PropammQuoteLadderData, PropammQuoteLadderEvent,
-        QuoteRow, QuoteRowsQuery, RawCaptureRow, RawChannelQuery, RawQuery, RawReplayQuery,
-        RawReplayStream, RealtimeStream, ReplayQuery, ReplayStream, SnapshotEntry, StandardEvent,
-        StreamQuery, TradeDataV2, TradeEvent, TradeEventV2, TradeRow, VolatilityBar, VolumeBar,
-        VwapBar,
+        LegacyPointSeriesEvent, LegacyTradeData, LegacyTradeEvent, ListSnapshotsQuery, OhlcvBar,
+        OhlcvFormat, OhlcvOutput, OhlcvQuery, OhlcvRow, OhlcvRowsQuery, OptionTickerRow,
+        OptionTickerRowsQuery, OrderbookData, OrderbookDataV2, OrderbookEvent, OrderbookEventV2,
+        OrderbookLevel, PerpetualTickerData, PerpetualTickerEvent, PerpetualTickerEventV2,
+        PointSeriesData, PointSeriesEvent, PointSeriesEventV2, PropammQuoteLadderData,
+        PropammQuoteLadderEvent, QuoteRow, QuoteRowsQuery, RawCaptureRow, RawChannelQuery,
+        RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, ReplayStream,
+        SnapshotEntry, StandardEvent, StreamQuery, TradeDataV2, TradeEvent, TradeEventV2, TradeRow,
+        VolatilityBar, VolumeBar, VwapBar,
     },
     ohlcv,
     orderbook::{BookUpdate, BookView, parse_level_tuple},
@@ -417,23 +417,6 @@ impl PolarisClient {
         self.historical_rows("/historical/trades", query, vec![])
     }
 
-    async fn snapshot_trades(
-        &self,
-        mut query: HistoricalQuery,
-    ) -> Result<HistoricalStream<TradeEvent>, PolarisError> {
-        query.materialize_orderbooks = false;
-        let mut events = self.events(query).await?;
-        Ok(Box::pin(try_stream! {
-            while let Some(event) = events.next().await {
-                let event = event?;
-                if event.event_type() != "trade" {
-                    continue;
-                }
-                yield Self::parse_trade(event)?;
-            }
-        }))
-    }
-
     fn historical_rows<T>(
         &self,
         path: &'static str,
@@ -514,22 +497,12 @@ impl PolarisClient {
         }))
     }
 
-    /// Return standardized RFQ, quote, and executable-intent observations.
+    /// Return pair-shaped intent observations from the direct historical API.
     pub async fn intents(
         &self,
-        mut query: HistoricalQuery,
-    ) -> Result<HistoricalStream<IntentEvent>, PolarisError> {
-        query.materialize_orderbooks = false;
-        let mut events = self.events(query).await?;
-        Ok(Box::pin(try_stream! {
-            while let Some(event) = events.next().await {
-                let event = event?;
-                if event.event_type() != "intent" {
-                    continue;
-                }
-                yield Self::parse_intent(event)?;
-            }
-        }))
+        query: IntentRowsQuery,
+    ) -> Result<HistoricalStream<IntentRow>, PolarisError> {
+        self.intent_rows(query).await
     }
 
     /// Stream pair-shaped intent observations from the direct historical API.
@@ -627,22 +600,12 @@ impl PolarisClient {
         )
     }
 
-    /// Return partial venue-published perpetual market-state updates.
+    /// Return funding-bearing perpetual ticker observations.
     pub async fn perpetual_tickers(
         &self,
-        mut query: HistoricalQuery,
-    ) -> Result<HistoricalStream<PerpetualTickerEvent>, PolarisError> {
-        query.materialize_orderbooks = false;
-        let mut events = self.events(query).await?;
-        Ok(Box::pin(try_stream! {
-            while let Some(event) = events.next().await {
-                let event = event?;
-                if event.event_type() != "perpetual_ticker" {
-                    continue;
-                }
-                yield Self::parse_perpetual_ticker(event)?;
-            }
-        }))
+        query: HistoricalRowsQuery,
+    ) -> Result<HistoricalStream<FundingRateRow>, PolarisError> {
+        self.funding_rates(query).await
     }
 
     pub async fn replay(&self, query: ReplayQuery) -> Result<ReplayStream, PolarisError> {
@@ -695,21 +658,93 @@ impl PolarisClient {
     }
 
     pub async fn ohlcv(&self, query: OhlcvQuery) -> Result<OhlcvOutput, PolarisError> {
-        let mut trades = self
-            .snapshot_trades(HistoricalQuery {
-                source: query.source,
-                market: query.market,
-                from: query.from,
-                to: query.to,
-                allow_gaps: query.allow_gaps,
-                materialize_orderbooks: true,
+        let format = query.format;
+        let rows = self
+            .venue_candles(&query, Some(query.interval.as_str()))
+            .await?;
+        let bars = rows
+            .into_iter()
+            .map(|row| OhlcvBar {
+                timestamp: row.open_timestamp,
+                open: row.open,
+                high: row.high,
+                low: row.low,
+                close: row.close,
+                volume: row.base_volume.unwrap_or_default(),
+                trades: row.trade_count.unwrap_or_default(),
+            })
+            .collect::<Vec<_>>();
+        Ok(match format {
+            OhlcvFormat::Bars => OhlcvOutput::Bars(bars),
+            OhlcvFormat::TradingView => OhlcvOutput::TradingView(crate::TradingViewOhlcv {
+                candles: bars
+                    .iter()
+                    .map(|bar| crate::TradingViewCandle {
+                        time: bar.timestamp / 1_000,
+                        open: bar.open,
+                        high: bar.high,
+                        low: bar.low,
+                        close: bar.close,
+                    })
+                    .collect(),
+                volumes: bars
+                    .iter()
+                    .map(|bar| crate::TradingViewVolume {
+                        time: bar.timestamp / 1_000,
+                        value: bar.volume,
+                    })
+                    .collect(),
+            }),
+        })
+    }
+
+    async fn venue_candles(
+        &self,
+        query: &OhlcvQuery,
+        interval: Option<&str>,
+    ) -> Result<Vec<OhlcvRow>, PolarisError> {
+        let start = query
+            .from
+            .as_ref()
+            .map(to_epoch_micros)
+            .transpose()?
+            .map(|value| value.div_euclid(1_000));
+        let end = query
+            .to
+            .as_ref()
+            .map(to_epoch_micros)
+            .transpose()?
+            .map(|value| value.div_euclid(1_000));
+        let mut rows = self
+            .ohlcv_rows(OhlcvRowsQuery {
+                source: Some(query.source.clone()),
+                market: Some(query.market.clone()),
+                instrument: None,
+                interval: interval.map(ToOwned::to_owned),
+                start,
+                end,
             })
             .await?;
-        let mut aggregator = ohlcv::OhlcvAggregator::new(query.interval);
-        while let Some(trade) = trades.next().await {
-            aggregator.add(&trade?);
+        let mut latest = BTreeMap::<(String, String, String, String, i64), OhlcvRow>::new();
+        while let Some(row) = rows.next().await {
+            let row = row?;
+            let key = (
+                row.source.clone(),
+                row.market.clone(),
+                row.instrument.clone().unwrap_or_default(),
+                row.interval.clone(),
+                row.open_timestamp,
+            );
+            let replace = latest.get(&key).is_none_or(|old| {
+                (row.collector_timestamp, &row.event_id) > (old.collector_timestamp, &old.event_id)
+            });
+            if replace {
+                latest.insert(key, row);
+            }
         }
-        Ok(aggregator.finish(query.format))
+        let mut rows = latest.into_values().collect::<Vec<_>>();
+        rows.sort_by(|a, b| (a.open_timestamp, &a.event_id).cmp(&(b.open_timestamp, &b.event_id)));
+        Ok(rows)
     }
 
     async fn resolve_historical_range(
@@ -1369,13 +1404,20 @@ impl PolarisClient {
         self.historical_rows("/historical/funding-rates", query, vec![])
     }
 
-    /// Return standardized mark-price point-series events for a time range.
+    /// Return funding-bearing observations that include a mark price.
     pub async fn mark_prices(
         &self,
-        mut query: HistoricalQuery,
-    ) -> Result<HistoricalStream<PointSeriesEvent>, PolarisError> {
-        query.materialize_orderbooks = false;
-        self.point_series(query, &["mark_price", "mark_px"]).await
+        query: HistoricalRowsQuery,
+    ) -> Result<HistoricalStream<FundingRateRow>, PolarisError> {
+        let mut rows = self.funding_rates(query).await?;
+        Ok(Box::pin(try_stream! {
+            while let Some(row) = rows.next().await {
+                let row = row?;
+                if row.mark_price.is_some() {
+                    yield row;
+                }
+            }
+        }))
     }
 
     /// Return standardized PropAMM quote-ladder records for a time range.
@@ -1389,24 +1431,6 @@ impl PolarisClient {
             while let Some(event) = events.next().await {
                 if let Some(ladder) = Self::parse_propamm_quote_ladder(event?)? {
                     yield ladder;
-                }
-            }
-        }))
-    }
-
-    async fn point_series(
-        &self,
-        query: HistoricalQuery,
-        expected_series: &'static [&'static str],
-    ) -> Result<HistoricalStream<PointSeriesEvent>, PolarisError> {
-        let mut events = self.events(query).await?;
-        Ok(Box::pin(try_stream! {
-            while let Some(event) = events.next().await {
-                let event = event?;
-                if event.event_type() == "point" {
-                    if let Some(point) = Self::try_parse_point_series(event, expected_series) {
-                        yield point;
-                    }
                 }
             }
         }))
@@ -1434,51 +1458,44 @@ impl PolarisClient {
         }
     }
 
-    /// Aggregate per-bucket VWAP from standardized trade data.
+    /// Derive candle VWAP from venue-reported quote and base volume.
     pub async fn vwap(&self, query: OhlcvQuery) -> Result<Vec<VwapBar>, PolarisError> {
-        let mut trades = self
-            .snapshot_trades(HistoricalQuery {
-                source: query.source,
-                market: query.market,
-                from: query.from,
-                to: query.to,
-                allow_gaps: query.allow_gaps,
-                materialize_orderbooks: true,
-            })
+        let rows = self
+            .venue_candles(&query, Some(query.interval.as_str()))
             .await?;
-
-        let interval_ms = ohlcv::interval_to_millis(query.interval);
-        let mut aggregator = VwapAggregator::new(interval_ms);
-
-        while let Some(trade) = trades.next().await {
-            let trade = trade?;
-            aggregator.add(trade.timestamp(), trade.price(), trade.quantity());
-        }
-
-        Ok(aggregator.finish())
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let volume = row.base_volume.unwrap_or_default();
+                let quote_volume = row.quote_volume.unwrap_or(row.close * volume);
+                VwapBar {
+                    timestamp: row.open_timestamp,
+                    vwap: (volume > 0.0).then_some(quote_volume / volume),
+                    volume,
+                    quote_volume,
+                    trades: row.trade_count.unwrap_or_default(),
+                }
+            })
+            .collect())
     }
 
-    /// Aggregate realized volatility from standardized trade data.
+    /// Estimate realized volatility from the finest available venue candle closes.
     pub async fn volatility(&self, query: OhlcvQuery) -> Result<Vec<VolatilityBar>, PolarisError> {
-        let mut trades = self
-            .snapshot_trades(HistoricalQuery {
-                source: query.source,
-                market: query.market,
-                from: query.from,
-                to: query.to,
-                allow_gaps: query.allow_gaps,
-                materialize_orderbooks: true,
-            })
-            .await?;
-
-        let interval_ms = ohlcv::interval_to_millis(query.interval);
-        let mut aggregator = VolatilityAggregator::new(interval_ms);
-
-        while let Some(trade) = trades.next().await {
-            let trade = trade?;
-            aggregator.add_trade(&trade);
+        let target = ohlcv::interval_to_millis(query.interval);
+        let mut rows = self.venue_candles(&query, None).await?;
+        let finest = rows
+            .iter()
+            .filter_map(|row| candle_interval_ms(&row.interval))
+            .filter(|width| *width < target)
+            .min();
+        let Some(finest) = finest else {
+            return Ok(Vec::new());
+        };
+        rows.retain(|row| candle_interval_ms(&row.interval) == Some(finest));
+        let mut aggregator = VolatilityAggregator::new(target);
+        for row in rows {
+            aggregator.add(row.open_timestamp, row.close);
         }
-
         Ok(aggregator.finish())
     }
 
@@ -2427,63 +2444,16 @@ fn parse_manifest_hour(timestamp: &str) -> Result<u8, PolarisError> {
 // Aggregators
 // ===========================================================================
 
-struct VwapAggregator {
-    interval_ms: i64,
-    rows: std::collections::HashMap<i64, VwapRow>,
-}
-
-struct VwapRow {
-    timestamp: i64,
-    volume: f64,
-    quote_volume: f64,
-    trades: u64,
-}
-
-impl VwapAggregator {
-    fn new(interval_ms: i64) -> Self {
-        Self {
-            interval_ms,
-            rows: std::collections::HashMap::new(),
-        }
-    }
-
-    fn add(&mut self, timestamp: i64, price: f64, quantity: f64) {
-        if quantity <= 0.0 || !price.is_finite() {
-            return;
-        }
-
-        let bucket = (timestamp / self.interval_ms) * self.interval_ms;
-        let row = self.rows.entry(bucket).or_insert_with(|| VwapRow {
-            timestamp: bucket,
-            volume: 0.0,
-            quote_volume: 0.0,
-            trades: 0,
-        });
-
-        row.volume += quantity;
-        row.quote_volume += price * quantity;
-        row.trades += 1;
-    }
-
-    fn finish(self) -> Vec<VwapBar> {
-        let mut result: Vec<_> = self
-            .rows
-            .into_values()
-            .map(|row| VwapBar {
-                timestamp: row.timestamp,
-                vwap: if row.volume > 0.0 {
-                    Some(row.quote_volume / row.volume)
-                } else {
-                    None
-                },
-                volume: row.volume,
-                quote_volume: row.quote_volume,
-                trades: row.trades,
-            })
-            .collect();
-
-        result.sort_by_key(|bar| bar.timestamp);
-        result
+fn candle_interval_ms(interval: &str) -> Option<i64> {
+    match interval {
+        "100ms" => Some(100),
+        "1s" => Some(1_000),
+        "10s" => Some(10_000),
+        "1m" => Some(60_000),
+        "5m" => Some(300_000),
+        "15m" => Some(900_000),
+        "1h" => Some(3_600_000),
+        _ => None,
     }
 }
 
@@ -2505,10 +2475,6 @@ impl VolatilityAggregator {
             return;
         }
         self.points.push((timestamp, price));
-    }
-
-    fn add_trade(&mut self, trade: &TradeEvent) {
-        self.add(trade.timestamp(), trade.price());
     }
 
     fn finish(self) -> Vec<VolatilityBar> {

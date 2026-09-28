@@ -1105,108 +1105,6 @@ def test_trades_allow_gaps_returns_covered_rows_and_warns(tmp_path) -> None:
         client.close()
 
 
-def test_vwap_aggregates_from_snapshot_download_flow(tmp_path) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/snapshots":
-            return httpx.Response(
-                200,
-                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
-            )
-        if request.url.path == "/download":
-            return httpx.Response(
-                200,
-                json=_bulk_download_manifest(
-                    source="binance",
-                    market="BTC-USDT",
-                    day="2024-01-01",
-                    keys=[SNAPSHOT_KEY_DAY_1],
-                ),
-            )
-        if _is_download_request(request):
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(
-                    [
-                        {
-                            "timestamp": _ts("2024-01-01T00:00:00Z"),
-                            "type": "trade",
-                            "data": {"price": 100.0, "quantity": 10.0},
-                        },
-                        {
-                            "timestamp": _ts("2024-01-01T00:00:01Z"),
-                            "type": "trade",
-                            "data": {"price": 101.0, "quantity": 2.0},
-                        },
-                        {
-                            "timestamp": _ts("2024-01-01T00:00:02Z"),
-                            "type": "trade",
-                            "data": {"price": 99.0, "quantity": 50.0},
-                        },
-                        {
-                            "timestamp": _ts("2024-01-01T00:00:03Z"),
-                            "type": "datapoint",
-                            "data": {"funding": 0.01},
-                        },
-                    ]
-                ),
-                headers={"content-type": "application/zstd"},
-            )
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        assert client.vwap(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
-            interval="1m",
-        ) == pytest.approx(
-            [
-                {
-                    "timestamp": _ts("2024-01-01T00:00:00Z"),
-                    "vwap": 6152.0 / 62.0,
-                    "volume": 62.0,
-                    "quote_volume": 6152.0,
-                    "trades": 3,
-                }
-            ]
-        )
-    finally:
-        client.close()
-
-
-def test_vwap_require_snapshot_coverage_and_do_not_fall_back_to_events(
-    tmp_path,
-) -> None:
-    calls: list[tuple[str, str | None]] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls.append((request.url.path, request.url.params.get("format")))
-        if request.url.path == "/snapshots":
-            return httpx.Response(200, json={"snapshots": []})
-        if request.url.path == "/events":
-            raise AssertionError("vwap() should not fall back to /events")
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        with pytest.raises(
-            PolarisError,
-            match="could not be satisfied from standardized snapshots",
-        ):
-            client.vwap(
-                source="binance",
-                market="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-                interval="1m",
-            )
-        assert calls == [("/snapshots", None)]
-    finally:
-        client.close()
-
-
 def test_vwap_validates_interval() -> None:
     client = make_client(lambda request: httpx.Response(500))
     try:
@@ -1219,234 +1117,6 @@ def test_vwap_validates_interval() -> None:
                 market="BTC-USDT",
                 interval="2m",
             )
-    finally:
-        client.close()
-
-
-def test_vwap_allow_gaps_returns_covered_rows_and_warns(tmp_path) -> None:
-    calls: list[tuple[str, str | None]] = []
-    client = make_client(_partial_snapshot_handler(calls), dataset_root=tmp_path)
-    try:
-        with pytest.warns(
-            UserWarning,
-            match="skipped missing intervals: 2024-01-01T01:00:00Z..2024-01-01T02:00:00Z",
-        ):
-            row = client.vwap(
-                source="binance",
-                market="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T03:00:00Z",
-                interval="1h",
-                allow_gaps=True,
-            )
-        assert row == pytest.approx(
-            [
-                {
-                    "timestamp": _ts("2024-01-01T00:00:00Z"),
-                    "vwap": 310.0 / 3.0,
-                    "volume": 3.0,
-                    "quote_volume": 310.0,
-                    "trades": 2,
-                },
-                {
-                    "timestamp": _ts("2024-01-01T02:00:00Z"),
-                    "vwap": 110.0,
-                    "volume": 3.0,
-                    "quote_volume": 330.0,
-                    "trades": 1,
-                },
-            ]
-        )
-        assert calls == [
-            ("/snapshots", None),
-            ("/download", "json"),
-        ]
-    finally:
-        client.close()
-
-
-def test_vwap_buckets_trades_by_interval(tmp_path) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/snapshots":
-            return httpx.Response(
-                200,
-                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
-            )
-        if request.url.path == "/download":
-            return httpx.Response(
-                200,
-                json=_bulk_download_manifest(
-                    source="binance",
-                    market="BTC-USDT",
-                    day="2024-01-01",
-                    keys=[SNAPSHOT_KEY_DAY_1],
-                ),
-            )
-        if _is_download_request(request):
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(
-                    [
-                        {
-                            "timestamp": _ts("2024-01-01T00:00:10Z"),
-                            "type": "trade",
-                            "data": {"price": 100.0, "quantity": 1.0},
-                        },
-                        {
-                            "timestamp": _ts("2024-01-01T00:00:20Z"),
-                            "type": "trade",
-                            "data": {"price": 102.0, "quantity": 2.0},
-                        },
-                        {
-                            "timestamp": _ts("2024-01-01T00:01:05Z"),
-                            "type": "trade",
-                            "data": {"price": 99.0, "quantity": 4.0},
-                        },
-                    ]
-                ),
-                headers={"content-type": "application/zstd"},
-            )
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        assert client.vwap(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T00:02:00Z",
-            interval="1m",
-        ) == pytest.approx(
-            [
-                {
-                    "timestamp": _ts("2024-01-01T00:00:00Z"),
-                    "vwap": 304.0 / 3.0,
-                    "volume": 3.0,
-                    "quote_volume": 304.0,
-                    "trades": 2,
-                },
-                {
-                    "timestamp": _ts("2024-01-01T00:01:00Z"),
-                    "vwap": 99.0,
-                    "volume": 4.0,
-                    "quote_volume": 396.0,
-                    "trades": 1,
-                },
-            ]
-        )
-    finally:
-        client.close()
-
-
-def test_volatility_aggregates_log_return_stddev_by_bucket(tmp_path) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/snapshots":
-            return httpx.Response(
-                200,
-                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
-            )
-        if request.url.path == "/download":
-            return httpx.Response(
-                200,
-                json=_bulk_download_manifest(
-                    source="binance",
-                    market="BTC-USDT",
-                    day="2024-01-01",
-                    keys=[SNAPSHOT_KEY_DAY_1],
-                ),
-            )
-        if _is_download_request(request):
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(
-                    [
-                        {
-                            "timestamp": _ts("2024-01-01T00:00:20Z"),
-                            "type": "trade",
-                            "data": {"price": 102.0, "quantity": 2.0},
-                        },
-                        {
-                            "timestamp": _ts("2024-01-01T00:00:10Z"),
-                            "type": "trade",
-                            "data": {"price": 100.0, "quantity": 1.0},
-                        },
-                        {
-                            "timestamp": _ts("2024-01-01T00:00:40Z"),
-                            "type": "trade",
-                            "data": {"price": 104.0, "quantity": 3.0},
-                        },
-                        {
-                            "timestamp": _ts("2024-01-01T00:01:05Z"),
-                            "type": "trade",
-                            "data": {"price": 99.0, "quantity": 4.0},
-                        },
-                        {
-                            "timestamp": _ts("2024-01-01T00:01:25Z"),
-                            "type": "trade",
-                            "data": {"price": 101.0, "quantity": 5.0},
-                        },
-                        {
-                            "timestamp": _ts("2024-01-01T00:02:10Z"),
-                            "type": "trade",
-                            "data": {"price": 110.0, "quantity": 6.0},
-                        },
-                    ]
-                ),
-                headers={"content-type": "application/zstd"},
-            )
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        rows = client.volatility(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T00:03:00Z",
-            interval="1m",
-        )
-        assert rows == [
-            {
-                "timestamp": _ts("2024-01-01T00:00:00Z"),
-                "volatility": rows[0]["volatility"],
-                "returns": 2,
-            }
-        ]
-        assert rows[0]["volatility"] == pytest.approx(
-            abs(math.log(100.0 / 102.0) - math.log(104.0 / 100.0))
-            / math.sqrt(2.0)
-        )
-    finally:
-        client.close()
-
-
-def test_volatility_require_snapshot_coverage_and_do_not_fall_back_to_events(
-    tmp_path,
-) -> None:
-    calls: list[tuple[str, str | None]] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls.append((request.url.path, request.url.params.get("format")))
-        if request.url.path == "/snapshots":
-            return httpx.Response(200, json={"snapshots": []})
-        if request.url.path == "/events":
-            raise AssertionError("volatility() should not fall back to /events")
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        with pytest.raises(
-            PolarisError,
-            match="could not be satisfied from standardized snapshots",
-        ):
-            client.volatility(
-                source="binance",
-                market="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-                interval="1m",
-            )
-        assert calls == [("/snapshots", None)]
     finally:
         client.close()
 
@@ -1471,406 +1141,6 @@ def test_volatility_validates_interval_and_method() -> None:
                 interval="1m",
                 method="simple_returns",
             )
-    finally:
-        client.close()
-
-
-def test_volatility_allow_gaps_returns_covered_rows_and_warns(tmp_path) -> None:
-    calls: list[tuple[str, str | None]] = []
-    client = make_client(_partial_snapshot_handler(calls), dataset_root=tmp_path)
-    try:
-        with pytest.warns(
-            UserWarning,
-            match="skipped missing intervals: 2024-01-01T01:00:00Z..2024-01-01T02:00:00Z",
-        ):
-            rows = client.volatility(
-                source="binance",
-                market="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T03:00:00Z",
-                interval="1h",
-                allow_gaps=True,
-            )
-        assert rows == []
-        assert calls == [
-            ("/snapshots", None),
-            ("/download", "json"),
-        ]
-    finally:
-        client.close()
-
-
-def test_ohlcv_aggregates_from_snapshot_download_flow(tmp_path) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/snapshots":
-            return httpx.Response(
-                200,
-                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
-            )
-        if request.url.path == "/download":
-            return httpx.Response(
-                200,
-                json=_bulk_download_manifest(
-                    source="binance",
-                    market="BTC-USDT",
-                    day="2024-01-01",
-                    keys=[SNAPSHOT_KEY_DAY_1],
-                ),
-            )
-        if _is_download_request(request):
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(
-                    [
-                        {
-                            "timestamp": 1704067205000,
-                            "type": "trade",
-                            "data": {"price": 100.0, "quantity": 1.0},
-                        },
-                        {
-                            "timestamp": 1704067201000,
-                            "type": "trade",
-                            "data": {"price": 95.0, "quantity": 2.0},
-                        },
-                        {
-                            "timestamp": 1704067240000,
-                            "type": "trade",
-                            "data": {"price": 105.0, "quantity": 3.0},
-                        },
-                        {
-                            "timestamp": 1704067260000,
-                            "type": "trade",
-                            "data": {"price": 103.0, "quantity": 4.0},
-                        },
-                    ]
-                ),
-                headers={"content-type": "application/zstd"},
-            )
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        assert client.ohlcv(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T00:02:00Z",
-            interval="1m",
-        ) == [
-            {
-                "timestamp": 1704067200000,
-                "open": 100.0,
-                "high": 105.0,
-                "low": 95.0,
-                "close": 105.0,
-                "volume": 6.0,
-                "trades": 3,
-            },
-            {
-                "timestamp": 1704067260000,
-                "open": 105.0,
-                "high": 103.0,
-                "low": 103.0,
-                "close": 103.0,
-                "volume": 4.0,
-                "trades": 1,
-            },
-        ]
-    finally:
-        client.close()
-
-
-def test_ohlcv_normalizes_millisecond_snapshot_timestamps(tmp_path) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/snapshots":
-            return httpx.Response(
-                200,
-                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
-            )
-        if request.url.path == "/download":
-            return httpx.Response(
-                200,
-                json=_bulk_download_manifest(
-                    source="binance",
-                    market="BTC-USDT",
-                    day="2024-01-01",
-                    keys=[SNAPSHOT_KEY_DAY_1],
-                ),
-            )
-        if _is_download_request(request):
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(
-                    [
-                        {
-                            "timestamp": _ts_ms("2024-01-01T00:00:01Z"),
-                            "type": "trade",
-                            "data": {"price": 100.0, "quantity": 1.0},
-                        },
-                        {
-                            "timestamp": _ts_ms("2024-01-01T00:00:20Z"),
-                            "type": "trade",
-                            "data": {"price": 105.0, "quantity": 2.0},
-                        },
-                    ]
-                ),
-                headers={"content-type": "application/zstd"},
-            )
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        assert client.ohlcv(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T00:01:00Z",
-            interval="1m",
-        ) == [
-            {
-                "timestamp": _ts("2024-01-01T00:00:00Z"),
-                "open": 100.0,
-                "high": 105.0,
-                "low": 100.0,
-                "close": 105.0,
-                "volume": 3.0,
-                "trades": 2,
-            }
-        ]
-    finally:
-        client.close()
-
-
-def test_volume_aggregates_from_snapshot_download_flow(tmp_path) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/snapshots":
-            return httpx.Response(
-                200,
-                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
-            )
-        if request.url.path == "/download":
-            return httpx.Response(
-                200,
-                json=_bulk_download_manifest(
-                    source="binance",
-                    market="BTC-USDT",
-                    day="2024-01-01",
-                    keys=[SNAPSHOT_KEY_DAY_1],
-                ),
-            )
-        if _is_download_request(request):
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(
-                    [
-                        {
-                            "timestamp": 1704067205000,
-                            "type": "trade",
-                            "data": {"price": 100.0, "quantity": 1.0},
-                        },
-                        {
-                            "timestamp": 1704067201000,
-                            "type": "trade",
-                            "data": {"price": 95.0, "quantity": 2.0},
-                        },
-                        {
-                            "timestamp": 1704067240000,
-                            "type": "trade",
-                            "data": {"price": 105.0, "quantity": 3.0},
-                        },
-                        {
-                            "timestamp": 1704067260000,
-                            "type": "trade",
-                            "data": {"price": 103.0, "quantity": 4.0},
-                        },
-                    ]
-                ),
-                headers={"content-type": "application/zstd"},
-            )
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        assert client.volume(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T00:02:00Z",
-            interval="1m",
-        ) == [
-            {
-                "timestamp": 1704067200000,
-                "volume": 6.0,
-            },
-            {
-                "timestamp": 1704067260000,
-                "volume": 4.0,
-            },
-        ]
-    finally:
-        client.close()
-
-
-def test_ohlcv_tradingview_format_returns_local_json(tmp_path) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/snapshots":
-            return httpx.Response(
-                200,
-                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
-            )
-        if request.url.path == "/download":
-            return httpx.Response(
-                200,
-                json=_bulk_download_manifest(
-                    source="binance",
-                    market="BTC-USDT",
-                    day="2024-01-01",
-                    keys=[SNAPSHOT_KEY_DAY_1],
-                ),
-            )
-        if _is_download_request(request):
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(
-                    [
-                        {
-                            "timestamp": 1704067200000,
-                            "type": "trade",
-                            "data": {"price": 100.0, "quantity": 1.5},
-                        }
-                    ]
-                ),
-                headers={"content-type": "application/zstd"},
-            )
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        assert client.ohlcv(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T00:01:00Z",
-            interval="1m",
-            format="tradingview",
-        ) == {
-            "candles": [
-                {
-                    "time": 1704067200.0,
-                    "open": 100.0,
-                    "high": 100.0,
-                    "low": 100.0,
-                    "close": 100.0,
-                }
-            ],
-            "volumes": [{"time": 1704067200.0, "value": 1.5}],
-        }
-    finally:
-        client.close()
-
-
-def test_volume_require_snapshot_coverage_and_do_not_fall_back_to_events(
-    tmp_path,
-) -> None:
-    calls: list[tuple[str, str | None]] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls.append((request.url.path, request.url.params.get("format")))
-        if request.url.path == "/snapshots":
-            return httpx.Response(200, json={"snapshots": []})
-        if request.url.path == "/events":
-            raise AssertionError("volume() should not fall back to /events")
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        with pytest.raises(
-            PolarisError,
-            match="could not be satisfied from standardized snapshots",
-        ):
-            client.volume(
-                source="binance",
-                market="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T00:02:00Z",
-                interval="1m",
-            )
-        assert calls == [("/snapshots", None)]
-    finally:
-        client.close()
-
-
-def test_ohlcv_require_snapshot_coverage_and_do_not_fall_back_to_events(
-    tmp_path,
-) -> None:
-    calls: list[tuple[str, str | None]] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls.append((request.url.path, request.url.params.get("format")))
-        if request.url.path == "/snapshots":
-            return httpx.Response(200, json={"snapshots": []})
-        if request.url.path == "/events":
-            raise AssertionError("ohlcv() should not fall back to /events")
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        with pytest.raises(
-            PolarisError,
-            match="could not be satisfied from standardized snapshots",
-        ):
-            client.ohlcv(
-                source="binance",
-                market="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T00:02:00Z",
-                interval="1m",
-            )
-        assert calls == [("/snapshots", None)]
-    finally:
-        client.close()
-
-
-def test_ohlcv_allow_gaps_skips_missing_hours_and_preserves_gap_open(tmp_path) -> None:
-    calls: list[tuple[str, str | None]] = []
-    client = make_client(_partial_snapshot_handler(calls), dataset_root=tmp_path)
-    try:
-        with pytest.warns(
-            UserWarning,
-            match="skipped missing intervals: 2024-01-01T01:00:00Z..2024-01-01T02:00:00Z",
-        ):
-            bars = client.ohlcv(
-                source="binance",
-                market="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T03:00:00Z",
-                interval="1h",
-                allow_gaps=True,
-            )
-        assert bars == [
-            {
-                "timestamp": _ts("2024-01-01T00:00:00Z"),
-                "open": 100.0,
-                "high": 105.0,
-                "low": 100.0,
-                "close": 105.0,
-                "volume": 3.0,
-                "trades": 2,
-            },
-            {
-                "timestamp": _ts("2024-01-01T02:00:00Z"),
-                "open": 110.0,
-                "high": 110.0,
-                "low": 110.0,
-                "close": 110.0,
-                "volume": 3.0,
-                "trades": 1,
-            },
-        ]
-        assert calls == [
-            ("/snapshots", None),
-            ("/download", "json"),
-        ]
     finally:
         client.close()
 
@@ -2574,6 +1844,7 @@ def test_direct_historical_rows_paginate_filter_and_keep_nullable_fields(tmp_pat
     option = {**identity, "event_id": "o1", "instrument": "BTC-29MAR24-50000-C",
               "delta": "0.431", "mark_price": None}
     funding = {**identity, "event_id": "f1", "funding_rate": None, "mark_price": "100"}
+    funding_without_mark = {**identity, "event_id": "f2", "funding_rate": "0.0001", "mark_price": None}
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
@@ -2587,7 +1858,7 @@ def test_direct_historical_rows_paginate_filter_and_keep_nullable_fields(tmp_pat
         if request.url.path == "/historical/options-ticker":
             return httpx.Response(200, json={"items": [option], "has_more": False, "next_cursor": None})
         if request.url.path == "/historical/funding-rates":
-            return httpx.Response(200, json={"items": [funding], "has_more": False, "next_cursor": None})
+            return httpx.Response(200, json={"items": [funding, funding_without_mark], "has_more": False, "next_cursor": None})
         raise AssertionError(f"unexpected request: {request.url}")
 
     client = make_client(handler, dataset_root=tmp_path)
@@ -2606,8 +1877,10 @@ def test_direct_historical_rows_paginate_filter_and_keep_nullable_fields(tmp_pat
         assert all(options[0][key] == value for key, value in option.items())
         assert calls[2].url.params["instrument"] == option["instrument"]
         funding_rows = list(client.funding_rates())
-        assert len(funding_rows) == 1
+        assert len(funding_rows) == 2
         assert all(funding_rows[0][key] == value for key, value in funding.items())
+        assert list(client.perpetual_tickers()) == funding_rows
+        assert list(client.mark_prices()) == funding_rows[:1]
         assert "start" not in calls[3].url.params
         assert "end" not in calls[3].url.params
         with pytest.raises(ValueError, match="instrument must be non-empty"):
@@ -2700,76 +1973,62 @@ def test_direct_ohlcv_intent_and_quote_rows_keep_flat_observations(tmp_path) -> 
         assert calls[1].url.params["cursor"] == "next"
         intents = list(client.intent_rows(intent_id="intent-1"))
         assert intents[0]["input_asset_id"] is None
+        assert list(client.intents(intent_id="intent-1")) == intents
         assert calls[2].url.params["intent_id"] == "intent-1"
         quotes = list(client.quote_rows(observation_id="obs-1", instrument="pool-1"))
         assert quotes[0]["input_amount"] == "1000000000000000000"
-        assert calls[3].url.params["observation_id"] == "obs-1"
-        assert calls[3].url.params["instrument"] == "pool-1"
+        assert calls[4].url.params["observation_id"] == "obs-1"
+        assert calls[4].url.params["instrument"] == "pool-1"
         assert all(request.headers["authorization"] == "Bearer polaris_key_test" for request in calls)
     finally:
         client.close()
 
 
-def test_intents_are_typed_filtered_and_preserve_nested_payloads(tmp_path) -> None:
-    _write_intent_fixture(tmp_path)
-    client = PolarisClient(base_url="http://127.0.0.1:1", dataset_root=tmp_path)
-    try:
-        rows = list(
-            client.intents(
-                source="uniswapx",
-                market="intents",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-            )
-        )
-        assert len(rows) == 4
-        assert [row["data"].get("status") for row in rows] == [
-            None,
-            "submitted",
-            "settled",
-            "failed",
-        ]
-        assert rows[0]["data"]["quote"]["quote_id"] == "quote-1"
-        assert rows[0]["data"]["inputs"][0]["token_symbol"] == "AAA"
-        assert rows[0]["data"]["venue_context"] == "rfq"
-        assert rows[0]["raw"]["requestId"] == "rfq-1"
-        assert rows[0]["raw"]["venuePayload"]["token"] == "0xaaa"
-        assert "raw" not in rows[1]
-        assert rows[2]["data"]["transactions"][0]["transaction_hash"] == "0xsettlement"
-        assert rows[2]["data"]["transactions"][0]["block_number"] == "123"
-    finally:
-        client.close()
+def test_venue_candle_aggregates_use_latest_revision_and_reported_volumes(tmp_path) -> None:
+    start = 1_704_067_200_000
+    identity = {"source": "binance", "market": "BTC-USDT", "source_capture_id": "capture",
+                "schema_version": 1}
+    first = {**identity, "event_id": "open", "collector_timestamp": start + 1,
+             "interval": "1m", "open_timestamp": start, "open": 100.0,
+             "high": 101.0, "low": 99.0, "close": 101.0, "base_volume": 1.0,
+             "quote_volume": 101.0, "trade_count": 2}
+    final = {**first, "event_id": "closed", "collector_timestamp": start + 2,
+             "high": 103.0, "close": 102.0, "base_volume": 2.0,
+             "quote_volume": 204.0, "trade_count": 5, "is_closed": True}
+    closes = [100.0, 110.0, 99.0, 108.9]
+    fine = [{**identity, "event_id": f"fine-{i}", "collector_timestamp": start + i,
+             "interval": "10s", "open_timestamp": start + i * 10_000,
+             "open": price, "high": price, "low": price, "close": price}
+            for i, price in enumerate(closes)]
 
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/historical/ohlcv"
+        assert request.url.params["source"] == "binance"
+        assert request.url.params["start"] == str(start)
+        assert request.url.params["end"] == str(start + 60_000)
+        if request.url.params.get("interval") == "1m":
+            second = request.url.params.get("cursor") == "next"
+            return httpx.Response(200, json={"items": [final if second else first],
+                                              "has_more": not second,
+                                              "next_cursor": None if second else "next"})
+        return httpx.Response(200, json={"items": fine, "has_more": False, "next_cursor": None})
 
-def test_new_event_shapes_are_available_through_python_sdk(tmp_path) -> None:
-    _write_new_event_fixture(tmp_path)
-    client = PolarisClient(base_url="http://127.0.0.1:1", dataset_root=tmp_path)
-    query = {
-        "source": "hyperliquid",
-        "market": "BTC",
-        "from_": "2024-01-01T00:00:00Z",
-        "to": "2024-01-01T01:00:00Z",
-    }
+    client = make_client(handler, dataset_root=tmp_path)
+    options = {"source": "binance", "market": "BTC-USDT", "interval": "1m",
+               "from_": "2024-01-01T00:00:00Z", "to": "2024-01-01T00:01:00Z"}
     try:
-        events = list(client.events(**query))
-        assert [row["type"] for row in events] == [
-            "perpetual_ticker",
-            "perpetual_ticker",
-            "option_ticker",
-            "trade",
-            "trade",
-            "intent",
-        ]
-        tickers = list(client.perpetual_tickers(**query))
-        assert len(tickers) == 2
-        assert tickers[0]["data"]["mark_price"] == "98750.3"
-        assert tickers[0]["data"]["funding_timestamp"] == 1_704_069_000_000
-        assert tickers[1]["data"]["funding_rate"] == "-0.000025"
-        assert events[3]["data"]["maker"] == "0xmaker"
-        assert events[3]["data"]["taker"] == "0xtaker"
-        assert "maker" not in events[4]["data"]
-        assert events[2]["data"]["underlying"] == "BTC"
-        assert events[2]["data"]["option_type"] == "call"
+        assert client.ohlcv(**options) == [{"timestamp": start, "open": 100.0,
+                                            "high": 103.0, "low": 99.0, "close": 102.0,
+                                            "volume": 2.0, "trades": 5}]
+        assert client.volume(**options) == [{"timestamp": start, "volume": 2.0}]
+        assert client.vwap(**options) == [{"timestamp": start, "vwap": 102.0,
+                                           "volume": 2.0, "quote_volume": 204.0, "trades": 5}]
+        assert client.ohlcv(**options, format="tradingview")["candles"][0]["close"] == 102.0
+        volatility = client.volatility(**options)
+        assert len(volatility) == 1
+        assert volatility[0]["timestamp"] == start
+        assert volatility[0]["returns"] == 3
+        assert volatility[0]["volatility"] > 0
     finally:
         client.close()
 
@@ -2794,96 +2053,6 @@ def test_python_rejects_malformed_perpetual_tickers(tmp_path, bad_data) -> None:
                     to="2024-01-01T01:00:00Z",
                 )
             )
-    finally:
-        client.close()
-
-
-def test_intents_reject_malformed_nested_payloads(tmp_path) -> None:
-    def mutate(rows):
-        del rows[1]["data"]["inputs"][0]["asset_id"]
-
-    _write_intent_fixture(tmp_path, mutate=mutate)
-    client = PolarisClient(base_url="http://127.0.0.1:1", dataset_root=tmp_path)
-    try:
-        with pytest.raises(PolarisError, match="invalid v2 intent payload"):
-            list(
-                client.intents(
-                    source="uniswapx",
-                    market="intents",
-                    from_="2024-01-01T00:00:00Z",
-                    to="2024-01-01T01:00:00Z",
-                )
-            )
-    finally:
-        client.close()
-
-
-def test_mark_prices_filter_point_series_from_standardized_snapshots(tmp_path) -> None:
-    snapshot_rows = [
-        {
-            "timestamp": _ts("2024-01-01T00:00:00Z"),
-            "type": "point",
-            "source": "binance",
-            "market": "BTC-USDT",
-            "data": {"series": "funding_rate", "value": 0.0001},
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:01:00Z"),
-            "type": "point",
-            "source": "binance",
-            "market": "BTC-USDT",
-            "data": {"series": "mark_price", "value": 43123.5},
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:02:00Z"),
-            "type": "point",
-            "source": "binance",
-            "market": "BTC-USDT",
-            "data": {"series": "index_price", "value": 43120.0},
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:03:00Z"),
-            "type": "point",
-            "source": "binance",
-            "market": "BTC-USDT",
-            "data": {"series": "mark_px", "value": 43124.0},
-        },
-    ]
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/snapshots":
-            return httpx.Response(
-                200,
-                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
-            )
-        if request.url.path == "/download":
-            return httpx.Response(
-                200,
-                json=_bulk_download_manifest(
-                    source="binance",
-                    market="BTC-USDT",
-                    day="2024-01-01",
-                    keys=[SNAPSHOT_KEY_DAY_1],
-                ),
-            )
-        if _is_download_request(request):
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(snapshot_rows),
-                headers={"content-type": "application/zstd"},
-            )
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        assert list(
-            client.mark_prices(
-                source="binance",
-                market="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-            )
-        ) == [snapshot_rows[1], snapshot_rows[3]]
     finally:
         client.close()
 

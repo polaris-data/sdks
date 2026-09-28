@@ -70,7 +70,6 @@ import {
   fileExists,
   type StorageLayout,
 } from "./storage";
-import { OhlcvAggregator } from "./aggregator";
 import type { IStorage } from "./storage/interface";
 import type { PolarisRuntime } from "./runtime/types";
 import { RealtimeStream } from "./realtime";
@@ -363,19 +362,8 @@ export class BasePolarisClient {
   }
 
   /** Return canonical RFQ, quote, and executable-intent observations. */
-  async intents(options: HistoricalQueryOptions): Promise<IntentEvent[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: IntentEvent[] = [];
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      (candidate) => candidate.type === "intent",
-    )) {
-      result.push(parseIntentEvent(event));
-    }
-    return result;
+  async intents(options: IntentRowsOptions = {}): Promise<IntentRow[]> {
+    return this.intentRows(options);
   }
 
   /** Return pair-shaped flat intent observations. */
@@ -416,20 +404,9 @@ export class BasePolarisClient {
     );
   }
 
-  /** Return partial venue-published perpetual market-state updates. */
-  async perpetualTickers(options: HistoricalQueryOptions): Promise<PerpetualTickerEvent[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: PerpetualTickerEvent[] = [];
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      (candidate) => candidate.type === "perpetual_ticker",
-    )) {
-      result.push(parsePerpetualTickerEvent(event));
-    }
-    return result;
+  /** Return funding-bearing perpetual ticker observations. */
+  async perpetualTickers(options: HistoricalRowsOptions = {}): Promise<FundingRateRow[]> {
+    return this.fundingRates(options);
   }
 
   /**
@@ -504,23 +481,8 @@ export class BasePolarisClient {
   /**
    * Return standardised mark-price point-series events for a time range.
    */
-  async markPrices(
-    options: HistoricalQueryOptions,
-  ): Promise<MarkPriceEvent[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: MarkPriceEvent[] = [];
-
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      isMarkPriceEvent,
-    )) {
-      result.push(event);
-    }
-
-    return result;
+  async markPrices(options: HistoricalRowsOptions = {}): Promise<FundingRateRow[]> {
+    return (await this.fundingRates(options)).filter((row) => row.mark_price != null);
   }
 
   /**
@@ -556,54 +518,31 @@ export class BasePolarisClient {
     }));
   }
 
-  /**
-   * Aggregate per-bucket VWAP from standardised trade data.
-   */
+  /** Derive VWAP from the latest venue candle revision and its reported volumes. */
   async vwap(options: VwapOptions): Promise<VwapBar[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const agg = new VwapAggregator(options.interval);
-
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      (e) => e.type === "trade",
-    )) {
-      const data = event.data as { price: unknown; quantity: unknown };
-      const price = coerceNumeric(data.price);
-      const quantity = coerceNumeric(data.quantity);
-      if (price === undefined || quantity === undefined) continue;
-      agg.add(sdkTimestamp(event as StandardEvent)!, price, quantity);
-    }
-
-    return agg.finish();
+    return (await this._venueCandles(options, options.interval)).map((row) => {
+      const volume = row.base_volume ?? 0;
+      const quoteVolume = row.quote_volume ?? row.close * volume;
+      return { timestamp: row.open_timestamp, vwap: volume > 0 ? quoteVolume / volume : null,
+        volume, quote_volume: quoteVolume, trades: row.trade_count ?? 0 };
+    });
   }
 
-  /**
-   * Aggregate realised volatility from standardised trade data.
-   */
+  /** Estimate realised volatility from finer venue candle closes. */
   async volatility(options: VolatilityOptions): Promise<VolatilityBar[]> {
     if (options.method !== undefined && options.method !== "log_returns") {
       throw new PolarisError("method must be 'log_returns'");
     }
 
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
+    const rows = await this._venueCandles(options);
+    const target = intervalToMs(options.interval);
+    const widths = rows.map((row) => candleIntervalMs(row.interval)).filter((value) => value < target);
+    if (widths.length === 0) return [];
+    const finest = Math.min(...widths);
     const agg = new VolatilityAggregator(options.interval);
-
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      (e) => e.type === "trade",
-    )) {
-      const data = event.data as { price: unknown };
-      const price = coerceNumeric(data.price);
-      if (price === undefined) continue;
-      agg.add(sdkTimestamp(event as StandardEvent)!, price);
+    for (const row of rows) {
+      if (candleIntervalMs(row.interval) === finest) agg.add(row.open_timestamp, row.close);
     }
-
     return agg.finish();
   }
 
@@ -635,35 +574,39 @@ export class BasePolarisClient {
     return result;
   }
 
-  /**
-   * Aggregate OHLCV bars from standardised trade data.
-   *
-   * Reads from locally-cached standard snapshot files and aggregates in memory
-   * using the same interval-bucketing strategy as the Python SDK.
-   */
+  /** Return the latest venue-published revision of each candle. */
   async ohlcv(options: OhlcvOptions): Promise<OhlcvBar[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const agg = new OhlcvAggregator(options.interval);
+    return (await this._venueCandles(options, options.interval)).map((row) => ({
+      timestamp: row.open_timestamp, open: row.open, high: row.high, low: row.low,
+      close: row.close, volume: row.base_volume ?? 0, trades: row.trade_count ?? 0,
+    }));
+  }
 
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      (e) => e.type === "trade",
-    )) {
-      const data = event.data as { price: number; quantity: number };
-      agg.add(sdkTimestamp(event as StandardEvent)!, data.price, data.quantity);
+  private async _venueCandles(
+    options: HistoricalQueryOptions,
+    interval?: string,
+  ): Promise<OhlcvRow[]> {
+    const rows = await this.ohlcvRows({
+      source: options.source, market: options.market, interval,
+      ...(options.from !== undefined && { start: toEpochMs(options.from) }),
+      ...(options.to !== undefined && { end: toEpochMs(options.to) }),
+    });
+    const latest = new Map<string, OhlcvRow>();
+    for (const row of rows) {
+      const key = JSON.stringify([row.source, row.market, row.instrument, row.interval, row.open_timestamp]);
+      const prior = latest.get(key);
+      if (!prior || row.collector_timestamp > prior.collector_timestamp ||
+          (row.collector_timestamp === prior.collector_timestamp && row.event_id > prior.event_id)) {
+        latest.set(key, row);
+      }
     }
-
-    return agg.finish();
+    return [...latest.values()].sort((a, b) => a.open_timestamp - b.open_timestamp || a.event_id.localeCompare(b.event_id));
   }
 
   /**
    * Return a TradingView-shaped OHLCV response.
    *
-   * Aggregates bars from local snapshot data and reshapes to
-   * `{ candles, volumes }`.
+   * Reshapes venue candle bars to `{ candles, volumes }`.
    */
   async ohlcvTradingView(
     options: OhlcvOptions,
@@ -1531,52 +1474,6 @@ export class BasePolarisClient {
 // Module-level helpers (not exported)
 // ===========================================================================
 
-class VwapAggregator {
-  private readonly _intervalMs: number;
-  private readonly _rows = new Map<
-    number,
-    { timestamp: number; volume: number; quoteVolume: number; trades: number }
-  >();
-
-  constructor(interval: string) {
-    this._intervalMs = intervalToMs(interval);
-  }
-
-  add(timestamp: number, price: number, quantity: number): void {
-    if (!Number.isFinite(timestamp) || quantity <= 0) return;
-
-    const bucket =
-      Math.floor(timestamp / this._intervalMs) * this._intervalMs;
-    const row = this._rows.get(bucket);
-
-    if (!row) {
-      this._rows.set(bucket, {
-        timestamp: bucket,
-        volume: quantity,
-        quoteVolume: price * quantity,
-        trades: 1,
-      });
-      return;
-    }
-
-    row.volume += quantity;
-    row.quoteVolume += price * quantity;
-    row.trades += 1;
-  }
-
-  finish(): VwapBar[] {
-    return Array.from(this._rows.values())
-      .sort((a, b) => a.timestamp - b.timestamp)
-      .map((row) => ({
-        timestamp: row.timestamp,
-        vwap: row.volume > 0 ? row.quoteVolume / row.volume : null,
-        volume: row.volume,
-        quote_volume: row.quoteVolume,
-        trades: row.trades,
-      }));
-  }
-}
-
 class VolatilityAggregator {
   private readonly _intervalMs: number;
   private readonly _points: Array<[timestamp: number, price: number]> = [];
@@ -2005,6 +1902,10 @@ function intervalToMs(interval: string): number {
     default:
       throw new PolarisError(`Invalid interval: ${interval}`);
   }
+}
+
+function candleIntervalMs(interval: string): number {
+  return /^(100ms|1s|10s|1m|5m|15m|1h)$/.test(interval) ? intervalToMs(interval) : Infinity;
 }
 
 function pointSeriesName(event: Json): string | undefined {
