@@ -96,13 +96,13 @@ Use it to inspect available data, query historical market data, and open realtim
 | Method | Returns | Use case |
 | --- | --- | --- |
 | `events(opts)` | Array of standardised historical events | General-purpose historical analysis when you want the normalized event stream in memory |
-| `trades(opts)` | Array of standardised trade events | Trade-level analytics, execution studies, and derived bar calculations |
+| `trades(opts)` | Array of flat `TradeRow` values | Direct trade queries and execution studies |
 | `intents(opts)` | Array of typed intent events | Process canonical RFQ, quote, and executable-intent observations |
-| `optionTickers(opts)` | Array of typed option ticker events | Read an underlying's whole option chain or filter one exact contract with `instrument` |
+| `optionTickers(opts)` | Array of flat `OptionTickerRow` values | Read an underlying's whole option chain or one exact contract with `instrument` |
 | `perpetualTickers(opts)` | Array of typed perpetual ticker events | Read partial venue-published prices, open interest, premium, and funding state |
 | `l2Snapshots(opts)` | Array of standardised orderbook snapshot rows | Order book reconstruction and microstructure analysis |
 | `l2Updates(opts)` | Array of raw orderbook snapshots and deltas | High-throughput application-managed books |
-| `fundingRates(opts)` | Array of funding-rate point series rows | Perpetual funding studies and carry modeling |
+| `fundingRates(opts)` | Array of flat `FundingRateRow` values | Partial funding observations |
 | `markPrices(opts)` | Array of mark-price point series rows | Basis analysis, mark tracking, and liquidation-related research |
 | `propammQuoteLadders(opts)` | Array of typed PropAMM quote-ladder events | Full-precision Ethereum execution-quote analysis |
 | `ohlcv(opts)` | Aggregated OHLCV bars | Charting, bar-based strategies, and downstream TA workflows |
@@ -208,7 +208,7 @@ const markets = await client.catalog({ source: "hyperliquid" });
 console.log(markets.markets.map((m) => m.market));
 ```
 
-### Events & trades (from local snapshots)
+### Events from local snapshots and direct trades
 
 ```ts
 import { PolarisClient } from "polaris-data";
@@ -227,10 +227,10 @@ console.log(rows.length);
 const trades = await client.trades({
   source: "binance",
   market: "BTC-USDT",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-01T01:00:00Z",
+  start: Date.parse("2024-01-01T00:00:00Z"),
+  end: Date.parse("2024-01-01T01:00:00Z"),
 });
-console.log(trades.length);
+console.log(trades[0]?.price);
 
 const quotes = await client.bbo({
   source: "binance",
@@ -249,7 +249,7 @@ const depth = await client.depthMetrics({
 console.log(depth[0]);
 ```
 
-### Point-series schemas (from local snapshots)
+### Direct funding and snapshot-backed mark prices
 
 ```ts
 import { PolarisClient } from "polaris-data";
@@ -259,8 +259,8 @@ const client = new PolarisClient({ apiKey: "polaris_key_your_key" });
 const funding = await client.fundingRates({
   source: "hyperliquid",
   market: "BTC",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-02T00:00:00Z",
+  start: Date.parse("2024-01-01T00:00:00Z"),
+  end: Date.parse("2024-01-02T00:00:00Z"),
 });
 
 const marks = await client.markPrices({
@@ -469,7 +469,9 @@ import type {
 
 ## Snapshot-first architecture
 
-Standardised historical data (`events`, `trades`, `intents`, `optionTickers`, `perpetualTickers`, `l2Snapshots`, `l2Updates`, `fundingRates`, `markPrices`, `propammQuoteLadders`, `bbo`, `depthMetrics`, `ohlcv`, `volume`, `vwap`, `volatility`, and `replay`) uses a **snapshot-first** approach:
+`trades`, `optionTickers`, and `fundingRates` use their direct `/historical/*` routes. Their filters are optional `source` and `market`, optional `instrument` for option tickers, and inclusive Unix-millisecond `start` and `end`. They follow all cursor pages and return flat API rows instead of event envelopes. Omitted bounds use the API defaults; older history requires an API key. These three methods do not use the local snapshot cache or provide gap guarantees. This is a breaking change from the former `from`/`to` inputs and nested `data` results.
+
+The remaining standardised historical methods (`events`, `intents`, `perpetualTickers`, `l2Snapshots`, `l2Updates`, `markPrices`, `propammQuoteLadders`, `bbo`, `depthMetrics`, `ohlcv`, `volume`, `vwap`, `volatility`, and `replay`) use a **snapshot-first** approach:
 
 1. Hourly `.jsonl.zst` snapshot files are discovered via `GET /snapshots` and downloaded via `GET /download` on first access.
 2. Subsequent calls for the same date range read from the local cache — no network round-trips.

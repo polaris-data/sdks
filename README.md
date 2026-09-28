@@ -213,13 +213,13 @@ Use it to inspect available data, query historical market data, and open realtim
 | Method | Returns | Use case |
 | --- | --- | --- |
 | `events(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True, output="iterator", batch_size=65536)` | Iterator, exact Arrow batches, or Pandas DataFrame | General-purpose historical analysis and exact event transport |
-| `trades(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Trade-level analytics, execution studies, and notebook analysis |
+| `trades(source=None, market=None, start=None, end=None, output="iterator", batch_size=65536)` | Flat `TradeRow` iterator, Arrow batches, or Pandas DataFrame | Direct trade queries and notebook analysis |
 | `intents(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of typed intent events | Process canonical RFQ, quote, and executable-intent observations |
-| `option_tickers(source=..., market=..., instrument=None, from_=None, to=None, allow_gaps=False)` | Iterator of typed option ticker events | Read an underlying's whole option chain or filter one exact contract |
+| `option_tickers(source=None, market=None, instrument=None, start=None, end=None)` | Iterator of flat `OptionTickerRow` values | Read an underlying's whole option chain or one exact contract |
 | `perpetual_tickers(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of typed perpetual ticker events | Read partial venue-published prices, open interest, premium, and funding state |
 | `l2_snapshots(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)` | Iterator of complete orderbook rows | Order book reconstruction and microstructure analysis |
 | `l2_updates(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of raw orderbook snapshots and deltas | High-throughput application-managed books |
-| `funding_rates(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Perpetual funding studies and carry modeling |
+| `funding_rates(source=None, market=None, start=None, end=None, output="iterator", batch_size=65536)` | Flat `FundingRateRow` iterator, Arrow batches, or Pandas DataFrame | Partial funding observations |
 | `mark_prices(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Basis analysis, mark tracking, and liquidation-related research |
 | `propamm_quote_ladders(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, exact Arrow batches, or Pandas DataFrame | PropAMM execution-quote analysis with full-precision Ethereum amounts |
 | `ohlcv(source=..., market=..., from_=None, to=None, interval=..., format=None, allow_gaps=False, output="records")` | Aggregated OHLCV records or Pandas DataFrame | Charting, bar-based strategies, and downstream TA workflows |
@@ -229,7 +229,9 @@ Use it to inspect available data, query historical market data, and open realtim
 | `bbo(source=..., market=..., from_=None, to=None, interval=None, allow_gaps=False, changes_only=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Spread tracking, quote analytics, and top-of-book monitoring |
 | `depth_metrics(source=..., market=..., from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Liquidity analysis and market impact estimation |
 
-Historical row methods are single-pass iterators. Iterate them directly for bounded memory, or call `list(...)` when you intentionally want an eager result. Setup and coverage errors occur when the method is called; decode errors can occur later while iterating. If you stop early, call the generator's `close()` method to promptly release its native reader. `bbo(interval="1s")` emits the last quote from each non-empty, UTC-aligned interval.
+Historical row methods are single-pass iterators. Iterate them directly for bounded memory, or call `list(...)` when you intentionally want an eager result. Direct endpoint request and decode errors can occur while iterating. If you stop early, call the generator's `close()` method to promptly release its native reader. `bbo(interval="1s")` emits the last quote from each non-empty, UTC-aligned interval.
+
+`trades`, `option_tickers`, and `funding_rates` query `/historical/trades`, `/historical/options-ticker`, and `/historical/funding-rates` respectively. Their `start` and `end` bounds are inclusive Unix milliseconds, and omitted bounds use the API defaults. They follow all cursor pages and return flat rows; fields such as `price`, `funding_rate`, and option Greeks are at the top level rather than under `data`. These methods no longer accept `from_`, `to`, or `allow_gaps`. Older direct history requires an API key and these methods do not provide snapshot coverage checks or local caching.
 
 Standardized replay automatically prefetches and decompresses one subsequent
 snapshot file on a bounded background worker while preserving file and row
@@ -385,7 +387,7 @@ The benchmark runs each mode in a separate process and reports elapsed time,
 throughput, peak and incremental RSS, row count, and a price checksum. It does
 not enforce machine-specific performance thresholds. Its
 `list-json-normalize` mode is a worst-case convenience pattern: it first
-materializes every nested row dictionary with `list(client.trades(...))`, then
+materializes every nested row dictionary with `list(client.events(...))`, then
 calls `pandas.json_normalize(...)`. The resulting peak RSS includes the Python
 row objects and Pandas conversion temporaries, not just the final DataFrame.
 
@@ -499,7 +501,7 @@ Pass `dataset_root=...` to `PolarisClient(...)` to override the root explicitly.
 
 ## Snapshot-first replay
 
-For standardized historical data, `replay(...)`, `events(...)`, `trades(...)`, `intents(...)`, `option_tickers(...)`, `perpetual_tickers(...)`, `propamm_quote_ladders(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, `l2_updates(...)`, `volume(...)`, and default/tradingview `ohlcv(...)` now prefer `/snapshots` plus daily bulk `/download?source=...&market=...&date=...&mode=json` manifests, and reuse local snapshot files when they already exist:
+For standardized snapshot-backed data, `replay(...)`, `events(...)`, `intents(...)`, `perpetual_tickers(...)`, `mark_prices(...)`, `propamm_quote_ladders(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, `l2_updates(...)`, `volume(...)`, and default/tradingview `ohlcv(...)` prefer `/snapshots` plus daily bulk `/download?source=...&market=...&date=...&mode=json` manifests, and reuse local snapshot files when they already exist:
 
 ```python
 from polaris_data import PolarisClient
@@ -514,7 +516,7 @@ with PolarisClient(api_key="polaris_key_your_key") as client:
         print(row)
 ```
 
-If the requested standardized range cannot be satisfied from available standardized snapshots, `replay(...)`, `events(...)`, `trades(...)`, `intents(...)`, `option_tickers(...)`, `perpetual_tickers(...)`, `propamm_quote_ladders(...)`, `vwap(...)`, `volatility(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, `l2_updates(...)`, `volume(...)`, and `ohlcv(...)` raise by default instead of falling back. Pass `allow_gaps=True` on standardized methods to return only covered data and receive a warning with the missing intervals.
+If the requested standardized range cannot be satisfied from available standardized snapshots, these snapshot-backed methods raise by default instead of falling back. Pass `allow_gaps=True` on those methods to return only covered data and receive a warning with the missing intervals. The three direct historical row methods do not accept `allow_gaps`.
 
 ## Error handling
 

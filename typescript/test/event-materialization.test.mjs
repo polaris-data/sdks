@@ -51,65 +51,52 @@ test("event APIs materialize orderbooks by default and expose raw L2 updates", a
   client.close();
 });
 
-test("option tickers preserve chain identity and filter exact instruments", async () => {
+test("direct historical rows paginate, filter, and keep flat nullable fields", async () => {
   const { PolarisClient } = await import("../dist/node/index.js");
-  const rows = [
-    {
-      collector_timestamp: 1,
-      collector_sequence: 1,
-      exchange_timestamp: null,
-      exchange_sequence: null,
-      source: "deribit",
-      market: "BTC",
-      instrument: "BTC-29MAR24-50000-C",
-      type: "option_ticker",
-      data: { mark_price: "0.0175", mark_iv: "0.8359", greeks: { delta: "0.431" } },
-    },
-    {
-      collector_timestamp: 2,
-      collector_sequence: 2,
-      exchange_timestamp: null,
-      exchange_sequence: null,
-      source: "deribit",
-      market: "BTC",
-      instrument: "BTC-29MAR24-45000-P",
-      type: "option_ticker",
-      data: { bid_price: "0.0100", ask_price: "0.0110" },
-    },
-    { timestamp: 3, source: "deribit", market: "BTC", type: "trade", data: {} },
-  ];
-  const client = new PolarisClient({ baseUrl: "https://api.example" });
-  client._resolveHistoricalRange = async () => ({ fromMs: 0, toMs: 10 });
-  client._readSnapshotEvents = async function* (_source, _market, _from, _to, filter) {
-    for (const row of rows) if (!filter || filter(row)) yield structuredClone(row);
-  };
+  const identity = { source: "deribit", market: "BTC", source_capture_id: "capture", schema_version: 1 };
+  const trade = { ...identity, event_id: "t1", collector_timestamp: 10, price: 100, quantity: 2, side: null };
+  const option = { ...identity, event_id: "o1", collector_timestamp: 10, instrument: "BTC-29MAR24-50000-C", delta: "0.431", mark_price: null };
+  const funding = { ...identity, event_id: "f1", collector_timestamp: 10, funding_rate: null, mark_price: "100" };
+  const calls = [];
+  const client = new PolarisClient({ baseUrl: "https://api.example", apiKey: "secret", fetch: async (input, init) => {
+    const url = new URL(input);
+    calls.push({ url, headers: init.headers });
+    let body;
+    if (url.pathname === "/historical/trades") {
+      body = url.searchParams.has("cursor")
+        ? { items: [trade], has_more: false, next_cursor: null }
+        : { items: [trade], has_more: true, next_cursor: "next" };
+    } else if (url.pathname === "/historical/options-ticker") {
+      body = { items: [option], has_more: false, next_cursor: null };
+    } else {
+      body = { items: [funding], has_more: false, next_cursor: null };
+    }
+    return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+  } });
 
-  const chain = await client.optionTickers({ source: "deribit", market: "BTC" });
+  const trades = await client.trades({ source: "deribit", market: "BTC", start: 10, end: 10 });
+  assert.deepEqual(trades, [trade, trade]);
+  assert.equal(calls[0].url.searchParams.get("start"), "10");
+  assert.equal(calls[0].url.searchParams.get("end"), "10");
+  assert.equal(calls[0].url.searchParams.get("limit"), "1000");
+  assert.equal(calls[1].url.searchParams.get("cursor"), "next");
+  assert.equal(calls[0].headers.Authorization, "Bearer secret");
   const exact = await client.optionTickers({
     source: "deribit",
     market: "BTC",
     instrument: "BTC-29MAR24-50000-C",
   });
-  assert.deepEqual(chain.map(({ instrument }) => instrument), [
-    "BTC-29MAR24-50000-C",
-    "BTC-29MAR24-45000-P",
-  ]);
-  assert.equal(exact.length, 1);
-  assert.equal(exact[0].market, "BTC");
-  assert.equal(exact[0].data.greeks.delta, "0.431");
+  assert.deepEqual(exact, [option]);
+  assert.equal(calls[2].url.searchParams.get("instrument"), option.instrument);
+  assert.deepEqual(await client.fundingRates({}), [funding]);
+  assert.equal(calls[3].url.searchParams.has("start"), false);
   await assert.rejects(
     client.optionTickers({ source: "deribit", market: "BTC", instrument: "" }),
     /instrument must be non-empty/,
   );
-
-  const malformed = structuredClone(rows);
-  delete malformed[0].instrument;
-  client._readSnapshotEvents = async function* (_source, _market, _from, _to, filter) {
-    for (const row of malformed) if (!filter || filter(row)) yield row;
-  };
   await assert.rejects(
-    client.optionTickers({ source: "deribit", market: "BTC" }),
-    /Invalid option ticker payload/,
+    client.trades({ start: -1 }),
+    /start must be a non-negative/,
   );
   client.close();
 });

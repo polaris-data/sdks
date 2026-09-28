@@ -19,6 +19,7 @@ from .models import (
     CatalogInstrument,
     CatalogMarketEntry,
     CatalogResponse,
+    FundingRateRow,
     LegacyOptionTickerEvent,
     LegacyPerpetualTickerEvent,
     LegacyTradeData,
@@ -33,6 +34,7 @@ from .models import (
     OptionTickerData,
     OptionTickerEvent,
     OptionTickerEventV2,
+    OptionTickerRow,
     PerpetualTickerData,
     PerpetualTickerEvent,
     PerpetualTickerEventV2,
@@ -45,6 +47,7 @@ from .models import (
     TradeDataV2,
     TradeEvent,
     TradeEventV2,
+    TradeRow,
 )
 
 __all__ = [
@@ -56,6 +59,7 @@ __all__ = [
     "CatalogInstrument",
     "CatalogMarketEntry",
     "CatalogResponse",
+    "FundingRateRow",
     "LegacyOptionTickerEvent",
     "LegacyPerpetualTickerEvent",
     "LegacyTradeData",
@@ -71,6 +75,7 @@ __all__ = [
     "OptionTickerData",
     "OptionTickerEvent",
     "OptionTickerEventV2",
+    "OptionTickerRow",
     "PerpetualTickerData",
     "PerpetualTickerEvent",
     "PerpetualTickerEventV2",
@@ -88,6 +93,7 @@ __all__ = [
     "TradeDataV2",
     "TradeEvent",
     "TradeEventV2",
+    "TradeRow",
     "StreamDecodeError",
     "StreamConnectionError",
     "StreamProtocolError",

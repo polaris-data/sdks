@@ -4,9 +4,9 @@ use futures_util::StreamExt;
 use log::Level;
 use logtest::Logger;
 use polaris_data::{
-    AmountKind, CatalogQuery, HistoricalQuery, HistoricalStream, IntentStatus, OhlcvFormat,
-    OhlcvInterval, OhlcvOutput, OhlcvQuery, OptionTickerQuery, PolarisClient, PolarisError,
-    ReplayQuery, blocking,
+    AmountKind, CatalogQuery, HistoricalQuery, HistoricalRowsQuery, HistoricalStream, IntentStatus,
+    OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery, OptionTickerRowsQuery, PolarisClient,
+    PolarisError, ReplayQuery, blocking,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -32,19 +32,6 @@ fn write_propamm_fixture(root: &TempDir, source: &str, fixture: &str) {
     let key = format!("standard-{source}-ethereum-2024-01-01-000000");
     let path = root.path().join(format!(
         "data/standard/{source}/ethereum/2024-01-01/{key}.jsonl.zst"
-    ));
-    std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture directory");
-    std::fs::write(
-        path,
-        zstd::stream::encode_all(fixture.as_bytes(), 0).expect("compressed fixture"),
-    )
-    .expect("fixture");
-}
-
-fn write_option_fixture(root: &TempDir, fixture: &str) {
-    let key = "standard-deribit-BTC-2024-01-01-000000";
-    let path = root.path().join(format!(
-        "data/standard/deribit/BTC/2024-01-01/{key}.jsonl.zst"
     ));
     std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture directory");
     std::fs::write(
@@ -535,19 +522,28 @@ async fn propamm_quote_ladders_are_typed_and_inherit_metadata_market() {
 async fn option_tickers_are_typed_and_filter_exact_instruments() {
     let server = MockServer::start().await;
     let root = TempDir::new().expect("tempdir");
-    write_option_fixture(
-        &root,
-        include_str!("../../../tests/fixtures/events/options-v2.jsonl"),
-    );
     let client = build_client(&server, &root);
-    let query = |instrument: Option<&str>| OptionTickerQuery {
-        source: "deribit".to_owned(),
-        market: "BTC".to_owned(),
+    let query = |instrument: Option<&str>| OptionTickerRowsQuery {
+        source: Some("deribit".to_owned()),
+        market: Some("BTC".to_owned()),
         instrument: instrument.map(ToOwned::to_owned),
-        from: Some("2024-01-01T00:00:00Z".into()),
-        to: Some("2024-01-01T01:00:00Z".into()),
-        allow_gaps: false,
+        start: Some(10),
+        end: Some(10),
     };
+
+    let row = json!({
+        "event_id": "o1", "source": "deribit", "market": "BTC",
+        "instrument": "BTC-29MAR24-50000-C", "collector_timestamp": 10,
+        "source_capture_id": "capture", "schema_version": 1,
+        "mark_iv": "0.8359", "delta": "0.431", "mark_price": null
+    });
+    Mock::given(method("GET"))
+        .and(path("/historical/options-ticker"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [row], "has_more": false, "next_cursor": null
+        })))
+        .mount(&server)
+        .await;
 
     let chain = collect_stream(
         client
@@ -566,18 +562,14 @@ async fn option_tickers_are_typed_and_filter_exact_instruments() {
     .await
     .expect("exact option rows");
 
-    assert_eq!(chain.len(), 2);
-    assert_eq!(chain[0].source(), "deribit");
-    assert_eq!(chain[0].market(), "BTC");
-    assert_eq!(chain[0].instrument(), "BTC-29MAR24-50000-C");
-    assert_eq!(chain[0].data().mark_iv.as_deref(), Some("0.8359"));
-    assert_eq!(chain[0].data().underlying.as_deref(), Some("BTC"));
-    assert_eq!(chain[0].data().strike.as_deref(), Some("50000"));
-    assert_eq!(chain[0].data().expiry_timestamp, Some(1_711_699_200_000));
-    assert_eq!(chain[0].data().option_type.as_deref(), Some("call"));
-    assert_eq!(chain[0].data().greeks.delta.as_deref(), Some("0.431"));
+    assert_eq!(chain.len(), 1);
+    assert_eq!(chain[0].source, "deribit");
+    assert_eq!(chain[0].market, "BTC");
+    assert_eq!(chain[0].instrument, "BTC-29MAR24-50000-C");
+    assert_eq!(chain[0].mark_iv.as_deref(), Some("0.8359"));
+    assert_eq!(chain[0].mark_price, None);
     assert_eq!(exact.len(), 1);
-    assert_eq!(exact[0].instrument(), "BTC-29MAR24-50000-C");
+    assert_eq!(exact[0].instrument, "BTC-29MAR24-50000-C");
 
     let error = match client.option_tickers(query(Some(""))).await {
         Ok(_) => panic!("expected empty instrument error"),
@@ -586,14 +578,15 @@ async fn option_tickers_are_typed_and_filter_exact_instruments() {
     assert!(error.to_string().contains("instrument must be non-empty"));
 
     let root_path = root.path().to_owned();
+    let server_url = server.uri();
     let blocking_rows = std::thread::spawn(move || {
         let client = blocking::PolarisClient::builder()
-            .base_url("http://127.0.0.1:1")
+            .base_url(server_url)
             .dataset_root(root_path)
             .build()
             .expect("blocking client");
         client
-            .option_tickers(query(Some("BTC-29MAR24-45000-P")))
+            .option_tickers(query(Some("BTC-29MAR24-50000-C")))
             .expect("blocking option tickers")
             .collect::<Result<Vec<_>, _>>()
     })
@@ -601,7 +594,106 @@ async fn option_tickers_are_typed_and_filter_exact_instruments() {
     .expect("blocking thread")
     .expect("blocking rows");
     assert_eq!(blocking_rows.len(), 1);
-    assert_eq!(blocking_rows[0].instrument(), "BTC-29MAR24-45000-P");
+    assert_eq!(blocking_rows[0].instrument, "BTC-29MAR24-50000-C");
+    let requests = server.received_requests().await.expect("requests");
+    assert!(requests.iter().any(|request| {
+        request
+            .url
+            .query_pairs()
+            .any(|(key, value)| key == "instrument" && value == "BTC-29MAR24-50000-C")
+    }));
+}
+
+#[tokio::test]
+async fn direct_trades_and_funding_paginate_and_keep_nullable_fields() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().expect("tempdir");
+    let client = PolarisClient::builder()
+        .base_url(server.uri())
+        .api_key("secret")
+        .dataset_root(root.path())
+        .build()
+        .expect("client");
+    Mock::given(method("GET"))
+        .and(path("/historical/trades"))
+        .and(query_param("start", "10"))
+        .and(query_param("end", "10"))
+        .and(query_param("limit", "1000"))
+        .and(header("authorization", "Bearer secret"))
+        .respond_with(|request: &wiremock::Request| {
+            let second = request
+                .url
+                .query_pairs()
+                .any(|(key, value)| key == "cursor" && value == "next");
+            ResponseTemplate::new(200).set_body_json(json!({
+                "items": [{
+                    "event_id": if second { "t2" } else { "t1" },
+                    "source": "binance", "market": "BTC-USDT",
+                    "collector_timestamp": 10, "source_capture_id": "capture",
+                    "schema_version": 1, "price": 100.0, "quantity": 2.0,
+                    "side": null
+                }],
+                "has_more": !second,
+                "next_cursor": if second { None } else { Some("next") }
+            }))
+        })
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/historical/funding-rates"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "event_id": "f1", "source": "binance", "market": "BTC-USDT",
+                "collector_timestamp": 10, "source_capture_id": "capture",
+                "schema_version": 1, "funding_rate": null, "mark_price": "100"
+            }],
+            "has_more": false, "next_cursor": null
+        })))
+        .mount(&server)
+        .await;
+
+    let trades = collect_stream(
+        client
+            .trades(HistoricalRowsQuery {
+                source: Some("binance".into()),
+                market: Some("BTC-USDT".into()),
+                start: Some(10),
+                end: Some(10),
+            })
+            .await
+            .expect("trades"),
+    )
+    .await
+    .expect("trade rows");
+    assert_eq!(
+        trades
+            .iter()
+            .map(|row| row.event_id.as_str())
+            .collect::<Vec<_>>(),
+        ["t1", "t2"]
+    );
+    assert_eq!(trades[0].side, None);
+    let funding = collect_stream(
+        client
+            .funding_rates(HistoricalRowsQuery::default())
+            .await
+            .expect("funding"),
+    )
+    .await
+    .expect("funding rows");
+    assert_eq!(funding[0].funding_rate, None);
+    assert_eq!(funding[0].mark_price.as_deref(), Some("100"));
+    let requests = server.received_requests().await.expect("requests");
+    let funding_request = requests
+        .iter()
+        .find(|request| request.url.path() == "/historical/funding-rates")
+        .unwrap();
+    assert!(
+        !funding_request
+            .url
+            .query_pairs()
+            .any(|(key, _)| key == "start" || key == "end")
+    );
 }
 
 #[tokio::test]
@@ -656,14 +748,13 @@ async fn new_event_shapes_are_typed_and_supported_by_default() {
     assert_eq!(tickers[0].data().funding_timestamp, Some(1_704_069_000_000));
     assert_eq!(tickers[1].data().funding_rate.as_deref(), Some("-0.000025"));
 
-    let trades = collect_stream(client.trades(query.clone()).await.expect("trades"))
-        .await
-        .expect("trade rows");
-    assert_eq!(trades.len(), 2);
-    assert_eq!(trades[0].maker(), Some("0xmaker"));
-    assert_eq!(trades[0].taker(), Some("0xtaker"));
-    assert_eq!(trades[1].maker(), None);
-    assert_eq!(trades[1].taker(), None);
+    let trade_events = events
+        .iter()
+        .filter(|event| event.event_type() == "trade")
+        .collect::<Vec<_>>();
+    assert_eq!(trade_events.len(), 2);
+    assert_eq!(trade_events[0].data()["maker"], "0xmaker");
+    assert_eq!(trade_events[0].data()["taker"], "0xtaker");
 
     let root_path = root.path().to_owned();
     let (prepared, blocking) = std::thread::spawn(move || {

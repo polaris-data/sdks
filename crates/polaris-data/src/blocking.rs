@@ -17,11 +17,12 @@ use tokio::runtime::{Handle, Runtime};
 
 use crate::{
     BboQuery, BboQuote, CatalogCount, CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic,
-    DownloadManifestQuery, DownloadManifestResponse, HistoricalQuery, HistoricalStream,
-    IntentEvent, ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OptionTickerEvent, OptionTickerQuery,
-    OrderbookEvent, PerpetualTickerEvent, PointSeriesEvent, PolarisError, PropammQuoteLadderEvent,
-    RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, SnapshotEntry,
-    StandardEvent, StreamQuery, TimeInput, TradeEvent, VolatilityBar, VolumeBar, VwapBar,
+    DownloadManifestQuery, DownloadManifestResponse, FundingRateRow, HistoricalQuery,
+    HistoricalRowsQuery, HistoricalStream, IntentEvent, ListSnapshotsQuery, OhlcvOutput,
+    OhlcvQuery, OptionTickerRow, OptionTickerRowsQuery, OrderbookEvent, PerpetualTickerEvent,
+    PointSeriesEvent, PolarisError, PropammQuoteLadderEvent, RawQuery, RawReplayQuery,
+    RawReplayStream, RealtimeStream, ReplayQuery, SnapshotEntry, StandardEvent, StreamQuery,
+    TimeInput, TradeEvent, TradeRow, VolatilityBar, VolumeBar, VwapBar,
     replay::{LocalExactReplayIterator, LocalReplayIterator},
 };
 
@@ -208,8 +209,8 @@ impl PolarisClient {
 
     pub fn trades(
         &self,
-        query: HistoricalQuery,
-    ) -> Result<HistoricalIterator<TradeEvent>, PolarisError> {
+        query: HistoricalRowsQuery,
+    ) -> Result<HistoricalIterator<TradeRow>, PolarisError> {
         let stream = self.run(self.inner.trades(query))?;
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
@@ -224,8 +225,8 @@ impl PolarisClient {
 
     pub fn option_tickers(
         &self,
-        query: OptionTickerQuery,
-    ) -> Result<HistoricalIterator<OptionTickerEvent>, PolarisError> {
+        query: OptionTickerRowsQuery,
+    ) -> Result<HistoricalIterator<OptionTickerRow>, PolarisError> {
         let stream = self.run(self.inner.option_tickers(query))?;
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
@@ -376,8 +377,8 @@ impl PolarisClient {
 
     pub fn funding_rates(
         &self,
-        query: HistoricalQuery,
-    ) -> Result<HistoricalIterator<PointSeriesEvent>, PolarisError> {
+        query: HistoricalRowsQuery,
+    ) -> Result<HistoricalIterator<FundingRateRow>, PolarisError> {
         let stream = self.run(self.inner.funding_rates(query))?;
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }

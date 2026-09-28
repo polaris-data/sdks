@@ -99,18 +99,144 @@ impl Default for HistoricalQuery {
     }
 }
 
-/// Query for standardized option ticker events.
-///
-/// Omitting `instrument` selects the whole option chain for `market`; setting
-/// it selects one exact venue-native contract.
+/// Filters for the direct historical row endpoints. Times are inclusive Unix milliseconds.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct OptionTickerQuery {
+pub struct HistoricalRowsQuery {
+    pub source: Option<String>,
+    pub market: Option<String>,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OptionTickerRowsQuery {
+    pub source: Option<String>,
+    pub market: Option<String>,
+    pub instrument: Option<String>,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+}
+
+/// One flat row from `/historical/trades`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TradeRow {
+    pub event_id: String,
     pub source: String,
     pub market: String,
+    pub collector_timestamp: i64,
+    pub source_capture_id: String,
+    pub schema_version: u32,
+    pub price: f64,
+    pub quantity: f64,
+    #[serde(default)]
+    pub exchange_timestamp: Option<i64>,
+    #[serde(default)]
     pub instrument: Option<String>,
-    pub from: Option<TimeInput>,
-    pub to: Option<TimeInput>,
-    pub allow_gaps: bool,
+    #[serde(default)]
+    pub liquidation: Option<bool>,
+    #[serde(default)]
+    pub maker: Option<String>,
+    #[serde(default)]
+    pub order_id: Option<String>,
+    #[serde(default)]
+    pub side: Option<String>,
+    #[serde(default)]
+    pub taker: Option<String>,
+}
+
+/// One partial flat row from `/historical/options-ticker`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OptionTickerRow {
+    pub event_id: String,
+    pub source: String,
+    pub market: String,
+    pub instrument: String,
+    pub collector_timestamp: i64,
+    pub source_capture_id: String,
+    pub schema_version: u32,
+    #[serde(default)]
+    pub exchange_timestamp: Option<i64>,
+    #[serde(default)]
+    pub expiry_timestamp: Option<i64>,
+    #[serde(default)]
+    pub ask_iv: Option<String>,
+    #[serde(default)]
+    pub ask_price: Option<String>,
+    #[serde(default)]
+    pub ask_size: Option<String>,
+    #[serde(default)]
+    pub bid_iv: Option<String>,
+    #[serde(default)]
+    pub bid_price: Option<String>,
+    #[serde(default)]
+    pub bid_size: Option<String>,
+    #[serde(default)]
+    pub delta: Option<String>,
+    #[serde(default)]
+    pub forward_price: Option<String>,
+    #[serde(default)]
+    pub gamma: Option<String>,
+    #[serde(default)]
+    pub index_price: Option<String>,
+    #[serde(default)]
+    pub last_price: Option<String>,
+    #[serde(default)]
+    pub mark_iv: Option<String>,
+    #[serde(default)]
+    pub mark_price: Option<String>,
+    #[serde(default)]
+    pub open_interest: Option<String>,
+    #[serde(default)]
+    pub option_type: Option<String>,
+    #[serde(default)]
+    pub premium_currency: Option<String>,
+    #[serde(default)]
+    pub quantity_unit: Option<String>,
+    #[serde(default)]
+    pub rho: Option<String>,
+    #[serde(default)]
+    pub strike: Option<String>,
+    #[serde(default)]
+    pub theta: Option<String>,
+    #[serde(default)]
+    pub turnover_24h: Option<String>,
+    #[serde(default)]
+    pub underlying: Option<String>,
+    #[serde(default)]
+    pub underlying_price: Option<String>,
+    #[serde(default)]
+    pub vega: Option<String>,
+    #[serde(default)]
+    pub volume_24h: Option<String>,
+}
+
+/// One partial flat row from `/historical/funding-rates`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FundingRateRow {
+    pub event_id: String,
+    pub source: String,
+    pub market: String,
+    pub collector_timestamp: i64,
+    pub source_capture_id: String,
+    pub schema_version: u32,
+    #[serde(default)]
+    pub exchange_timestamp: Option<i64>,
+    #[serde(default)]
+    pub funding_timestamp: Option<i64>,
+    #[serde(default)]
+    pub instrument: Option<String>,
+    #[serde(default)]
+    pub funding_rate: Option<String>,
+    #[serde(default)]
+    pub index_price: Option<String>,
+    #[serde(default)]
+    pub mark_price: Option<String>,
+    #[serde(default)]
+    pub open_interest: Option<String>,
+    #[serde(default)]
+    pub predicted_funding_rate: Option<String>,
+    #[serde(default)]
+    pub premium: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

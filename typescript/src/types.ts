@@ -119,6 +119,25 @@ export interface TradeEventV2 extends StandardEventV2 {
 
 export type TradeEvent = LegacyTradeEvent | TradeEventV2;
 
+/** Flat row returned by GET /historical/trades. */
+export interface TradeRow {
+  event_id: string;
+  source: string;
+  market: string;
+  collector_timestamp: number;
+  source_capture_id: string;
+  schema_version: number;
+  price: number;
+  quantity: number;
+  exchange_timestamp?: number | null;
+  instrument?: string | null;
+  liquidation?: boolean | null;
+  maker?: string | null;
+  order_id?: string | null;
+  side?: string | null;
+  taker?: string | null;
+}
+
 export type AmountKind = "exact_input" | "exact_output";
 
 export type IntentStatus =
@@ -226,6 +245,44 @@ export interface OptionTickerEventV2 extends StandardEventV2 {
 
 export type OptionTickerEvent = LegacyOptionTickerEvent | OptionTickerEventV2;
 
+/** Partial flat row returned by GET /historical/options-ticker. */
+export interface OptionTickerRow {
+  event_id: string;
+  source: string;
+  market: string;
+  instrument: string;
+  collector_timestamp: number;
+  source_capture_id: string;
+  schema_version: number;
+  exchange_timestamp?: number | null;
+  expiry_timestamp?: number | null;
+  ask_iv?: string | null;
+  ask_price?: string | null;
+  ask_size?: string | null;
+  bid_iv?: string | null;
+  bid_price?: string | null;
+  bid_size?: string | null;
+  delta?: string | null;
+  forward_price?: string | null;
+  gamma?: string | null;
+  index_price?: string | null;
+  last_price?: string | null;
+  mark_iv?: string | null;
+  mark_price?: string | null;
+  open_interest?: string | null;
+  option_type?: string | null;
+  premium_currency?: string | null;
+  quantity_unit?: string | null;
+  rho?: string | null;
+  strike?: string | null;
+  theta?: string | null;
+  turnover_24h?: string | null;
+  underlying?: string | null;
+  underlying_price?: string | null;
+  vega?: string | null;
+  volume_24h?: string | null;
+}
+
 export interface PerpetualTickerData extends Record<string, unknown> {
   last_price?: string;
   mark_price?: string;
@@ -281,6 +338,25 @@ export interface FundingRateData extends Record<string, unknown> {
 }
 
 export type FundingRateEvent = PointSeriesEvent & { data: FundingRateData };
+
+/** Partial flat row returned by GET /historical/funding-rates. */
+export interface FundingRateRow {
+  event_id: string;
+  source: string;
+  market: string;
+  collector_timestamp: number;
+  source_capture_id: string;
+  schema_version: number;
+  exchange_timestamp?: number | null;
+  funding_timestamp?: number | null;
+  instrument?: string | null;
+  funding_rate?: string | null;
+  index_price?: string | null;
+  mark_price?: string | null;
+  open_interest?: string | null;
+  predicted_funding_rate?: string | null;
+  premium?: string | null;
+}
 
 export interface MarkPriceData extends Record<string, unknown> {
   series: "mark_price" | "mark_px";
@@ -547,9 +623,15 @@ export interface HistoricalQueryOptions {
   materializeOrderbooks?: boolean;
 }
 
-/** Options for option ticker reads across a chain or one exact contract. */
-export interface OptionTickerOptions extends HistoricalQueryOptions {
-  /** Exact venue-native contract. Omit to read the whole option chain. */
+/** Filters for direct historical rows. Bounds are inclusive Unix milliseconds. */
+export interface HistoricalRowsOptions {
+  source?: string;
+  market?: string;
+  start?: number;
+  end?: number;
+}
+
+export interface OptionTickerRowsOptions extends HistoricalRowsOptions {
   instrument?: string;
 }
 

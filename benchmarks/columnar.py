@@ -76,7 +76,7 @@ def write_fixture(root: Path, rows: int) -> Path:
 
 
 def trade_query(client: PolarisClient, rows: int, **kwargs):
-    return client.trades(
+    return client.events(
         source=SOURCE,
         market=MARKET,
         from_=START_MS * 1_000,
@@ -120,7 +120,7 @@ def run_worker(root: Path, mode: str, rows: int, batch_size: int) -> None:
                 batch_size=batch_size,
             ):
                 count += batch.num_rows
-                checksum += pc.sum(batch.column("price")).as_py()
+                checksum += pc.sum(batch.column("trade_price")).as_py()
         elif mode == "dataframe":
             frame = trade_query(
                 client,
@@ -129,7 +129,7 @@ def run_worker(root: Path, mode: str, rows: int, batch_size: int) -> None:
                 batch_size=batch_size,
             )
             count = len(frame)
-            checksum = float(frame["price"].sum())
+            checksum = float(frame["trade_price"].sum())
         else:  # pragma: no cover - guarded by argparse
             raise ValueError(mode)
     elapsed = time.perf_counter() - started

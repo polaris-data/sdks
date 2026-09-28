@@ -51,10 +51,10 @@ const client = new PolarisClient({
 ```typescript
 // Fetch historical trades (works in both Node.js and browser)
 const trades = await client.trades({
-  exchange: 'binance',
-  symbol: 'BTC-USDT',
-  from: '2024-01-01',
-  to: '2024-01-02',
+  source: 'binance',
+  market: 'BTC-USDT',
+  start: Date.parse('2024-01-01T00:00:00Z'),
+  end: Date.parse('2024-01-02T00:00:00Z'),
 });
 
 console.log(`Fetched ${trades.length} trades`);
@@ -172,10 +172,10 @@ Ensure your `tsconfig.json` includes:
 ```typescript
 try {
   const trades = await client.trades({
-    exchange: 'binance',
-    symbol: 'BTC-USDT',
-    from: '2024-01-01',
-    to: '2024-01-02',
+    source: 'binance',
+    market: 'BTC-USDT',
+    start: Date.parse('2024-01-01T00:00:00Z'),
+    end: Date.parse('2024-01-02T00:00:00Z'),
   });
 } catch (error) {
   if (error instanceof PolarisError) {
@@ -255,16 +255,16 @@ async function loadMarketAnalysis() {
   ] = await Promise.all([
     client.catalog(),
     client.trades({
-      exchange: 'binance',
-      symbol: 'BTC-USDT',
-      from: new Date(Date.now() - 3600000), // Last hour
-      to: new Date(),
+      source: 'binance',
+      market: 'BTC-USDT',
+      start: Date.now() - 3600000, // Last hour
+      end: Date.now(),
     }),
     client.fundingRates({
-      exchange: 'binance',
-      symbol: 'BTC-USDT',
-      from: '2024-01-01',
-      to: '2024-01-31',
+      source: 'binance',
+      market: 'BTC-USDT',
+      start: Date.parse('2024-01-01T00:00:00Z'),
+      end: Date.parse('2024-01-31T00:00:00Z'),
     }),
   ]);
 

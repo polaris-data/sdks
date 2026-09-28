@@ -39,6 +39,14 @@ def _write_fixture(root: Path, rows: list[dict]) -> Path:
 
 
 def _query(client: PolarisClient, method: str, **kwargs):
+    if method in {"trades", "funding_rates"}:
+        return getattr(client, method)(
+            source=SOURCE,
+            market=MARKET,
+            start=START_MS,
+            end=START_MS + 10,
+            **kwargs,
+        )
     return getattr(client, method)(
         source=SOURCE,
         market=MARKET,
@@ -48,75 +56,24 @@ def _query(client: PolarisClient, method: str, **kwargs):
     )
 
 
-def test_trade_batches_are_typed_bounded_and_preserve_dynamic_fields(tmp_path) -> None:
-    _write_fixture(
-        tmp_path,
-        [
-            {
-                "timestamp": START_MS,
-                "type": "trade",
-                "data": {
-                    "price": 100,
-                    "quantity": 1,
-                    "side": "buy",
-                    "maker": "0xmaker",
-                    "taker": "0xtaker",
-                    "mixed": 1,
-                },
-            },
-            {
-                "timestamp": START_MS + 1,
-                "type": "trade",
-                "data": {
-                    "price": 101,
-                    "quantity": 2,
-                    "side": "sell",
-                    "mixed": "two",
-                    "late": 7,
-                },
-            },
-            {
-                "timestamp": START_MS + 2,
-                "type": "trade",
-                "data": {
-                    "price": 102,
-                    "quantity": 3,
-                    "nested": {"b": 2, "a": 1},
-                },
-            },
-        ],
-    )
-
-    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
+def test_direct_trade_and_funding_batches_have_flat_schemas(tmp_path) -> None:
+    identity = {"event_id": "e1", "source": SOURCE, "market": MARKET,
+                "collector_timestamp": START_MS, "source_capture_id": "capture",
+                "schema_version": 1}
+    trades = [{**identity, "price": float(100 + i), "quantity": 1.0,
+               "side": None if i == 0 else "buy"} for i in range(3)]
+    funding = [{**identity, "funding_rate": None, "mark_price": "100"}]
+    with PolarisClient(base_url="http://127.0.0.1:1") as client:
+        client._call = lambda method, *args: iter(trades if method == "trades" else funding)
         batches = list(_query(client, "trades", output="batches", batch_size=2))
-
-    assert all(isinstance(batch, pa.RecordBatch) for batch in batches)
+        funding_batches = list(_query(client, "funding_rates", output="batches"))
     assert [batch.num_rows for batch in batches] == [2, 1]
-    assert batches[0].schema == batches[1].schema
-    assert batches[0].schema.names == [
-        "timestamp",
-        "source",
-        "market",
-        "price",
-        "quantity",
-        "side",
-        "maker",
-        "taker",
-        "extra.late",
-        "extra.mixed",
-        "extra.nested",
-    ]
-    assert batches[0].schema.field("timestamp").type == pa.timestamp("ms", tz="UTC")
-    assert pa.types.is_dictionary(batches[0].schema.field("source").type)
-    assert pa.types.is_dictionary(batches[0].schema.field("side").type)
     table = pa.Table.from_batches(batches)
-    assert table.column("source").to_pylist() == [SOURCE] * 3
-    assert table.column("market").to_pylist() == [MARKET] * 3
-    assert table.column("maker").to_pylist() == ["0xmaker", None, None]
-    assert table.column("taker").to_pylist() == ["0xtaker", None, None]
-    assert table.column("extra.late").to_pylist() == [None, 7, None]
-    assert table.column("extra.mixed").to_pylist() == ["1", '"two"', None]
-    assert table.column("extra.nested").to_pylist() == [None, None, '{"a":1,"b":2}']
+    assert table.column("price").to_pylist() == [100.0, 101.0, 102.0]
+    assert table.column("side").to_pylist() == [None, "buy", "buy"]
+    assert "data" not in table.schema.names
+    assert funding_batches[0].column("funding_rate").to_pylist() == [None]
+    assert funding_batches[0].column("mark_price").to_pylist() == ["100"]
 
 
 def test_exact_event_batches_preserve_precision_order_and_unknown_payloads(tmp_path) -> None:
@@ -228,12 +185,6 @@ def test_v2_exact_batches_use_mixed_envelope_schema_and_metadata_ordinal(tmp_pat
             to=(START_MS + 250) * 1_000,
             materialize_orderbooks=False,
         ))
-        trades = list(client.trades(
-            source="lighter",
-            market="BTC-USD",
-            from_=START_MS * 1_000,
-            to=(START_MS + 1_000) * 1_000,
-        ))
         interval_bbo = list(client.bbo(
             source="lighter",
             market="BTC-USD",
@@ -275,7 +226,6 @@ def test_v2_exact_batches_use_mixed_envelope_schema_and_metadata_ordinal(tmp_pat
     assert [row["type"] for row in filtered] == ["trade"]
     assert "timestamp" not in filtered[0]
     assert filtered[0]["collector_timestamp"] == START_MS + 200
-    assert trades == [rows[3], rows[5], rows[6]]
     assert [row["timestamp"] for row in interval_bbo] == [START_MS, START_MS + 60_000]
     assert [row["bid_quantity"] for row in interval_bbo] == [7.0, 6.0]
 
@@ -455,43 +405,18 @@ def test_exact_event_dataframe_keeps_microsecond_timestamp(tmp_path) -> None:
     }
 
 
-def test_trade_dataframe_has_notebook_ready_dtypes(tmp_path) -> None:
-    _write_fixture(
-        tmp_path,
-        [
-            {
-                "timestamp": START_MS,
-                "type": "trade",
-                "data": {"price": 100, "quantity": 1, "side": "buy"},
-            },
-            {
-                "timestamp": START_MS + 1,
-                "type": "trade",
-                "data": {"price": 101, "quantity": 2},
-            },
-        ],
-    )
-
-    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
+def test_trade_dataframe_uses_flat_api_fields(tmp_path) -> None:
+    rows = [{"event_id": "e1", "source": SOURCE, "market": MARKET,
+             "collector_timestamp": START_MS, "source_capture_id": "capture",
+             "schema_version": 1, "price": 100.0, "quantity": 1.0, "side": None}]
+    with PolarisClient(base_url="http://127.0.0.1:1") as client:
+        client._call = lambda method, *args: iter(rows)
         frame = _query(client, "trades", output="dataframe", batch_size=1)
-
     assert isinstance(frame, pd.DataFrame)
-    assert list(frame.columns) == [
-        "timestamp",
-        "source",
-        "market",
-        "price",
-        "quantity",
-        "side",
-        "maker",
-        "taker",
-    ]
-    assert str(frame.dtypes["timestamp"]) == "datetime64[ms, UTC]"
-    assert isinstance(frame.dtypes["source"], pd.CategoricalDtype)
-    assert isinstance(frame.dtypes["market"], pd.CategoricalDtype)
-    assert isinstance(frame.dtypes["side"], pd.CategoricalDtype)
-    assert frame.index.equals(pd.RangeIndex(2))
-    assert frame["price"].tolist() == [100.0, 101.0]
+    assert frame["collector_timestamp"].tolist() == [START_MS]
+    assert frame["price"].tolist() == [100.0]
+    assert frame["side"].isna().all()
+    assert "data" not in frame.columns
 
 
 def test_point_series_columnar_outputs_use_endpoint_value_names(tmp_path) -> None:
@@ -520,17 +445,8 @@ def test_point_series_columnar_outputs_use_endpoint_value_names(tmp_path) -> Non
     )
 
     with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
-        funding = _query(client, "funding_rates", output="dataframe")
         marks = list(_query(client, "mark_prices", output="batches"))
 
-    assert funding.columns.tolist() == [
-        "timestamp",
-        "source",
-        "market",
-        "funding_rate",
-        "extra.interval_seconds",
-    ]
-    assert funding["funding_rate"].tolist() == [0.0001]
     assert marks[0].schema.names == [
         "timestamp",
         "source",
@@ -785,29 +701,10 @@ def test_dataframe_checks_pandas_before_query(monkeypatch) -> None:
             _query(client, "volume", interval="100ms", output="dataframe")
 
 
-def test_schema_change_between_inference_and_emission_is_translated(tmp_path) -> None:
-    path = _write_fixture(
-        tmp_path,
-        [
-            {
-                "timestamp": START_MS,
-                "type": "trade",
-                "data": {"price": 100, "quantity": 1, "sequence": 1},
-            }
-        ],
-    )
-    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
-        batches = _query(client, "trades", output="batches")
-        with zstandard.open(path, "wt", encoding="utf-8") as output:
-            output.write(
-                json.dumps(
-                    {
-                        "timestamp": START_MS,
-                        "type": "trade",
-                        "data": {"price": 100, "quantity": 1, "sequence": True},
-                    }
-                )
-                + "\n"
-            )
-        with pytest.raises(StreamDecodeError, match="columnar schema changed"):
-            next(batches)
+def test_empty_direct_dataframe_keeps_flat_schema() -> None:
+    with PolarisClient(base_url="http://127.0.0.1:1") as client:
+        client._call = lambda method, *args: iter(())
+        frame = _query(client, "funding_rates", output="dataframe")
+    assert frame.empty
+    assert "funding_rate" in frame.columns
+    assert "collector_timestamp" in frame.columns

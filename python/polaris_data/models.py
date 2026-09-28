@@ -159,6 +159,27 @@ class TradeEventV2(TypedDict):
 TradeEvent = Union[LegacyTradeEvent, TradeEventV2]
 
 
+class _TradeRowRequired(TypedDict):
+    event_id: str
+    source: str
+    market: str
+    collector_timestamp: int
+    source_capture_id: str
+    schema_version: int
+    price: float
+    quantity: float
+
+
+class TradeRow(_TradeRowRequired, total=False):
+    exchange_timestamp: Optional[int]
+    instrument: Optional[str]
+    liquidation: Optional[bool]
+    maker: Optional[str]
+    order_id: Optional[str]
+    side: Optional[str]
+    taker: Optional[str]
+
+
 class OptionGreeks(TypedDict, total=False):
     delta: str
     gamma: str
@@ -214,6 +235,67 @@ class OptionTickerEventV2(TypedDict):
 
 
 OptionTickerEvent = Union[LegacyOptionTickerEvent, OptionTickerEventV2]
+
+
+class _OptionTickerRowRequired(TypedDict):
+    event_id: str
+    source: str
+    market: str
+    instrument: str
+    collector_timestamp: int
+    source_capture_id: str
+    schema_version: int
+
+
+class OptionTickerRow(_OptionTickerRowRequired, total=False):
+    exchange_timestamp: Optional[int]
+    expiry_timestamp: Optional[int]
+    ask_iv: Optional[str]
+    ask_price: Optional[str]
+    ask_size: Optional[str]
+    bid_iv: Optional[str]
+    bid_price: Optional[str]
+    bid_size: Optional[str]
+    delta: Optional[str]
+    forward_price: Optional[str]
+    gamma: Optional[str]
+    index_price: Optional[str]
+    last_price: Optional[str]
+    mark_iv: Optional[str]
+    mark_price: Optional[str]
+    open_interest: Optional[str]
+    option_type: Optional[str]
+    premium_currency: Optional[str]
+    quantity_unit: Optional[str]
+    rho: Optional[str]
+    strike: Optional[str]
+    theta: Optional[str]
+    turnover_24h: Optional[str]
+    underlying: Optional[str]
+    underlying_price: Optional[str]
+    vega: Optional[str]
+    volume_24h: Optional[str]
+
+
+class _FundingRateRowRequired(TypedDict):
+    event_id: str
+    source: str
+    market: str
+    collector_timestamp: int
+    source_capture_id: str
+    schema_version: int
+
+
+class FundingRateRow(_FundingRateRowRequired, total=False):
+    exchange_timestamp: Optional[int]
+    funding_timestamp: Optional[int]
+    instrument: Optional[str]
+    funding_rate: Optional[str]
+    index_price: Optional[str]
+    mark_price: Optional[str]
+    open_interest: Optional[str]
+    predicted_funding_rate: Optional[str]
+    premium: Optional[str]
 
 
 class PerpetualTickerData(TypedDict, total=False):

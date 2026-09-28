@@ -19,6 +19,7 @@ from polaris_data import (
     CatalogInstrument,
     CatalogMarketEntry,
     CatalogResponse,
+    FundingRateRow,
     IntentData,
     IntentEvent,
     IntentEventV2,
@@ -34,6 +35,7 @@ from polaris_data import (
     OptionTickerData,
     OptionTickerEvent,
     OptionTickerEventV2,
+    OptionTickerRow,
     PerpetualTickerData,
     PerpetualTickerEvent,
     PerpetualTickerEventV2,
@@ -51,6 +53,7 @@ from polaris_data import (
     TradeDataV2,
     TradeEvent,
     TradeEventV2,
+    TradeRow,
     StreamConnectionError,
     StreamDecodeError,
     StreamProtocolError,
@@ -76,6 +79,7 @@ def test_top_level_exports_are_stable() -> None:
         "CatalogInstrument",
         "CatalogMarketEntry",
         "CatalogResponse",
+        "FundingRateRow",
         "LegacyOptionTickerEvent",
         "LegacyPerpetualTickerEvent",
         "LegacyTradeData",
@@ -91,6 +95,7 @@ def test_top_level_exports_are_stable() -> None:
         "OptionTickerData",
         "OptionTickerEvent",
         "OptionTickerEventV2",
+        "OptionTickerRow",
         "PerpetualTickerData",
         "PerpetualTickerEvent",
         "PerpetualTickerEventV2",
@@ -108,6 +113,7 @@ def test_top_level_exports_are_stable() -> None:
         "TradeDataV2",
         "TradeEvent",
         "TradeEventV2",
+        "TradeRow",
         "StreamDecodeError",
         "StreamConnectionError",
         "StreamProtocolError",
@@ -172,12 +178,11 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
 
     assert _parameters(PolarisClient.option_tickers) == [
         ("self", positional, required),
-        ("source", keyword_only, required),
-        ("market", keyword_only, required),
+        ("source", keyword_only, None),
+        ("market", keyword_only, None),
         ("instrument", keyword_only, None),
-        ("from_", keyword_only, None),
-        ("to", keyword_only, None),
-        ("allow_gaps", keyword_only, False),
+        ("start", keyword_only, None),
+        ("end", keyword_only, None),
     ]
 
     assert _parameters(PolarisClient.intents) == [
@@ -228,9 +233,19 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("allow_gaps", keyword_only, False),
     ]
 
+    direct_methods = [PolarisClient.trades, PolarisClient.funding_rates]
+    for method in direct_methods:
+        assert _parameters(method) == [
+            ("self", positional, required),
+            ("source", keyword_only, None),
+            ("market", keyword_only, None),
+            ("start", keyword_only, None),
+            ("end", keyword_only, None),
+            ("output", keyword_only, "iterator"),
+            ("batch_size", keyword_only, 65_536),
+        ]
+
     historical_methods = [
-        PolarisClient.trades,
-        PolarisClient.funding_rates,
         PolarisClient.mark_prices,
         PolarisClient.propamm_quote_ladders,
     ]
@@ -351,7 +366,6 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
         assert inspect.signature(method).return_annotation == "Iterator[JSONDict]"
     for method in [
         PolarisClient.events,
-        PolarisClient.funding_rates,
         PolarisClient.mark_prices,
         PolarisClient.bbo,
         PolarisClient.depth_metrics,
@@ -360,8 +374,12 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
             "Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
         )
     assert inspect.signature(PolarisClient.trades).return_annotation == (
-        "Iterator[TradeEvent] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
+        "Iterator[TradeRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
     )
+    assert inspect.signature(PolarisClient.funding_rates).return_annotation == (
+        "Iterator[FundingRateRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
+    )
+    assert inspect.signature(PolarisClient.option_tickers).return_annotation == "Iterator[OptionTickerRow]"
     assert inspect.signature(PolarisClient.stream).return_annotation == "RealtimeStream"
     assert (
         inspect.signature(PolarisClient.ohlcv).return_annotation
@@ -407,6 +425,13 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
     assert get_type_hints(TradeDataV2)["taker"] is str
     assert get_type_hints(TradeEventV2)["data"] is TradeDataV2
     assert get_type_hints(LegacyTradeEvent)["data"] is LegacyTradeData
+    assert TradeRow.__required_keys__ == {
+        "event_id", "source", "market", "collector_timestamp",
+        "source_capture_id", "schema_version", "price", "quantity",
+    }
+    assert get_type_hints(TradeRow)["price"] is float
+    assert get_type_hints(OptionTickerRow)["instrument"] is str
+    assert get_type_hints(FundingRateRow)["funding_rate"] == str | None
     assert get_type_hints(OptionTickerData)["option_type"] == Literal["call", "put"]
     assert get_type_hints(PerpetualTickerData)["funding_timestamp"] is int
     assert get_type_hints(PerpetualTickerEventV2)["data"] is PerpetualTickerData

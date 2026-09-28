@@ -8,6 +8,7 @@ use std::{
 use async_stream::try_stream;
 use chrono::{Duration, NaiveDate, TimeZone, Utc};
 use futures_util::StreamExt;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::{
@@ -18,16 +19,16 @@ use crate::{
     models::{
         BboQuery, BboQuote, CatalogAccess, CatalogCount, CatalogInstrument, CatalogMarket,
         CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic, DownloadManifestQuery,
-        DownloadManifestResponse, HistoricalQuery, HistoricalStream, IntentData, IntentEvent,
-        IntentEventV2, LegacyIntentEvent, LegacyOptionTickerEvent, LegacyOrderbookEvent,
-        LegacyPerpetualTickerEvent, LegacyPointSeriesEvent, LegacyTradeData, LegacyTradeEvent,
-        ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OptionTickerData, OptionTickerEvent,
-        OptionTickerEventV2, OptionTickerQuery, OrderbookData, OrderbookDataV2, OrderbookEvent,
-        OrderbookEventV2, OrderbookLevel, PerpetualTickerData, PerpetualTickerEvent,
-        PerpetualTickerEventV2, PointSeriesData, PointSeriesEvent, PointSeriesEventV2,
-        PropammQuoteLadderData, PropammQuoteLadderEvent, RawQuery, RawReplayQuery, RawReplayStream,
-        RealtimeStream, ReplayQuery, ReplayStream, SnapshotEntry, StandardEvent, StreamQuery,
-        TradeDataV2, TradeEvent, TradeEventV2, VolatilityBar, VolumeBar, VwapBar,
+        DownloadManifestResponse, FundingRateRow, HistoricalQuery, HistoricalRowsQuery,
+        HistoricalStream, IntentData, IntentEvent, IntentEventV2, LegacyIntentEvent,
+        LegacyOrderbookEvent, LegacyPerpetualTickerEvent, LegacyPointSeriesEvent, LegacyTradeData,
+        LegacyTradeEvent, ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OptionTickerRow,
+        OptionTickerRowsQuery, OrderbookData, OrderbookDataV2, OrderbookEvent, OrderbookEventV2,
+        OrderbookLevel, PerpetualTickerData, PerpetualTickerEvent, PerpetualTickerEventV2,
+        PointSeriesData, PointSeriesEvent, PointSeriesEventV2, PropammQuoteLadderData,
+        PropammQuoteLadderEvent, RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream,
+        ReplayQuery, ReplayStream, SnapshotEntry, StandardEvent, StreamQuery, TradeDataV2,
+        TradeEvent, TradeEventV2, TradeRow, VolatilityBar, VolumeBar, VwapBar,
     },
     ohlcv,
     orderbook::{BookUpdate, BookView, parse_level_tuple},
@@ -376,6 +377,13 @@ impl PolarisClient {
 
     pub async fn trades(
         &self,
+        query: HistoricalRowsQuery,
+    ) -> Result<HistoricalStream<TradeRow>, PolarisError> {
+        self.historical_rows("/historical/trades", query, None)
+    }
+
+    async fn snapshot_trades(
+        &self,
         mut query: HistoricalQuery,
     ) -> Result<HistoricalStream<TradeEvent>, PolarisError> {
         query.materialize_orderbooks = false;
@@ -387,6 +395,86 @@ impl PolarisClient {
                     continue;
                 }
                 yield Self::parse_trade(event)?;
+            }
+        }))
+    }
+
+    fn historical_rows<T>(
+        &self,
+        path: &'static str,
+        query: HistoricalRowsQuery,
+        instrument: Option<String>,
+    ) -> Result<HistoricalStream<T>, PolarisError>
+    where
+        T: DeserializeOwned + Send + 'static,
+    {
+        if query.start.is_some_and(|value| value < 0)
+            || query.end.is_some_and(|value| value < 0)
+            || matches!((query.start, query.end), (Some(start), Some(end)) if start > end)
+        {
+            return Err(PolarisError::InvalidResponse(
+                "start and end must be non-negative inclusive milliseconds with start <= end"
+                    .to_owned(),
+            ));
+        }
+        let mut params = vec![("limit".to_owned(), "1000".to_owned())];
+        if let Some(source) = query.source {
+            params.push(("source".to_owned(), source));
+        }
+        if let Some(market) = query.market {
+            params.push(("market".to_owned(), market));
+        }
+        if let Some(start) = query.start {
+            params.push(("start".to_owned(), start.to_string()));
+        }
+        if let Some(end) = query.end {
+            params.push(("end".to_owned(), end.to_string()));
+        }
+        if let Some(instrument) = instrument {
+            params.push(("instrument".to_owned(), instrument));
+        }
+        self.paginated_rows(path.to_owned(), params, AuthMode::IfAvailable)
+    }
+
+    fn paginated_rows<T>(
+        &self,
+        path: String,
+        params: Vec<(String, String)>,
+        auth_mode: AuthMode,
+    ) -> Result<HistoricalStream<T>, PolarisError>
+    where
+        T: DeserializeOwned + Send + 'static,
+    {
+        let http = self.http.clone();
+        Ok(Box::pin(try_stream! {
+            let mut cursor: Option<String> = None;
+            loop {
+                let mut page_params = params.clone();
+                if let Some(value) = &cursor {
+                    page_params.push(("cursor".to_owned(), value.clone()));
+                }
+                let page = http.get_json(&path, &page_params, auth_mode).await?;
+                let items = page.get("items").and_then(Value::as_array).ok_or_else(|| {
+                    PolarisError::InvalidResponse(format!("{path} response did not include items"))
+                })?;
+                let has_more = page.get("has_more").and_then(Value::as_bool).ok_or_else(|| {
+                    PolarisError::InvalidResponse(format!("{path} response did not include has_more"))
+                })?;
+                for item in items {
+                    let row = serde_json::from_value::<T>(item.clone()).map_err(|error| {
+                        PolarisError::InvalidResponse(format!("invalid {path} row: {error}"))
+                    })?;
+                    yield row;
+                }
+                if !has_more { break; }
+                let next = page.get("next_cursor").and_then(Value::as_str)
+                    .filter(|value| !value.is_empty()).ok_or_else(|| {
+                        PolarisError::InvalidResponse(format!("{path} response has_more without next_cursor"))
+                    })?;
+                if cursor.as_deref() == Some(next) {
+                    Err(PolarisError::InvalidResponse(format!("{path} repeated next_cursor")))?;
+                }
+                cursor = Some(next.to_owned());
             }
         }))
     }
@@ -415,32 +503,19 @@ impl PolarisClient {
     /// are returned. A non-empty instrument selects one exact contract.
     pub async fn option_tickers(
         &self,
-        query: OptionTickerQuery,
-    ) -> Result<HistoricalStream<OptionTickerEvent>, PolarisError> {
+        query: OptionTickerRowsQuery,
+    ) -> Result<HistoricalStream<OptionTickerRow>, PolarisError> {
         let instrument = validate_optional_instrument(query.instrument)?;
-        let mut events = self
-            .events(HistoricalQuery {
+        self.historical_rows(
+            "/historical/options-ticker",
+            HistoricalRowsQuery {
                 source: query.source,
                 market: query.market,
-                from: query.from,
-                to: query.to,
-                allow_gaps: query.allow_gaps,
-                materialize_orderbooks: false,
-            })
-            .await?;
-        Ok(Box::pin(try_stream! {
-            while let Some(event) = events.next().await {
-                let event = event?;
-                if event.event_type() != "option_ticker" {
-                    continue;
-                }
-                let ticker = Self::parse_option_ticker(event)?;
-                if instrument.as_deref().is_some_and(|expected| ticker.instrument() != expected) {
-                    continue;
-                }
-                yield ticker;
-            }
-        }))
+                start: query.start,
+                end: query.end,
+            },
+            instrument,
+        )
     }
 
     /// Return partial venue-published perpetual market-state updates.
@@ -512,7 +587,7 @@ impl PolarisClient {
 
     pub async fn ohlcv(&self, query: OhlcvQuery) -> Result<OhlcvOutput, PolarisError> {
         let mut trades = self
-            .trades(HistoricalQuery {
+            .snapshot_trades(HistoricalQuery {
                 source: query.source,
                 market: query.market,
                 from: query.from,
@@ -1177,13 +1252,12 @@ impl PolarisClient {
         }))
     }
 
-    /// Return standardized funding-rate point-series events for a time range.
+    /// Return partial flat funding observations from the direct historical API.
     pub async fn funding_rates(
         &self,
-        mut query: HistoricalQuery,
-    ) -> Result<HistoricalStream<PointSeriesEvent>, PolarisError> {
-        query.materialize_orderbooks = false;
-        self.point_series(query, &["funding_rate"]).await
+        query: HistoricalRowsQuery,
+    ) -> Result<HistoricalStream<FundingRateRow>, PolarisError> {
+        self.historical_rows("/historical/funding-rates", query, None)
     }
 
     /// Return standardized mark-price point-series events for a time range.
@@ -1254,7 +1328,7 @@ impl PolarisClient {
     /// Aggregate per-bucket VWAP from standardized trade data.
     pub async fn vwap(&self, query: OhlcvQuery) -> Result<Vec<VwapBar>, PolarisError> {
         let mut trades = self
-            .trades(HistoricalQuery {
+            .snapshot_trades(HistoricalQuery {
                 source: query.source,
                 market: query.market,
                 from: query.from,
@@ -1278,7 +1352,7 @@ impl PolarisClient {
     /// Aggregate realized volatility from standardized trade data.
     pub async fn volatility(&self, query: OhlcvQuery) -> Result<Vec<VolatilityBar>, PolarisError> {
         let mut trades = self
-            .trades(HistoricalQuery {
+            .snapshot_trades(HistoricalQuery {
                 source: query.source,
                 market: query.market,
                 from: query.from,
@@ -1395,51 +1469,6 @@ impl PolarisClient {
                     exchange_sequence: event.exchange_sequence,
                     source: event.source,
                     market: event.market,
-                    event_type: event.event_type,
-                    data,
-                }))
-            }
-        }
-    }
-
-    pub(crate) fn parse_option_ticker(
-        event: StandardEvent,
-    ) -> Result<OptionTickerEvent, PolarisError> {
-        if event.event_type() != "option_ticker" {
-            return Err(PolarisError::Decode(
-                "expected an option_ticker event".to_owned(),
-            ));
-        }
-        match event {
-            StandardEvent::Legacy(mut event) => {
-                let instrument = take_required_instrument(&mut event.extra)?;
-                let data: OptionTickerData = serde_json::from_value(event.data).map_err(|err| {
-                    PolarisError::Decode(format!("invalid legacy option ticker payload: {err}"))
-                })?;
-                validate_option_ticker_data(&data, "legacy")?;
-                Ok(OptionTickerEvent::Legacy(LegacyOptionTickerEvent {
-                    timestamp: event.timestamp,
-                    source: event.source,
-                    market: event.market,
-                    instrument,
-                    event_type: event.event_type,
-                    data,
-                }))
-            }
-            StandardEvent::V2(mut event) => {
-                let instrument = take_required_instrument(&mut event.extra)?;
-                let data: OptionTickerData = serde_json::from_value(event.data).map_err(|err| {
-                    PolarisError::Decode(format!("invalid v2 option ticker payload: {err}"))
-                })?;
-                validate_option_ticker_data(&data, "v2")?;
-                Ok(OptionTickerEvent::V2(OptionTickerEventV2 {
-                    collector_timestamp: event.collector_timestamp,
-                    collector_sequence: event.collector_sequence,
-                    exchange_timestamp: event.exchange_timestamp,
-                    exchange_sequence: event.exchange_sequence,
-                    source: event.source,
-                    market: event.market,
-                    instrument,
                     event_type: event.event_type,
                     data,
                 }))
@@ -2455,29 +2484,6 @@ fn validate_perpetual_ticker_data(
         )));
     }
     Ok(())
-}
-
-fn validate_option_ticker_data(data: &OptionTickerData, schema: &str) -> Result<(), PolarisError> {
-    if data
-        .option_type
-        .as_deref()
-        .is_some_and(|value| !matches!(value, "call" | "put"))
-    {
-        return Err(PolarisError::Decode(format!(
-            "invalid {schema} option ticker payload: data.option_type must be call or put"
-        )));
-    }
-    Ok(())
-}
-
-fn take_required_instrument(extra: &mut BTreeMap<String, Value>) -> Result<String, PolarisError> {
-    extra
-        .remove("instrument")
-        .and_then(|value| value.as_str().map(ToOwned::to_owned))
-        .filter(|instrument| !instrument.is_empty())
-        .ok_or_else(|| {
-            PolarisError::Decode("option_ticker instrument must be non-empty".to_owned())
-        })
 }
 
 fn parse_orderbook_levels(value: &Value) -> Option<Vec<OrderbookLevel>> {

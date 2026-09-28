@@ -718,12 +718,12 @@ def test_rate_limited_error_maps_reset_at(tmp_path) -> None:
     client = make_client(handler, dataset_root=tmp_path)
     try:
         with pytest.raises(RateLimitedError) as exc_info:
-            client.trades(
+            list(client.trades(
                 source="binance",
                 market="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-            )
+                start=_ts("2024-01-01T00:00:00Z"),
+                end=_ts("2024-01-01T01:00:00Z"),
+            ))
         assert exc_info.value.reset_at == "2026-05-01T00:00:00.000Z"
     finally:
         client.close()
@@ -774,14 +774,15 @@ def test_trades_use_snapshot_download_flow_by_default(tmp_path) -> None:
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        assert list(
-            client.trades(
+        rows = list(
+            client.events(
                 source="binance",
                 market="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
                 to="2024-01-01T01:00:00Z",
             )
-        ) == [
+        )
+        assert [row for row in rows if row["type"] == "trade"] == [
             {
                 "timestamp": 1704067200000,
                 "type": "trade",
@@ -840,7 +841,7 @@ def test_trade_columnar_two_pass_downloads_and_resolves_once(tmp_path) -> None:
     client = make_client(handler, dataset_root=tmp_path)
     try:
         batches = list(
-            client.trades(
+            client.events(
                 source="binance",
                 market="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
@@ -884,7 +885,7 @@ def test_trades_download_404_raises_not_found_for_streaming_response(tmp_path) -
     client = make_client(handler, dataset_root=tmp_path)
     try:
         with pytest.raises(NotFoundError, match="snapshot missing"):
-            client.trades(
+            client.events(
                 source="binance",
                 market="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
@@ -951,7 +952,7 @@ def test_trades_download_hourly_snapshots_for_partial_day_ranges(tmp_path) -> No
     client = make_client(handler, dataset_root=tmp_path)
     try:
         assert list(
-            client.trades(
+            client.events(
                 source="binance",
                 market="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
@@ -1024,7 +1025,7 @@ def test_trades_select_intraday_snapshot_keys_without_hour_metadata(tmp_path) ->
     client = make_client(handler, dataset_root=tmp_path)
     try:
         assert list(
-            client.trades(
+            client.events(
                 source="hyperliquid",
                 market="BTC",
                 from_="2026-07-11T01:05:00Z",
@@ -1065,7 +1066,7 @@ def test_trades_require_snapshot_coverage_and_do_not_fall_back_to_events(
             PolarisError,
             match="could not be satisfied from standardized snapshots",
         ):
-            client.trades(
+            client.events(
                 source="binance",
                 market="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
@@ -1084,7 +1085,7 @@ def test_trades_allow_gaps_returns_covered_rows_and_warns(tmp_path) -> None:
             UserWarning,
             match="skipped missing intervals: 2024-01-01T01:00:00Z..2024-01-01T02:00:00Z",
         ):
-            rows = client.trades(
+            rows = client.events(
                 source="binance",
                 market="BTC-USDT",
                 from_="2024-01-01T00:00:00Z",
@@ -2563,117 +2564,69 @@ def test_l2_snapshots_materialize_deltas_and_support_raw_opt_out(tmp_path) -> No
     assert rebuilt == materialized
 
 
-def test_funding_rates_filter_point_series_from_standardized_snapshots(
-    tmp_path,
-) -> None:
-    snapshot_rows = [
-        {
-            "timestamp": _ts("2024-01-01T00:00:00Z"),
-            "type": "point",
-            "source": "binance",
-            "market": "BTC-USDT",
-            "data": {"series": "funding_rate", "value": 0.0001},
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:01:00Z"),
-            "type": "point",
-            "source": "binance",
-            "market": "BTC-USDT",
-            "data": {"series": "mark_price", "value": 43123.5},
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:02:00Z"),
-            "type": "trade",
-            "data": {"price": 43124.0, "quantity": 0.25},
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:03:00Z"),
-            "type": "point",
-            "source": "binance",
-            "market": "BTC-USDT",
-            "data": {"series": "funding_rate", "value": 0.0002},
-        },
-    ]
+def test_direct_historical_rows_paginate_filter_and_keep_nullable_fields(tmp_path) -> None:
+    calls: list[httpx.Request] = []
+    identity = {
+        "source": "deribit", "market": "BTC", "source_capture_id": "capture",
+        "collector_timestamp": 10, "schema_version": 1,
+    }
+    trade = {**identity, "event_id": "t1", "price": 100.0, "quantity": 2.0, "side": None}
+    option = {**identity, "event_id": "o1", "instrument": "BTC-29MAR24-50000-C",
+              "delta": "0.431", "mark_price": None}
+    funding = {**identity, "event_id": "f1", "funding_rate": None, "mark_price": "100"}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/snapshots":
-            return httpx.Response(
-                200,
-                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
-            )
-        if request.url.path == "/download":
-            return httpx.Response(
-                200,
-                json=_bulk_download_manifest(
-                    source="binance",
-                    market="BTC-USDT",
-                    day="2024-01-01",
-                    keys=[SNAPSHOT_KEY_DAY_1],
-                ),
-            )
-        if _is_download_request(request):
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(snapshot_rows),
-                headers={"content-type": "application/zstd"},
-            )
+        calls.append(request)
+        if request.url.path == "/historical/trades":
+            next_page = request.url.params.get("cursor") == "next"
+            return httpx.Response(200, json={
+                "items": [{**trade, "event_id": "t2" if next_page else "t1"}],
+                "has_more": not next_page,
+                "next_cursor": None if next_page else "next",
+            })
+        if request.url.path == "/historical/options-ticker":
+            return httpx.Response(200, json={"items": [option], "has_more": False, "next_cursor": None})
+        if request.url.path == "/historical/funding-rates":
+            return httpx.Response(200, json={"items": [funding], "has_more": False, "next_cursor": None})
         raise AssertionError(f"unexpected request: {request.url}")
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        assert list(
-            client.funding_rates(
-                source="binance",
-                market="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-            )
-        ) == [snapshot_rows[0], snapshot_rows[3]]
+        trades = list(client.trades(source="deribit", market="BTC", start=10, end=10))
+        assert [row["event_id"] for row in trades] == ["t1", "t2"]
+        assert trades[0]["side"] is None
+        assert calls[0].url.params["start"] == "10"
+        assert calls[0].url.params["end"] == "10"
+        assert calls[0].url.params["limit"] == "1000"
+        assert calls[1].url.params["cursor"] == "next"
+        assert calls[0].headers["authorization"] == "Bearer polaris_key_test"
+        options = list(client.option_tickers(source="deribit", market="BTC",
+                                               instrument="BTC-29MAR24-50000-C"))
+        assert len(options) == 1
+        assert all(options[0][key] == value for key, value in option.items())
+        assert calls[2].url.params["instrument"] == option["instrument"]
+        funding_rows = list(client.funding_rates())
+        assert len(funding_rows) == 1
+        assert all(funding_rows[0][key] == value for key, value in funding.items())
+        assert "start" not in calls[3].url.params
+        assert "end" not in calls[3].url.params
+        with pytest.raises(ValueError, match="instrument must be non-empty"):
+            client.option_tickers(instrument="")
     finally:
         client.close()
 
 
-def test_option_tickers_filter_exact_instruments_and_validate_identity(tmp_path) -> None:
-    _write_option_fixture(tmp_path)
-    client = PolarisClient(
-        base_url="http://127.0.0.1:1",
-        dataset_root=tmp_path,
-    )
+def test_direct_historical_older_range_maps_missing_authentication(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/historical/trades"
+        assert request.url.params["start"] == "1704067200000"
+        assert "authorization" not in request.headers
+        return httpx.Response(401, json={"error": "API key required for older history"})
+
+    client = make_client(handler, api_key=None, dataset_root=tmp_path)
     try:
-        chain = list(
-            client.option_tickers(
-                source="deribit",
-                market="BTC",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-            )
-        )
-        exact = list(
-            client.option_tickers(
-                source="deribit",
-                market="BTC",
-                instrument="BTC-29MAR24-50000-C",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-            )
-        )
-        assert [row["instrument"] for row in chain] == [
-            "BTC-29MAR24-50000-C",
-            "BTC-29MAR24-45000-P",
-        ]
-        assert len(exact) == 1
-        assert exact[0]["market"] == "BTC"
-        assert exact[0]["instrument"] == "BTC-29MAR24-50000-C"
-        assert exact[0]["data"]["mark_iv"] == "0.8359"
-        assert exact[0]["data"]["greeks"]["delta"] == "0.431"
-        with pytest.raises(ValueError, match="instrument must be non-empty"):
-            client.option_tickers(
-                source="deribit",
-                market="BTC",
-                instrument="",
-            )
-        with pytest.raises(ValueError, match="instrument must be non-empty"):
-            client.stream(source="deribit", markets=["BTC"], instrument="   ")
+        with pytest.raises(UnauthorizedError, match="API key required"):
+            list(client.trades(start=1_704_067_200_000, end=1_704_067_200_000))
     finally:
         client.close()
 
@@ -2733,14 +2686,11 @@ def test_new_event_shapes_are_available_through_python_sdk(tmp_path) -> None:
         assert tickers[0]["data"]["mark_price"] == "98750.3"
         assert tickers[0]["data"]["funding_timestamp"] == 1_704_069_000_000
         assert tickers[1]["data"]["funding_rate"] == "-0.000025"
-        trades = list(client.trades(**query))
-        assert trades[0]["data"]["maker"] == "0xmaker"
-        assert trades[0]["data"]["taker"] == "0xtaker"
-        assert "maker" not in trades[1]["data"]
-        assert "taker" not in trades[1]["data"]
-        options = list(client.option_tickers(**query))
-        assert options[0]["data"]["underlying"] == "BTC"
-        assert options[0]["data"]["option_type"] == "call"
+        assert events[3]["data"]["maker"] == "0xmaker"
+        assert events[3]["data"]["taker"] == "0xtaker"
+        assert "maker" not in events[4]["data"]
+        assert events[2]["data"]["underlying"] == "BTC"
+        assert events[2]["data"]["option_type"] == "call"
     finally:
         client.close()
 

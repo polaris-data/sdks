@@ -12,20 +12,23 @@ import type {
   DepthMetricsRow,
   FetchLike,
   FundingRateEvent,
+  FundingRateRow,
   HistoricalQueryOptions,
+  HistoricalRowsOptions,
   L2UpdatesOptions,
   ListSnapshotsOptions,
   MarkPriceEvent,
   IntentData,
   IntentEvent,
   OptionTickerEvent,
-  OptionTickerOptions,
+  OptionTickerRow,
+  OptionTickerRowsOptions,
   PerpetualTickerEvent,
   OhlcvBar,
   OhlcvOptions,
   OrderbookEvent,
   StandardEvent,
-  TradeEvent,
+  TradeRow,
   PolarisClientOptions,
   PropammQuoteLadderEvent,
   ReplayOptions,
@@ -304,7 +307,7 @@ export class BasePolarisClient {
   }
 
   // -----------------------------------------------------------------------
-  // Historical data – snapshot-first
+  // Historical data – direct rows and snapshot-backed methods
   // -----------------------------------------------------------------------
 
   /**
@@ -327,25 +330,9 @@ export class BasePolarisClient {
     return result;
   }
 
-  /**
-   * Return all standardised trade events for a time range.
-   *
-   * Reads from locally-cached standard snapshot files, filtering to
-   * `type === "trade"`.
-   */
-  async trades(options: HistoricalQueryOptions): Promise<TradeEvent[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: TradeEvent[] = [];
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      (e) => e.type === "trade",
-    )) {
-      result.push(event as TradeEvent);
-    }
-    return result;
+  /** Return flat trades from the direct historical API. */
+  async trades(options: HistoricalRowsOptions = {}): Promise<TradeRow[]> {
+    return this._historicalRows("/historical/trades", options, isTradeRow);
   }
 
   /** Return canonical RFQ, quote, and executable-intent observations. */
@@ -364,26 +351,12 @@ export class BasePolarisClient {
     return result;
   }
 
-  /**
-   * Return standardized option tickers for a whole chain or one exact
-   * venue-native contract.
-   */
-  async optionTickers(options: OptionTickerOptions): Promise<OptionTickerEvent[]> {
+  /** Return flat option ticker rows for a whole chain or one exact venue-native contract. */
+  async optionTickers(options: OptionTickerRowsOptions = {}): Promise<OptionTickerRow[]> {
     const instrument = normalizeInstrumentFilter(options.instrument);
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: OptionTickerEvent[] = [];
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      (candidate) => candidate.type === "option_ticker",
-    )) {
-      const ticker = parseOptionTickerEvent(event);
-      if (instrument !== undefined && ticker.instrument !== instrument) continue;
-      result.push(ticker);
-    }
-    return result;
+    return this._historicalRows(
+      "/historical/options-ticker", options, isOptionTickerRow, instrument,
+    );
   }
 
   /** Return partial venue-published perpetual market-state updates. */
@@ -466,26 +439,9 @@ export class BasePolarisClient {
     return result;
   }
 
-  /**
-   * Return standardised funding-rate point-series events for a time range.
-   */
-  async fundingRates(
-    options: HistoricalQueryOptions,
-  ): Promise<FundingRateEvent[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: FundingRateEvent[] = [];
-
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      isFundingRateEvent,
-    )) {
-      result.push(event);
-    }
-
-    return result;
+  /** Return partial flat funding observations from the direct historical API. */
+  async fundingRates(options: HistoricalRowsOptions = {}): Promise<FundingRateRow[]> {
+    return this._historicalRows("/historical/funding-rates", options, isFundingRateRow);
   }
 
   /**
@@ -1353,6 +1309,58 @@ export class BasePolarisClient {
   // Internals – HTTP layer
   // -----------------------------------------------------------------------
 
+  private async _historicalRows<T>(
+    path: string,
+    options: HistoricalRowsOptions,
+    isRow: (value: unknown) => value is T,
+    instrument?: string,
+  ): Promise<T[]> {
+    for (const [name, value] of [["start", options.start], ["end", options.end]] as const) {
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+        throw new PolarisError(`${name} must be a non-negative Unix millisecond integer`);
+      }
+    }
+    if (options.start !== undefined && options.end !== undefined && options.start > options.end) {
+      throw new PolarisError("start must be less than or equal to end");
+    }
+    const params: Record<string, string> = { limit: "1000" };
+    if (options.source !== undefined) params.source = options.source;
+    if (options.market !== undefined) params.market = options.market;
+    if (options.start !== undefined) params.start = String(options.start);
+    if (options.end !== undefined) params.end = String(options.end);
+    if (instrument !== undefined) params.instrument = instrument;
+
+    return this._pagedRows(path, params, isRow);
+  }
+
+  private async _pagedRows<T>(
+    path: string,
+    params: Record<string, string>,
+    isRow: (value: unknown) => value is T,
+  ): Promise<T[]> {
+    const rows: T[] = [];
+    let cursor: string | undefined;
+    while (true) {
+      const page = await this._getJson<{
+        items?: unknown;
+        has_more?: unknown;
+        next_cursor?: unknown;
+      }>(path, { params: cursor ? { ...params, cursor } : params, auth: "if-available" });
+      if (!Array.isArray(page.items) || typeof page.has_more !== "boolean") {
+        throw new PolarisError(`Invalid ${path} page`);
+      }
+      for (const item of page.items) {
+        if (!isRow(item)) throw new PolarisError(`Invalid ${path} row`);
+        rows.push(item);
+      }
+      if (!page.has_more) return rows;
+      if (typeof page.next_cursor !== "string" || !page.next_cursor || page.next_cursor === cursor) {
+        throw new PolarisError(`Invalid ${path} next_cursor`);
+      }
+      cursor = page.next_cursor;
+    }
+  }
+
   private async _getJson<T = Json>(
     path: string,
     opts: FetchOptions = {},
@@ -1828,6 +1836,56 @@ function normalizeSnapshotDownloadEntry(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isHistoricalIdentity(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) &&
+    ["event_id", "source", "market", "source_capture_id"].every(
+      (field) => typeof value[field] === "string",
+    ) &&
+    Number.isSafeInteger(value.collector_timestamp) &&
+    Number.isSafeInteger(value.schema_version) &&
+    (value.schema_version as number) >= 0;
+}
+
+function nullableFields(
+  value: Record<string, unknown>,
+  fields: readonly string[],
+  type: "string" | "number" | "boolean",
+): boolean {
+  return fields.every((field) => value[field] === undefined || value[field] === null ||
+    (typeof value[field] === type &&
+      (type !== "number" || Number.isSafeInteger(value[field]))));
+}
+
+function isTradeRow(value: unknown): value is TradeRow {
+  return isHistoricalIdentity(value) &&
+    typeof value.price === "number" && Number.isFinite(value.price) &&
+    typeof value.quantity === "number" && Number.isFinite(value.quantity) &&
+    nullableFields(value, ["exchange_timestamp"], "number") &&
+    nullableFields(value, ["instrument", "maker", "order_id", "side", "taker"], "string") &&
+    nullableFields(value, ["liquidation"], "boolean");
+}
+
+function isOptionTickerRow(value: unknown): value is OptionTickerRow {
+  return isHistoricalIdentity(value) && typeof value.instrument === "string" &&
+    nullableFields(value, ["exchange_timestamp", "expiry_timestamp"], "number") &&
+    nullableFields(value, [
+      "ask_iv", "ask_price", "ask_size", "bid_iv", "bid_price", "bid_size",
+      "delta", "forward_price", "gamma", "index_price", "last_price", "mark_iv",
+      "mark_price", "open_interest", "option_type", "premium_currency",
+      "quantity_unit", "rho", "strike", "theta", "turnover_24h", "underlying",
+      "underlying_price", "vega", "volume_24h",
+    ], "string");
+}
+
+function isFundingRateRow(value: unknown): value is FundingRateRow {
+  return isHistoricalIdentity(value) &&
+    nullableFields(value, ["exchange_timestamp", "funding_timestamp"], "number") &&
+    nullableFields(value, [
+      "instrument", "funding_rate", "index_price", "mark_price", "open_interest",
+      "predicted_funding_rate", "premium",
+    ], "string");
 }
 
 function intervalToMs(interval: string): number {

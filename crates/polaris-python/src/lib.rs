@@ -3,11 +3,11 @@ use std::path::PathBuf;
 mod columnar;
 
 use polaris_data::{
-    BboQuery, BboQuote, DepthMetricsRow, HistoricalQuery, IntentEvent, ListSnapshotsQuery,
-    OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery, OptionTickerEvent, OptionTickerQuery,
-    OrderbookBuilder, PerpetualTickerEvent, PointSeriesEvent, PolarisError,
-    PropammQuoteLadderEvent, RawQuery, RawReplayQuery, ReplayQuery, StandardEvent, StreamQuery,
-    TimeInput, TradeEvent,
+    BboQuery, BboQuote, DepthMetricsRow, FundingRateRow, HistoricalQuery, HistoricalRowsQuery,
+    IntentEvent, ListSnapshotsQuery, OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery,
+    OptionTickerRow, OptionTickerRowsQuery, OrderbookBuilder, PerpetualTickerEvent,
+    PointSeriesEvent, PolarisError, PropammQuoteLadderEvent, RawQuery, RawReplayQuery, ReplayQuery,
+    StandardEvent, StreamQuery, TimeInput, TradeRow,
     blocking::{self, RawReplayCacheConfig},
 };
 use pyo3::{
@@ -401,20 +401,23 @@ impl NativeClient {
         .map_err(native_error)
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
+    #[pyo3(signature = (source=None, market=None, start=None, end=None))]
     fn trades<'py>(
         &self,
         py: Python<'py>,
-        source: String,
-        market: String,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
+        source: Option<String>,
+        market: Option<String>,
+        start: Option<i64>,
+        end: Option<i64>,
     ) -> PyResult<NativeHistorical> {
         let iterator = py
             .detach(|| {
-                self.inner
-                    .trades(historical_query(source, market, from_, to, allow_gaps))
+                self.inner.trades(HistoricalRowsQuery {
+                    source,
+                    market,
+                    start,
+                    end,
+                })
             })
             .map_err(native_error)?;
         Ok(NativeHistorical::new(NativeHistoricalIterator::Trades(
@@ -466,26 +469,24 @@ impl NativeClient {
         .map_err(native_error)
     }
 
-    #[pyo3(signature = (source, market, instrument=None, from_=None, to=None, allow_gaps=false))]
+    #[pyo3(signature = (source=None, market=None, instrument=None, start=None, end=None))]
     fn option_tickers(
         &self,
         py: Python<'_>,
-        source: String,
-        market: String,
+        source: Option<String>,
+        market: Option<String>,
         instrument: Option<String>,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
+        start: Option<i64>,
+        end: Option<i64>,
     ) -> PyResult<NativeHistorical> {
         let iterator = py
             .detach(|| {
-                self.inner.option_tickers(OptionTickerQuery {
+                self.inner.option_tickers(OptionTickerRowsQuery {
                     source,
                     market,
                     instrument,
-                    from: time_input(from_),
-                    to: time_input(to),
-                    allow_gaps,
+                    start,
+                    end,
                 })
             })
             .map_err(native_error)?;
@@ -845,25 +846,28 @@ impl NativeClient {
         ))
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
+    #[pyo3(signature = (source=None, market=None, start=None, end=None))]
     fn funding_rates<'py>(
         &self,
         py: Python<'py>,
-        source: String,
-        market: String,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
+        source: Option<String>,
+        market: Option<String>,
+        start: Option<i64>,
+        end: Option<i64>,
     ) -> PyResult<NativeHistorical> {
         let iterator = py
             .detach(|| {
-                self.inner
-                    .funding_rates(historical_query(source, market, from_, to, allow_gaps))
+                self.inner.funding_rates(HistoricalRowsQuery {
+                    source,
+                    market,
+                    start,
+                    end,
+                })
             })
             .map_err(native_error)?;
-        Ok(NativeHistorical::new(NativeHistoricalIterator::Points(
-            iterator,
-        )))
+        Ok(NativeHistorical::new(
+            NativeHistoricalIterator::FundingRates(iterator),
+        ))
     }
 
     #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, batch_size=65_536))]
@@ -1175,9 +1179,10 @@ struct NativeHistorical {
 enum NativeHistoricalIterator {
     Events(blocking::HistoricalIterator<StandardEvent>),
     L2Events(blocking::HistoricalIterator<StandardEvent>),
-    Trades(blocking::HistoricalIterator<TradeEvent>),
+    Trades(blocking::HistoricalIterator<TradeRow>),
     Intents(blocking::HistoricalIterator<IntentEvent>),
-    OptionTickers(blocking::HistoricalIterator<OptionTickerEvent>),
+    OptionTickers(blocking::HistoricalIterator<OptionTickerRow>),
+    FundingRates(blocking::HistoricalIterator<FundingRateRow>),
     PerpetualTickers(blocking::HistoricalIterator<PerpetualTickerEvent>),
     Bbo(blocking::HistoricalIterator<BboQuote>),
     Points(blocking::HistoricalIterator<PointSeriesEvent>),
@@ -1252,6 +1257,7 @@ impl NativeHistorical {
             NativeHistoricalIterator::Trades(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Intents(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::OptionTickers(iterator) => next_historical(py, iterator),
+            NativeHistoricalIterator::FundingRates(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::PerpetualTickers(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Bbo(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Points(iterator) => next_historical(py, iterator),
