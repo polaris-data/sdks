@@ -24,7 +24,7 @@ use crate::{
     },
     realtime,
     storage::StorageLayout,
-    time::{DEFAULT_INFERRED_LOOKBACK, end_of_public_cutoff_day, to_datetime, to_epoch_micros},
+    time::{DEFAULT_INFERRED_LOOKBACK, to_epoch_micros},
 };
 
 #[derive(Clone)]
@@ -270,67 +270,27 @@ impl PolarisClient {
                 "limit must be > 0".to_owned(),
             ));
         }
-        let (from_us, to_us) = self
-            .resolve_historical_range(
-                &query.source,
-                &query.market,
-                query.from.as_ref(),
-                query.to.as_ref(),
-            )
-            .await?;
+        let (from_us, to_us) = resolve_raw_range(
+            query.from.as_ref(),
+            query.to.as_ref(),
+            self.api_key.is_some(),
+        )?;
         let range_params = vec![
             ("source".to_owned(), query.source.clone()),
             ("market".to_owned(), query.market.clone()),
-            ("from".to_owned(), micros_to_iso8601(from_us)?),
-            ("to".to_owned(), micros_to_iso8601(to_us)?),
+            ("start".to_owned(), micros_to_iso8601(from_us)?),
+            ("end".to_owned(), micros_to_iso8601(to_us)?),
+            ("limit".to_owned(), query.limit.to_string()),
         ];
-
-        let mut file_params = range_params.clone();
-        file_params.push(("format".to_owned(), "file".to_owned()));
-        if let Ok((content_type, body)) = self
-            .http
-            .get_bytes("/raw", &file_params, AuthMode::Required)
-            .await
-        {
-            let is_json = content_type
-                .as_deref()
-                .is_some_and(|value| value.to_ascii_lowercase().contains("application/json"));
-            if !is_json {
-                if let Ok(rows) = decode_ndjson(&body) {
-                    return Ok(rows);
-                }
-            }
-        }
-
+        let mut stream = self.paginated_rows::<Value>(
+            "/raw".to_owned(),
+            range_params,
+            AuthMode::IfAvailable,
+            "data",
+        )?;
         let mut rows = Vec::new();
-        let mut cursor: Option<String> = None;
-        loop {
-            let mut params = range_params.clone();
-            params.push(("limit".to_owned(), query.limit.to_string()));
-            if let Some(value) = &cursor {
-                params.push(("cursor".to_owned(), value.clone()));
-            }
-            let payload = self
-                .http
-                .get_json("/raw", &params, AuthMode::Required)
-                .await?;
-            let page = payload
-                .get("data")
-                .and_then(Value::as_array)
-                .ok_or_else(|| {
-                    PolarisError::InvalidResponse(
-                        "raw response did not include a data array".to_owned(),
-                    )
-                })?;
-            rows.extend(page.iter().cloned());
-            cursor = payload
-                .get("next_cursor")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-                .filter(|value| !value.is_empty());
-            if cursor.is_none() {
-                break;
-            }
+        while let Some(row) = stream.next().await {
+            rows.push(row?);
         }
         Ok(rows)
     }
@@ -355,24 +315,21 @@ impl PolarisClient {
                     .to_owned(),
             ));
         }
-        let mut url = url::Url::parse("https://polaris.invalid/").expect("valid URL");
-        url.path_segments_mut()
-            .expect("URL has path segments")
-            .extend(["raw", query.exchange.as_str(), query.event.as_str()]);
-        let path = url.path().to_owned();
         let params = vec![
-            ("start".to_owned(), query.start.to_string()),
-            ("end".to_owned(), query.end.to_string()),
+            ("source".to_owned(), query.exchange),
+            ("channel".to_owned(), query.event),
+            ("start".to_owned(), millis_to_iso8601(query.start)?),
+            ("end".to_owned(), millis_to_iso8601(query.end)?),
             ("limit".to_owned(), "1000".to_owned()),
         ];
-        self.paginated_rows(path, params, AuthMode::IfAvailable)
+        self.paginated_rows("/raw".to_owned(), params, AuthMode::IfAvailable, "data")
     }
 
     pub async fn trades(
         &self,
         query: HistoricalRowsQuery,
     ) -> Result<HistoricalStream<TradeRow>, PolarisError> {
-        self.historical_rows("/historical/trades", query, vec![])
+        self.historical_rows("/trades", query, vec![])
     }
 
     fn historical_rows<T>(
@@ -409,7 +366,7 @@ impl PolarisClient {
         for (name, value) in filters {
             params.push((name.to_owned(), value));
         }
-        self.paginated_rows(path.to_owned(), params, AuthMode::IfAvailable)
+        self.paginated_rows(path.to_owned(), params, AuthMode::IfAvailable, "items")
     }
 
     fn paginated_rows<T>(
@@ -417,6 +374,7 @@ impl PolarisClient {
         path: String,
         params: Vec<(String, String)>,
         auth_mode: AuthMode,
+        row_key: &'static str,
     ) -> Result<HistoricalStream<T>, PolarisError>
     where
         T: DeserializeOwned + Send + 'static,
@@ -430,8 +388,8 @@ impl PolarisClient {
                     page_params.push(("cursor".to_owned(), value.clone()));
                 }
                 let page = http.get_json(&path, &page_params, auth_mode).await?;
-                let items = page.get("items").and_then(Value::as_array).ok_or_else(|| {
-                    PolarisError::InvalidResponse(format!("{path} response did not include items"))
+                let items = page.get(row_key).and_then(Value::as_array).ok_or_else(|| {
+                    PolarisError::InvalidResponse(format!("{path} response did not include {row_key}"))
                 })?;
                 let has_more = page.get("has_more").and_then(Value::as_bool).ok_or_else(|| {
                     PolarisError::InvalidResponse(format!("{path} response did not include has_more"))
@@ -468,7 +426,7 @@ impl PolarisClient {
             filters.push(("intent_id", value));
         }
         self.historical_rows(
-            "/historical/intents",
+            "/intents",
             HistoricalRowsQuery {
                 source: query.source,
                 market: query.market,
@@ -492,7 +450,7 @@ impl PolarisClient {
             filters.push(("interval", value));
         }
         self.historical_rows(
-            "/historical/ohlcv",
+            "/ohlcv",
             HistoricalRowsQuery {
                 source: query.source,
                 market: query.market,
@@ -513,7 +471,7 @@ impl PolarisClient {
     ) -> Result<HistoricalStream<OptionTickerRow>, PolarisError> {
         let instrument = validate_optional_instrument(query.instrument)?;
         self.historical_rows(
-            "/historical/options-ticker",
+            "/options-ticker",
             HistoricalRowsQuery {
                 source: query.source,
                 market: query.market,
@@ -531,7 +489,7 @@ impl PolarisClient {
         &self,
         query: HistoricalRowsQuery,
     ) -> Result<HistoricalStream<FundingRateRow>, PolarisError> {
-        self.funding_rates(query).await
+        self.historical_rows("/perpetual-ticker", query, vec![])
     }
 
     pub async fn ohlcv(&self, query: OhlcvQuery) -> Result<OhlcvOutput, PolarisError> {
@@ -624,161 +582,6 @@ impl PolarisClient {
         Ok(rows)
     }
 
-    async fn resolve_historical_range(
-        &self,
-        source: &str,
-        market: &str,
-        from: Option<&crate::models::TimeInput>,
-        to: Option<&crate::models::TimeInput>,
-    ) -> Result<(i64, i64), PolarisError> {
-        if let (Some(from), Some(to)) = (from, to) {
-            let from_us = to_epoch_micros(from)?;
-            let to_us = to_epoch_micros(to)?;
-            if from_us >= to_us {
-                return Err(PolarisError::InvalidResponse(
-                    "from must be before to".to_owned(),
-                ));
-            }
-            return Ok((from_us, to_us));
-        }
-
-        let market_bounds = self.catalog_market_bounds(source, market).await?;
-        let lower_bound = market_bounds.start_us;
-        let mut upper_bound = market_bounds.end_us.min(Utc::now().timestamp_micros());
-
-        if market_bounds.access_status.as_deref() == Some("restricted") && self.api_key.is_none() {
-            return Err(PolarisError::AccessDenied {
-                message: format!("dataset '{source}/{market}' requires authentication"),
-                status_code: None,
-                body: None,
-            });
-        }
-
-        if self.api_key.is_none() {
-            if let Some(public_cutoff_us) = market_bounds.public_cutoff_us {
-                upper_bound = upper_bound.min(public_cutoff_us);
-            }
-        }
-
-        if lower_bound >= upper_bound {
-            return Err(PolarisError::InvalidResponse(format!(
-                "catalog reported no queryable historical range for '{source}/{market}'"
-            )));
-        }
-
-        let (resolved_from, resolved_to) = match (from, to) {
-            (None, None) => {
-                let resolved_to = upper_bound;
-                let resolved_from = (resolved_to
-                    - DEFAULT_INFERRED_LOOKBACK
-                        .num_microseconds()
-                        .expect("7 days in micros"))
-                .max(lower_bound);
-                (resolved_from, resolved_to)
-            }
-            (None, Some(to)) => {
-                let resolved_to = to_epoch_micros(to)?.min(upper_bound);
-                let from_dt = (chrono::Utc
-                    .timestamp_micros(resolved_to)
-                    .single()
-                    .ok_or_else(|| {
-                        PolarisError::InvalidResponse("invalid inferred upper bound".to_owned())
-                    })?
-                    - DEFAULT_INFERRED_LOOKBACK)
-                    .timestamp_micros();
-                (lower_bound.max(from_dt), resolved_to)
-            }
-            (Some(from), None) => {
-                let resolved_from = lower_bound.max(to_epoch_micros(from)?);
-                let to_dt = (chrono::Utc
-                    .timestamp_micros(resolved_from)
-                    .single()
-                    .ok_or_else(|| {
-                        PolarisError::InvalidResponse("invalid inferred lower bound".to_owned())
-                    })?
-                    + DEFAULT_INFERRED_LOOKBACK)
-                    .timestamp_micros();
-                (resolved_from, upper_bound.min(to_dt))
-            }
-            (Some(_), Some(_)) => unreachable!(),
-        };
-
-        if resolved_from >= resolved_to {
-            return Err(PolarisError::InvalidResponse(
-                "from must resolve to a time before to".to_owned(),
-            ));
-        }
-        Ok((resolved_from, resolved_to))
-    }
-
-    async fn catalog_market_bounds(
-        &self,
-        source: &str,
-        market: &str,
-    ) -> Result<CatalogMarketBounds, PolarisError> {
-        let catalog = self
-            .catalog(CatalogQuery {
-                source: Some(source.to_owned()),
-                market: Some(market.to_owned()),
-                q: None,
-            })
-            .await?;
-        if catalog.legacy_shape {
-            return Err(PolarisError::InvalidResponse(
-                "Catalog response did not include market metadata needed to infer a historical range"
-                    .to_owned(),
-            ));
-        }
-
-        let market_entry = catalog
-            .markets
-            .into_iter()
-            .find(|entry| entry.source == source && entry.market == market)
-            .ok_or_else(|| PolarisError::NotFound {
-                message: format!("catalog did not include dataset '{source}/{market}'"),
-                status_code: None,
-                body: None,
-            })?;
-
-        let start = market_entry
-            .start
-            .as_ref()
-            .ok_or_else(|| {
-                PolarisError::InvalidResponse(format!(
-                    "catalog entry for '{source}/{market}' is missing start"
-                ))
-            })?
-            .clone();
-        let end = market_entry
-            .end
-            .as_ref()
-            .ok_or_else(|| {
-                PolarisError::InvalidResponse(format!(
-                    "catalog entry for '{source}/{market}' is missing end"
-                ))
-            })?
-            .clone();
-
-        let public_cutoff_us = match market_entry
-            .access
-            .as_ref()
-            .and_then(|access| access.public_cutoff_date.as_ref())
-        {
-            Some(cutoff) => Some(end_of_public_cutoff_day(cutoff)?),
-            None => None,
-        };
-
-        Ok(CatalogMarketBounds {
-            start_us: to_datetime(&start.into())?.timestamp_micros(),
-            end_us: to_datetime(&end.into())?.timestamp_micros(),
-            access_status: market_entry
-                .access
-                .as_ref()
-                .map(|access| access.status.to_lowercase()),
-            public_cutoff_us,
-        })
-    }
-
     // -----------------------------------------------------------------------
     // New data schema methods
     // -----------------------------------------------------------------------
@@ -809,9 +612,10 @@ impl PolarisClient {
             params.push(("instrument".to_owned(), instrument));
         }
         self.paginated_rows(
-            "/historical/l2-orderbooks".to_owned(),
+            "/l2-orderbooks".to_owned(),
             params,
             AuthMode::IfAvailable,
+            "items",
         )
     }
 
@@ -824,7 +628,7 @@ impl PolarisClient {
             .map(|value| vec![("instrument", value)])
             .unwrap_or_default();
         self.historical_rows(
-            "/historical/l2-updates",
+            "/l2-updates",
             HistoricalRowsQuery {
                 source: query.source,
                 market: query.market,
@@ -840,16 +644,8 @@ impl PolarisClient {
         &self,
         query: HistoricalRowsQuery,
     ) -> Result<HistoricalStream<FundingRateRow>, PolarisError> {
-        self.historical_rows("/historical/funding-rates", query, vec![])
+        self.historical_rows("/funding-rates", query, vec![])
     }
-}
-
-#[derive(Clone, Debug)]
-struct CatalogMarketBounds {
-    start_us: i64,
-    end_us: i64,
-    access_status: Option<String>,
-    public_cutoff_us: Option<i64>,
 }
 
 fn normalize_catalog_response(payload: Value) -> Result<CatalogResponse, PolarisError> {
@@ -1080,6 +876,49 @@ fn validate_optional_filter(
     Ok(None)
 }
 
+fn resolve_raw_range(
+    from: Option<&crate::models::TimeInput>,
+    to: Option<&crate::models::TimeInput>,
+    authenticated: bool,
+) -> Result<(i64, i64), PolarisError> {
+    let window = DEFAULT_INFERRED_LOOKBACK
+        .num_microseconds()
+        .expect("seven days in microseconds");
+    let now = Utc::now().timestamp_micros();
+    let from = from.map(to_epoch_micros).transpose()?;
+    let to = to.map(to_epoch_micros).transpose()?;
+    let (start, end) = match (from, to) {
+        (Some(start), Some(end)) => (start, end),
+        (Some(start), None) => (
+            start,
+            start
+                .checked_add(window)
+                .ok_or_else(|| {
+                    PolarisError::InvalidResponse("raw time range overflowed".to_owned())
+                })?
+                .min(now),
+        ),
+        (None, Some(end)) => (
+            end.checked_sub(window).ok_or_else(|| {
+                PolarisError::InvalidResponse("raw time range overflowed".to_owned())
+            })?,
+            end,
+        ),
+        // Leave a minute inside the rolling public cutoff so request latency does not
+        // put an anonymous default query just outside the permitted window.
+        (None, None) => (
+            now - window + if authenticated { 0 } else { 60_000_000 },
+            now,
+        ),
+    };
+    if start > end {
+        return Err(PolarisError::InvalidResponse(
+            "raw start must be before or equal to end".to_owned(),
+        ));
+    }
+    Ok((start, end))
+}
+
 fn micros_to_iso8601(value: i64) -> Result<String, PolarisError> {
     chrono::Utc
         .timestamp_micros(value)
@@ -1088,6 +927,13 @@ fn micros_to_iso8601(value: i64) -> Result<String, PolarisError> {
         .ok_or_else(|| {
             PolarisError::InvalidResponse(format!("invalid epoch micros value '{value}'"))
         })
+}
+
+fn millis_to_iso8601(value: i64) -> Result<String, PolarisError> {
+    let micros = value.checked_mul(1_000).ok_or_else(|| {
+        PolarisError::InvalidResponse(format!("invalid epoch milliseconds value '{value}'"))
+    })?;
+    micros_to_iso8601(micros)
 }
 
 pub fn decode_ndjson_file(path: &std::path::Path) -> Result<Vec<Value>, PolarisError> {

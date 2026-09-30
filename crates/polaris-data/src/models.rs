@@ -126,7 +126,7 @@ pub struct QuoteRowsQuery {
     pub end: Option<i64>,
 }
 
-/// Filters for flat source snapshots and deltas from `/historical/l2-updates`.
+/// Filters for flat source snapshots and deltas from `/l2-updates`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct L2UpdatesQuery {
     pub source: Option<String>,
@@ -136,7 +136,7 @@ pub struct L2UpdatesQuery {
     pub end: Option<i64>,
 }
 
-/// Required inclusive millisecond window for `/historical/l2-orderbooks`.
+/// Required inclusive millisecond window for `/l2-orderbooks`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct L2OrderbooksQuery {
     pub source: String,
@@ -334,7 +334,7 @@ impl OrderbookL2Row {
     }
 }
 
-/// One venue-published candle update from `/historical/ohlcv`.
+/// One venue-published candle update from `/ohlcv`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OhlcvRow {
     pub event_id: String,
@@ -365,7 +365,7 @@ pub struct OhlcvRow {
     pub is_closed: Option<bool>,
 }
 
-/// One pair-shaped intent observation from `/historical/intents`.
+/// One pair-shaped intent observation from `/intents`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntentRow {
     pub event_id: String,
@@ -410,7 +410,7 @@ pub struct IntentRow {
     pub status: Option<String>,
 }
 
-/// One PropAMM quote point from `/historical/quotes`.
+/// One PropAMM quote point from `/quotes`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuoteRow {
     pub event_id: String,
@@ -443,7 +443,7 @@ pub struct QuoteRow {
     pub pool: Option<String>,
 }
 
-/// One flat row from `/historical/trades`.
+/// One flat row from `/trades`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TradeRow {
     pub event_id: String,
@@ -470,7 +470,7 @@ pub struct TradeRow {
     pub taker: Option<String>,
 }
 
-/// One partial flat row from `/historical/options-ticker`.
+/// One partial flat row from `/options-ticker`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OptionTickerRow {
     pub event_id: String,
@@ -536,7 +536,7 @@ pub struct OptionTickerRow {
     pub volume_24h: Option<String>,
 }
 
-/// One partial flat row from `/historical/funding-rates`.
+/// One partial flat row from `/funding-rates`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FundingRateRow {
     pub event_id: String,
@@ -592,12 +592,15 @@ impl Default for StreamQuery {
 pub struct RawQuery {
     pub source: String,
     pub market: String,
+    /// Inclusive lower bound. Omitted bounds use a seven-day window.
     pub from: Option<TimeInput>,
+    /// Inclusive upper bound. Omitted bounds use a seven-day window.
     pub to: Option<TimeInput>,
     pub limit: usize,
 }
 
 /// Query for exact captures from one venue-native raw channel.
+/// `exchange` and `event` map to the API's `source` and `channel` filters.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawChannelQuery {
     pub exchange: String,
@@ -608,9 +611,10 @@ pub struct RawChannelQuery {
     pub end: i64,
 }
 
-/// One capture from `GET /raw/{exchange}/{event}`.
+/// One capture from `GET /raw`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RawCaptureRow {
+    pub raw_table: String,
     pub capture_id: String,
     pub collector_timestamp: i64,
     pub recorder_version: String,

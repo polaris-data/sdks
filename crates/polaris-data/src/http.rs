@@ -7,7 +7,6 @@ use crate::errors::PolarisError;
 pub(crate) enum AuthMode {
     None,
     IfAvailable,
-    Required,
 }
 
 #[derive(Clone)]
@@ -54,26 +53,6 @@ impl HttpClient {
         })
     }
 
-    pub(crate) async fn get_bytes(
-        &self,
-        path: &str,
-        params: &[(String, String)],
-        auth_mode: AuthMode,
-    ) -> Result<(Option<String>, Vec<u8>), PolarisError> {
-        let response = self.request(path, params, auth_mode).await?;
-        let status = response.status();
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(ToOwned::to_owned);
-        let body = response.bytes().await?.to_vec();
-        if !status.is_success() {
-            return Err(self.map_error(status, String::from_utf8_lossy(&body).to_string()));
-        }
-        Ok((content_type, body))
-    }
-
     async fn request(
         &self,
         path: &str,
@@ -91,17 +70,6 @@ impl HttpClient {
                 if let Some(api_key) = &self.api_key {
                     request = request.bearer_auth(api_key);
                 }
-            }
-            AuthMode::Required => {
-                let api_key = self
-                    .api_key
-                    .as_ref()
-                    .ok_or_else(|| PolarisError::Unauthorized {
-                        message: "API key is required for this endpoint".to_owned(),
-                        status_code: None,
-                        body: None,
-                    })?;
-                request = request.bearer_auth(api_key);
             }
         }
 

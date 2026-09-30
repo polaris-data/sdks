@@ -4,7 +4,8 @@ use futures_util::StreamExt;
 use polaris_data::{
     CatalogQuery, HistoricalRowsQuery, HistoricalStream, InstrumentsQuery, IntentRowsQuery,
     L2OrderbooksQuery, L2UpdatesQuery, OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery,
-    OptionTickerRowsQuery, PolarisClient, PolarisError, RawChannelQuery, blocking,
+    OptionTickerRowsQuery, PolarisClient, PolarisError, RawChannelQuery, RawQuery, TimeInput,
+    blocking,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -358,7 +359,7 @@ async fn option_tickers_are_typed_and_filter_exact_instruments() {
         "mark_iv": "0.8359", "delta": "0.431", "mark_price": null
     });
     Mock::given(method("GET"))
-        .and(path("/historical/options-ticker"))
+        .and(path("/options-ticker"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "items": [row], "has_more": false, "next_cursor": null
         })))
@@ -435,7 +436,7 @@ async fn direct_trades_and_funding_paginate_and_keep_nullable_fields() {
         .build()
         .expect("client");
     Mock::given(method("GET"))
-        .and(path("/historical/trades"))
+        .and(path("/trades"))
         .and(query_param("start", "10"))
         .and(query_param("end", "10"))
         .and(query_param("limit", "1000"))
@@ -459,22 +460,25 @@ async fn direct_trades_and_funding_paginate_and_keep_nullable_fields() {
         })
         .mount(&server)
         .await;
-    Mock::given(method("GET"))
-        .and(path("/historical/funding-rates"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "items": [{
-                "event_id": "f1", "source": "binance", "market": "BTC-USDT",
-                "collector_timestamp": 10, "source_capture_id": "capture",
-                "schema_version": 1, "funding_rate": null, "mark_price": "100"
-            }, {
-                "event_id": "f2", "source": "binance", "market": "BTC-USDT",
-                "collector_timestamp": 11, "source_capture_id": "capture",
-                "schema_version": 1, "funding_rate": "0.0001", "mark_price": null
-            }],
-            "has_more": false, "next_cursor": null
-        })))
-        .mount(&server)
-        .await;
+    let funding_page = json!({
+        "items": [{
+            "event_id": "f1", "source": "binance", "market": "BTC-USDT",
+            "collector_timestamp": 10, "source_capture_id": "capture",
+            "schema_version": 1, "funding_rate": null, "mark_price": "100"
+        }, {
+            "event_id": "f2", "source": "binance", "market": "BTC-USDT",
+            "collector_timestamp": 11, "source_capture_id": "capture",
+            "schema_version": 1, "funding_rate": "0.0001", "mark_price": null
+        }],
+        "has_more": false, "next_cursor": null
+    });
+    for route in ["/funding-rates", "/perpetual-ticker"] {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(200).set_body_json(funding_page.clone()))
+            .mount(&server)
+            .await;
+    }
 
     let trades = collect_stream(
         client
@@ -517,9 +521,14 @@ async fn direct_trades_and_funding_paginate_and_keep_nullable_fields() {
     .expect("ticker rows");
     assert_eq!(tickers, funding);
     let requests = server.received_requests().await.expect("requests");
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.url.path() == "/perpetual-ticker")
+    );
     let funding_request = requests
         .iter()
-        .find(|request| request.url.path() == "/historical/funding-rates")
+        .find(|request| request.url.path() == "/funding-rates")
         .unwrap();
     assert!(
         !funding_request
@@ -530,7 +539,7 @@ async fn direct_trades_and_funding_paginate_and_keep_nullable_fields() {
 }
 
 #[tokio::test]
-async fn raw_channel_paginates_exact_text_and_keeps_legacy_raw_separate() {
+async fn raw_channel_paginates_exact_text_through_source_channel_filters() {
     let server = MockServer::start().await;
     let root = TempDir::new().expect("tempdir");
     let client = PolarisClient::builder()
@@ -540,9 +549,11 @@ async fn raw_channel_paginates_exact_text_and_keeps_legacy_raw_separate() {
         .build()
         .expect("client");
     Mock::given(method("GET"))
-        .and(path("/raw/binance/trades"))
-        .and(query_param("start", "10"))
-        .and(query_param("end", "10"))
+        .and(path("/raw"))
+        .and(query_param("source", "binance"))
+        .and(query_param("channel", "trades"))
+        .and(query_param("start", "1970-01-01T00:00:00.010Z"))
+        .and(query_param("end", "1970-01-01T00:00:00.010Z"))
         .and(query_param("limit", "1000"))
         .and(header("authorization", "Bearer secret"))
         .respond_with(|request: &wiremock::Request| {
@@ -551,7 +562,8 @@ async fn raw_channel_paginates_exact_text_and_keeps_legacy_raw_separate() {
                 .query_pairs()
                 .any(|(key, value)| key == "cursor" && value == "next");
             ResponseTemplate::new(200).set_body_json(json!({
-                "items": [{
+                "data": [{
+                    "raw_table": "raw.binance_trades",
                     "capture_id": if second { "c2" } else { "c1" },
                     "collector_timestamp": 10,
                     "recorder_version": "v1",
@@ -587,6 +599,7 @@ async fn raw_channel_paginates_exact_text_and_keeps_legacy_raw_separate() {
         ["c1", "c2"]
     );
     assert_eq!(rows[0].original_json, "{ \"price\": 1.0 }");
+    assert_eq!(rows[0].raw_table, "raw.binance_trades");
     assert_eq!(rows[0].additional_context["channel"], "trades");
     assert!(
         client
@@ -594,13 +607,48 @@ async fn raw_channel_paginates_exact_text_and_keeps_legacy_raw_separate() {
             .await
             .is_err()
     );
-    assert!(
-        server
-            .received_requests()
-            .await
-            .unwrap()
-            .iter()
-            .all(|request| request.url.path() != "/raw")
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn raw_queries_source_and_market_as_paged_json_without_api_key() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().expect("tempdir");
+    let client = build_client(&server, &root);
+    Mock::given(method("GET"))
+        .and(path("/raw"))
+        .and(query_param("source", "binance"))
+        .and(query_param("market", "BTC-USDT"))
+        .and(query_param("start", "2024-01-01T00:00:00Z"))
+        .and(query_param("end", "2024-01-01T01:00:00Z"))
+        .and(query_param("limit", "1"))
+        .respond_with(|request: &wiremock::Request| {
+            assert!(request.headers.get("authorization").is_none());
+            assert!(!request.url.query_pairs().any(|(key, _)| key == "format"));
+            let second = request.url.query_pairs().any(|(key, _)| key == "cursor");
+            ResponseTemplate::new(200).set_body_json(json!({
+                "data": [{"raw_table": "raw.binance_trades", "capture_id": if second { "c2" } else { "c1" }}],
+                "has_more": !second,
+                "next_cursor": if second { None } else { Some("next") }
+            }))
+        })
+        .mount(&server)
+        .await;
+    let rows = client
+        .raw(RawQuery {
+            source: "binance".into(),
+            market: "BTC-USDT".into(),
+            from: Some(TimeInput::Iso8601("2024-01-01T00:00:00Z".into())),
+            to: Some(TimeInput::Iso8601("2024-01-01T01:00:00Z".into())),
+            limit: 1,
+        })
+        .await
+        .expect("raw rows");
+    assert_eq!(
+        rows.iter()
+            .map(|row| row["capture_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["c1", "c2"]
     );
 }
 
@@ -610,7 +658,7 @@ async fn intents_queries_direct_route_with_exact_filter() {
     let root = TempDir::new().expect("tempdir");
     let client = build_client(&server, &root);
     Mock::given(method("GET"))
-        .and(path("/historical/intents"))
+        .and(path("/intents"))
         .and(query_param("intent_id", "intent-1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "items": [{"event_id": "i1", "source": "uniswapx", "market": "intents",
@@ -674,7 +722,7 @@ async fn l2_direct_rows_page_and_accept_variable_ranges() {
     let root = TempDir::new().expect("tempdir");
     let client = build_client(&server, &root);
     Mock::given(method("GET"))
-        .and(path("/historical/l2-updates"))
+        .and(path("/l2-updates"))
         .respond_with(|request: &wiremock::Request| {
             let second = request.url.query_pairs().any(|(key, _)| key == "cursor");
             ResponseTemplate::new(200).set_body_json(json!({
@@ -685,7 +733,7 @@ async fn l2_direct_rows_page_and_accept_variable_ranges() {
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/historical/l2-orderbooks"))
+        .and(path("/l2-orderbooks"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "items": [l2_row(false)], "has_more": false, "next_cursor": null
         })))
@@ -769,7 +817,7 @@ async fn ohlcv_returns_tradingview_output() {
     let root = TempDir::new().expect("tempdir");
     let client = build_client(&server, &root);
     Mock::given(method("GET"))
-        .and(path("/historical/ohlcv"))
+        .and(path("/ohlcv"))
         .and(query_param("interval", "1m"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "items": [{"event_id": "c1", "source": "binance", "market": "BTC-USDT",
