@@ -367,6 +367,49 @@ def _l2_row(snapshot: bool) -> dict:
     return row
 
 
+def test_events_pages_mixed_rows_and_requires_api_key(tmp_path) -> None:
+    identity = {"source": "binance", "market": "BTC-USDT", "collector_timestamp": 10,
+                "source_capture_id": "capture", "schema_version": 1}
+    trade = {"type": "trade", "data": {**identity, "event_id": "t1", "price": 100.0, "quantity": 2.0}}
+    funding = {"type": "funding_rate", "data": {**identity, "event_id": "f1", "funding_rate": None,
+                                                "mark_price": "100"}}
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url.path == "/events"
+        assert request.headers.get("authorization") == "Bearer polaris_key_test"
+        assert request.url.params["start"] == request.url.params["end"] == "10"
+        assert request.url.params["types"] == "trade,funding_rate"
+        assert request.url.params["instrument"] == "BTCUSDT"
+        second = request.url.params.get("cursor") == "next"
+        return httpx.Response(200, json={"items": [funding if second else trade],
+                                         "has_more": not second,
+                                         "next_cursor": None if second else "next"})
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        rows = list(client.events(start=10, end=10, types=["trade", "funding_rate"],
+                                  source="binance", market="BTC-USDT", instrument="BTCUSDT"))
+        assert [row["type"] for row in rows] == ["trade", "funding_rate"]
+        assert rows[0]["data"]["event_id"] == "t1"
+        assert rows[0]["data"]["price"] == 100.0
+        assert rows[1]["data"]["funding_rate"] is None
+        assert rows[1]["data"]["mark_price"] == "100"
+        assert requests[1].url.params["cursor"] == "next"
+        with pytest.raises(ValueError, match="start and end"):
+            client.events(start=11, end=10)
+    finally:
+        client.close()
+
+    anonymous = make_client(lambda _: pytest.fail("request should not be sent"), api_key="", dataset_root=tmp_path)
+    try:
+        with pytest.raises(UnauthorizedError):
+            list(anonymous.events(start=10, end=10))
+    finally:
+        anonymous.close()
+
+
 def test_l2_direct_routes_paginate_and_keep_nullable_levels(tmp_path) -> None:
     calls: list[httpx.Request] = []
     snapshot, delta = _l2_row(True), _l2_row(False)

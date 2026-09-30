@@ -10,6 +10,9 @@ import type {
   OptionContract,
   FetchLike,
   FundingRateRow,
+  EventsOptions,
+  MixedEventRow,
+  MixedEventType,
   IntentRow,
   IntentRowsOptions,
   OhlcvRow,
@@ -261,6 +264,30 @@ export class BasePolarisClient {
     return this._historicalRows("/trades", options, isTradeRow);
   }
 
+  /** Return authenticated mixed flat rows in global collector-time order. */
+  async events(options: EventsOptions): Promise<MixedEventRow[]> {
+    if (!Number.isSafeInteger(options.start) || options.start < 0 ||
+        !Number.isSafeInteger(options.end) || options.end < options.start) {
+      throw new PolarisError("start and end must be non-negative inclusive milliseconds with start <= end");
+    }
+    const params: Record<string, string> = {
+      start: String(options.start), end: String(options.end), limit: "1000",
+    };
+    for (const name of ["source", "market", "instrument"] as const) {
+      const value = optionalFilter(name, options[name]);
+      if (value !== undefined) params[name] = value;
+    }
+    if (options.types !== undefined) {
+      const allowed: readonly MixedEventType[] = ["trade", "l2_update", "funding_rate", "intent", "quote", "option_ticker", "ohlcv"];
+      if (!Array.isArray(options.types) || options.types.length === 0 ||
+          options.types.some((value) => !allowed.includes(value))) {
+        throw new PolarisError("types must contain valid event types");
+      }
+      params.types = options.types.join(",");
+    }
+    return this._pagedRows("/events", params, isMixedEventRow, "items", "required");
+  }
+
   /** Return exact raw captures from one venue-native channel via `/raw`. */
   async rawChannel(options: RawChannelOptions): Promise<RawCaptureRow[]> {
     if (!options.exchange.trim() || !options.event.trim() ||
@@ -441,12 +468,13 @@ export class BasePolarisClient {
     params: Record<string, string>,
     isRow: (value: unknown) => value is T,
     rowKey: "items" | "data" = "items",
+    authMode: AuthMode = "if-available",
   ): Promise<T[]> {
     const rows: T[] = [];
     let cursor: string | undefined;
     while (true) {
       const page = await this._getJson<Record<string, unknown>>(path, {
-        params: cursor ? { ...params, cursor } : params, auth: "if-available",
+        params: cursor ? { ...params, cursor } : params, auth: authMode,
       });
       const values = page[rowKey];
       if (!Array.isArray(values) || typeof page.has_more !== "boolean") {
@@ -794,6 +822,31 @@ function isIntentRow(value: unknown): value is IntentRow {
     nullableFields(value, ["instrument", "amount_kind", "input_amount", "input_asset_id", "input_chain_id",
       "intent_id", "output_amount", "output_asset_id", "output_chain_id", "quote_id", "quoted_input_amount",
       "quoted_output_amount", "rfq_id", "status"], "string");
+}
+
+function isQuoteRow(value: unknown): boolean {
+  return isHistoricalIdentity(value) &&
+    ["instrument", "observation_id", "input_asset_id", "input_chain_id", "input_amount",
+      "output_asset_id", "output_chain_id", "output_amount", "amount_kind", "block_hash",
+      "transaction_hash", "router"].every((key) => typeof value[key] === "string") &&
+    ["input_decimals", "output_decimals", "block_number", "transaction_index"].every(
+      (key) => Number.isSafeInteger(value[key])) &&
+    nullableFields(value, ["exchange_timestamp"], "number") &&
+    nullableFields(value, ["oracle", "pool"], "string");
+}
+
+function isMixedEventRow(value: unknown): value is MixedEventRow {
+  if (!isRecord(value)) return false;
+  switch (value.type) {
+    case "trade": return isTradeRow(value.data);
+    case "l2_update": return isOrderbookL2Row(value.data);
+    case "funding_rate": return isFundingRateRow(value.data);
+    case "intent": return isIntentRow(value.data);
+    case "quote": return isQuoteRow(value.data);
+    case "option_ticker": return isOptionTickerRow(value.data);
+    case "ohlcv": return isOhlcvRow(value.data);
+    default: return false;
+  }
 }
 
 function isRawCaptureRow(value: unknown): value is RawCaptureRow {

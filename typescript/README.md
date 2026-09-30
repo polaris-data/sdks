@@ -30,6 +30,7 @@ Direct historical methods return arrays and follow every cursor page. `start` an
 | `perpetualTickers` | `/perpetual-ticker` | Funding-bearing observations |
 | `intents` | `/intents` | Single input/output asset observations |
 | `l2Updates` | `/l2-updates` | Source snapshots and sparse deltas as flat rows |
+| `events` | `/events` | Authenticated mixed `{type, data}` flat rows in collector-time order |
 | `l2Snapshots` | `/l2-orderbooks` | Reconstructed top-25 books after each update |
 | `ohlcv`, `ohlcvTradingView` | `/ohlcv` | Bars from venue candle updates |
 | `rawChannel` | `/raw` with `channel` | Exact venue-native capture text |
@@ -38,7 +39,7 @@ Direct historical methods return arrays and follow every cursor page. `start` an
 
 ## Breaking changes
 
-`events`, `replay`, `listSnapshots`, `getSnapshotDownloadUrls`, and `propammQuoteLadders` are removed. Use direct data methods and `rawChannel` for exact raw captures. The API now has `/events` and `/quotes`, but the client does not yet wrap them. The client no longer requests `/snapshots` or `/download`.
+`replay`, `listSnapshots`, `getSnapshotDownloadUrls`, and `propammQuoteLadders` are removed. Use direct data methods and `rawChannel` for exact raw captures. The new `events` method requires an API key and inclusive `start` and `end` collector timestamps in Unix milliseconds; it returns mixed flat rows instead of the former snapshot event envelopes. The API also has `/quotes`, which the client does not yet wrap. The client no longer requests `/snapshots` or `/download`.
 
 The API moved data routes from `/historical/*` to top-level paths. The old routes no longer work. It also replaced `/raw/{exchange}/{event}` with `/raw?source=...&channel=...`.
 

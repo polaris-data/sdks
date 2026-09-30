@@ -106,6 +106,43 @@ pub struct OhlcvRowsQuery {
     pub end: Option<i64>,
 }
 
+/// Required inclusive collector-time window for the authenticated `/events` route.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventsQuery {
+    pub start: i64,
+    pub end: i64,
+    pub types: Option<Vec<MixedEventType>>,
+    pub source: Option<String>,
+    pub market: Option<String>,
+    pub instrument: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MixedEventType {
+    Trade,
+    L2Update,
+    FundingRate,
+    Intent,
+    Quote,
+    OptionTicker,
+    Ohlcv,
+}
+
+impl MixedEventType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Trade => "trade",
+            Self::L2Update => "l2_update",
+            Self::FundingRate => "funding_rate",
+            Self::Intent => "intent",
+            Self::Quote => "quote",
+            Self::OptionTicker => "option_ticker",
+            Self::Ohlcv => "ohlcv",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IntentRowsQuery {
     pub source: Option<String>,
@@ -563,6 +600,19 @@ pub struct FundingRateRow {
     pub predicted_funding_rate: Option<String>,
     #[serde(default)]
     pub premium: Option<String>,
+}
+
+/// A typed flat row from the authenticated mixed `/events` stream.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum MixedEventRow {
+    Trade(TradeRow),
+    L2Update(OrderbookL2Row),
+    FundingRate(FundingRateRow),
+    Intent(IntentRow),
+    Quote(QuoteRow),
+    OptionTicker(OptionTickerRow),
+    Ohlcv(OhlcvRow),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

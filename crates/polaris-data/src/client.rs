@@ -16,11 +16,12 @@ use crate::{
     http::{AuthMode, HttpClient},
     models::{
         CatalogAccess, CatalogCount, CatalogInstrument, CatalogMarket, CatalogQuery,
-        CatalogResponse, Diagnostic, FundingRateRow, HistoricalRowsQuery, HistoricalStream,
-        InstrumentsQuery, InstrumentsResponse, IntentRow, IntentRowsQuery, L2OrderbooksQuery,
-        L2UpdatesQuery, OhlcvBar, OhlcvFormat, OhlcvOutput, OhlcvQuery, OhlcvRow, OhlcvRowsQuery,
-        OptionContract, OptionTickerRow, OptionTickerRowsQuery, OrderbookL2Row, RawCaptureRow,
-        RawChannelQuery, RawQuery, RealtimeStream, StreamQuery, TradeRow,
+        CatalogResponse, Diagnostic, EventsQuery, FundingRateRow, HistoricalRowsQuery,
+        HistoricalStream, InstrumentsQuery, InstrumentsResponse, IntentRow, IntentRowsQuery,
+        L2OrderbooksQuery, L2UpdatesQuery, MixedEventRow, OhlcvBar, OhlcvFormat, OhlcvOutput,
+        OhlcvQuery, OhlcvRow, OhlcvRowsQuery, OptionContract, OptionTickerRow,
+        OptionTickerRowsQuery, OrderbookL2Row, RawCaptureRow, RawChannelQuery, RawQuery,
+        RealtimeStream, StreamQuery, TradeRow,
     },
     realtime,
     storage::StorageLayout,
@@ -330,6 +331,48 @@ impl PolarisClient {
         query: HistoricalRowsQuery,
     ) -> Result<HistoricalStream<TradeRow>, PolarisError> {
         self.historical_rows("/trades", query, vec![])
+    }
+
+    /// Stream typed flat rows in global collector-time order from `/events`.
+    pub async fn events(
+        &self,
+        query: EventsQuery,
+    ) -> Result<HistoricalStream<MixedEventRow>, PolarisError> {
+        if query.start < 0 || query.end < query.start {
+            return Err(PolarisError::InvalidResponse(
+                "events requires non-negative inclusive bounds with start <= end".to_owned(),
+            ));
+        }
+        let mut params = vec![
+            ("start".to_owned(), query.start.to_string()),
+            ("end".to_owned(), query.end.to_string()),
+            ("limit".to_owned(), "1000".to_owned()),
+        ];
+        if let Some(types) = query.types {
+            if types.is_empty() {
+                return Err(PolarisError::InvalidResponse(
+                    "events types must contain at least one type".to_owned(),
+                ));
+            }
+            params.push((
+                "types".to_owned(),
+                types
+                    .iter()
+                    .map(|value| value.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ));
+        }
+        for (name, value) in [
+            ("source", query.source),
+            ("market", query.market),
+            ("instrument", query.instrument),
+        ] {
+            if let Some(value) = validate_optional_filter(name, value)? {
+                params.push((name.to_owned(), value));
+            }
+        }
+        self.paginated_rows("/events".to_owned(), params, AuthMode::Required, "items")
     }
 
     fn historical_rows<T>(

@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use polaris_data::{
-    CatalogQuery, HistoricalRowsQuery, HistoricalStream, InstrumentsQuery, IntentRowsQuery,
-    L2OrderbooksQuery, L2UpdatesQuery, OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery,
-    OptionTickerRowsQuery, PolarisClient, PolarisError, RawChannelQuery, RawQuery, TimeInput,
-    blocking,
+    CatalogQuery, EventsQuery, HistoricalRowsQuery, HistoricalStream, InstrumentsQuery,
+    IntentRowsQuery, L2OrderbooksQuery, L2UpdatesQuery, MixedEventRow, MixedEventType, OhlcvFormat,
+    OhlcvInterval, OhlcvOutput, OhlcvQuery, OptionTickerRowsQuery, PolarisClient, PolarisError,
+    RawChannelQuery, RawQuery, TimeInput, blocking,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -809,6 +809,61 @@ async fn l2_direct_rows_page_and_accept_variable_ranges() {
             .query_pairs()
             .any(|(key, value)| key == "end" && value == "600010")
     );
+}
+
+#[tokio::test]
+async fn events_pages_typed_rows_with_required_auth_and_filters() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().expect("tempdir");
+    let client = PolarisClient::builder()
+        .base_url(server.uri())
+        .api_key("secret")
+        .dataset_root(root.path())
+        .build()
+        .expect("client");
+    Mock::given(method("GET")).and(path("/events"))
+        .and(header("authorization", "Bearer secret"))
+        .and(query_param("start", "10")).and(query_param("end", "10"))
+        .and(query_param("types", "trade,funding_rate"))
+        .and(query_param("source", "binance"))
+        .and(query_param("market", "BTC-USDT"))
+        .and(query_param("instrument", "BTCUSDT"))
+        .respond_with(|request: &wiremock::Request| {
+            let second = request.url.query_pairs().any(|(key, value)| key == "cursor" && value == "next");
+            let item = if second {
+                json!({"type": "funding_rate", "data": {"event_id": "f1", "source": "binance", "market": "BTC-USDT",
+                    "collector_timestamp": 10, "source_capture_id": "capture", "schema_version": 1,
+                    "funding_rate": null, "mark_price": "100"}})
+            } else {
+                json!({"type": "trade", "data": {"event_id": "t1", "source": "binance", "market": "BTC-USDT",
+                    "collector_timestamp": 10, "source_capture_id": "capture", "schema_version": 1,
+                    "price": 100.0, "quantity": 2.0}})
+            };
+            ResponseTemplate::new(200).set_body_json(json!({"items": [item], "has_more": !second,
+                "next_cursor": if second { None } else { Some("next") }}))
+        }).mount(&server).await;
+    let query = EventsQuery {
+        start: 10,
+        end: 10,
+        types: Some(vec![MixedEventType::Trade, MixedEventType::FundingRate]),
+        source: Some("binance".into()),
+        market: Some("BTC-USDT".into()),
+        instrument: Some("BTCUSDT".into()),
+    };
+    let rows = collect_stream(client.events(query.clone()).await.expect("events"))
+        .await
+        .expect("rows");
+    assert_eq!(rows.len(), 2);
+    assert!(matches!(&rows[0], MixedEventRow::Trade(row) if row.event_id == "t1"));
+    assert!(
+        matches!(&rows[1], MixedEventRow::FundingRate(row) if row.funding_rate.is_none() && row.mark_price.as_deref() == Some("100"))
+    );
+
+    let anonymous = build_client(&server, &TempDir::new().expect("anonymous root"));
+    let error = collect_stream(anonymous.events(query).await.expect("stream"))
+        .await
+        .expect_err("auth required");
+    assert!(matches!(error, PolarisError::Unauthorized { .. }));
 }
 
 #[tokio::test]

@@ -1,10 +1,11 @@
 use std::path::PathBuf;
 
 use polaris_data::{
-    FundingRateRow, HistoricalRowsQuery, IntentRow, IntentRowsQuery, L2OrderbooksQuery,
-    L2UpdatesQuery, OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery, OptionTickerRow,
-    OptionTickerRowsQuery, OrderbookBuilder, OrderbookL2Row, PolarisError, RawCaptureRow,
-    RawChannelQuery, RawQuery, StandardEvent, StreamQuery, TimeInput, TradeRow,
+    EventsQuery, FundingRateRow, HistoricalRowsQuery, IntentRow, IntentRowsQuery,
+    L2OrderbooksQuery, L2UpdatesQuery, MixedEventRow, MixedEventType, OhlcvFormat, OhlcvInterval,
+    OhlcvOutput, OhlcvQuery, OptionTickerRow, OptionTickerRowsQuery, OrderbookBuilder,
+    OrderbookL2Row, PolarisError, RawCaptureRow, RawChannelQuery, RawQuery, StandardEvent,
+    StreamQuery, TimeInput, TradeRow,
     blocking::{self},
 };
 use pyo3::{
@@ -317,6 +318,46 @@ impl NativeClient {
         )))
     }
 
+    #[pyo3(signature = (start, end, types=None, source=None, market=None, instrument=None))]
+    fn events(
+        &self,
+        py: Python<'_>,
+        start: i64,
+        end: i64,
+        types: Option<Vec<String>>,
+        source: Option<String>,
+        market: Option<String>,
+        instrument: Option<String>,
+    ) -> PyResult<NativeHistorical> {
+        let types = types
+            .map(|values| {
+                values
+                    .into_iter()
+                    .map(|value| {
+                        serde_json::from_value::<MixedEventType>(Value::String(value)).map_err(
+                            |_| pyo3::exceptions::PyValueError::new_err("invalid events type"),
+                        )
+                    })
+                    .collect::<PyResult<Vec<_>>>()
+            })
+            .transpose()?;
+        let iterator = py
+            .detach(|| {
+                self.inner.events(EventsQuery {
+                    start,
+                    end,
+                    types,
+                    source,
+                    market,
+                    instrument,
+                })
+            })
+            .map_err(native_error)?;
+        Ok(NativeHistorical::new(NativeHistoricalIterator::Events(
+            iterator,
+        )))
+    }
+
     #[pyo3(signature = (source=None, market=None, instrument=None, intent_id=None, start=None, end=None))]
     fn intents<'py>(
         &self,
@@ -564,6 +605,7 @@ struct NativeHistorical {
 }
 
 enum NativeHistoricalIterator {
+    Events(blocking::HistoricalIterator<MixedEventRow>),
     L2Rows(blocking::HistoricalIterator<OrderbookL2Row>),
     Trades(blocking::HistoricalIterator<TradeRow>),
     Intents(blocking::HistoricalIterator<IntentRow>),
@@ -603,6 +645,7 @@ impl NativeHistorical {
             return Ok(None);
         };
         let result = match iterator {
+            NativeHistoricalIterator::Events(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::L2Rows(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Trades(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Intents(iterator) => next_historical(py, iterator),

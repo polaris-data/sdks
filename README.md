@@ -56,6 +56,7 @@ All direct historical methods fetch every cursor page. Their `start` and `end` f
 | Rust / Python | TypeScript | API route | Result |
 | --- | --- | --- | --- |
 | `trades` | `trades` | `/trades` | Flat trade rows |
+| `events` | `events` | `/events` | Authenticated mixed `{type, data}` flat rows in collector-time order |
 | `option_tickers` | `optionTickers` | `/options-ticker` | Flat option observations; optional exact `instrument` |
 | `funding_rates` | `fundingRates` | `/funding-rates` | Flat partial funding observations with nullable fields |
 | `perpetual_tickers` | `perpetualTickers` | `/perpetual-ticker` | Funding-bearing observations; not a complete ticker stream |
@@ -72,9 +73,9 @@ Python returns iterators by default and supports Arrow batches or Pandas DataFra
 
 ## Breaking changes
 
-The SDKs no longer expose `events`, `replay`, `list_snapshots` / `listSnapshots`, or the snapshot-backed `propamm_quote_ladders` / `propammQuoteLadders`. TypeScript also removes `getSnapshotDownloadUrls`. Rust and Python remove their cross-channel `raw_replay` variants; Python's `replay(standard=False)` disappears with `replay`. The channel-specific `raw_channel` / `rawChannel` method remains.
+The SDKs no longer expose `replay`, `list_snapshots` / `listSnapshots`, or the snapshot-backed `propamm_quote_ladders` / `propammQuoteLadders`. TypeScript also removes `getSnapshotDownloadUrls`. Rust and Python remove their cross-channel `raw_replay` variants; Python's `replay(standard=False)` disappears with `replay`. The channel-specific `raw_channel` / `rawChannel` method remains.
 
-Use the matching direct data method for flat rows and `raw_channel` / `rawChannel` for exact raw captures. The API now has `/events` and `/quotes`, but these SDKs do not yet wrap them. These SDKs no longer call `/snapshots` or `/download`.
+Use the matching direct data method for flat rows and `raw_channel` / `rawChannel` for exact raw captures. The new `events` method requires an API key and inclusive `start` and `end` collector timestamps in Unix milliseconds. It returns mixed flat rows with typed `data`, not the former snapshot event envelopes. The API also has `/quotes`, which these SDKs do not yet wrap. These SDKs no longer call `/snapshots` or `/download`.
 
 The API moved data routes from `/historical/*` to top-level paths. The old routes no longer work. It also replaced `/raw/{exchange}/{event}` with `/raw?source=...&channel=...`; raw responses now include `raw_table`, and the server supports paged JSON rather than file export.
 

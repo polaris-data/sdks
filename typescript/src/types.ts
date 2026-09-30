@@ -406,6 +406,19 @@ export interface OhlcvRow {
   quote_volume?: number | null; trade_count?: number | null; is_closed?: boolean | null;
 }
 
+export type MixedEventType = "trade" | "l2_update" | "funding_rate" | "intent" |
+  "quote" | "option_ticker" | "ohlcv";
+
+/** One typed flat row from the authenticated mixed /events route. */
+export type MixedEventRow =
+  | { type: "trade"; data: TradeRow }
+  | { type: "l2_update"; data: OrderbookL2Row }
+  | { type: "funding_rate"; data: FundingRateRow }
+  | { type: "intent"; data: IntentRow }
+  | { type: "quote"; data: QuoteRow }
+  | { type: "option_ticker"; data: OptionTickerRow }
+  | { type: "ohlcv"; data: OhlcvRow };
+
 /** Pair-shaped intent observation from /intents. */
 export interface IntentRow {
   event_id: string; source: string; market: string; collector_timestamp: number;
@@ -684,6 +697,14 @@ export interface HistoricalRowsOptions {
   market?: string;
   start?: number;
   end?: number;
+}
+
+export interface EventsOptions extends Omit<HistoricalRowsOptions, "start" | "end"> {
+  /** Required inclusive collector timestamps in Unix milliseconds. */
+  start: number;
+  end: number;
+  types?: MixedEventType[];
+  instrument?: string;
 }
 
 export interface OptionTickerRowsOptions extends HistoricalRowsOptions {

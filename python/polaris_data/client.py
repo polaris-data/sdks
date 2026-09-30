@@ -26,6 +26,8 @@ from .models import (
     CatalogResponse,
     InstrumentsResponse,
     FundingRateRow,
+    MixedEventRow,
+    MixedEventType,
     IntentRow,
     JSONDict,
     OptionTickerRow,
@@ -451,6 +453,27 @@ class PolarisClient:
         return self._direct_row_output(
             "trades", source, market, start, end, output, batch_size
         )
+
+    def events(
+        self,
+        *,
+        start: int,
+        end: int,
+        types: Sequence[MixedEventType] | None = None,
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+    ) -> Iterator[MixedEventRow]:
+        """Iterate authenticated mixed flat rows in collector-time order."""
+        if isinstance(start, bool) or isinstance(end, bool) or not isinstance(start, int) or not isinstance(end, int) or start < 0 or end < start:
+            raise ValueError("start and end must be non-negative inclusive milliseconds with start <= end")
+        if types is not None and (not types or any(
+            value not in {"trade", "l2_update", "funding_rate", "intent", "quote", "option_ticker", "ohlcv"}
+            for value in types
+        )):
+            raise ValueError("types must contain valid event types")
+        iterator = self._call("events", start, end, list(types) if types is not None else None, source, market, instrument)
+        return self._iterate(iterator, "events")
 
     def intents(
         self,

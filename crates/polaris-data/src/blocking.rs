@@ -7,10 +7,11 @@ use serde_json::Value;
 use tokio::runtime::{Handle, Runtime};
 
 use crate::{
-    CatalogCount, CatalogQuery, CatalogResponse, Diagnostic, FundingRateRow, HistoricalRowsQuery,
-    HistoricalStream, IntentRow, IntentRowsQuery, L2OrderbooksQuery, L2UpdatesQuery, OhlcvOutput,
-    OhlcvQuery, OptionTickerRow, OptionTickerRowsQuery, OrderbookL2Row, PolarisError,
-    RawCaptureRow, RawChannelQuery, RawQuery, RealtimeStream, StandardEvent, StreamQuery, TradeRow,
+    CatalogCount, CatalogQuery, CatalogResponse, Diagnostic, EventsQuery, FundingRateRow,
+    HistoricalRowsQuery, HistoricalStream, IntentRow, IntentRowsQuery, L2OrderbooksQuery,
+    L2UpdatesQuery, MixedEventRow, OhlcvOutput, OhlcvQuery, OptionTickerRow, OptionTickerRowsQuery,
+    OrderbookL2Row, PolarisError, RawCaptureRow, RawChannelQuery, RawQuery, RealtimeStream,
+    StandardEvent, StreamQuery, TradeRow,
 };
 
 const HISTORICAL_CHANNEL_CAPACITY: usize = 16;
@@ -158,6 +159,14 @@ impl PolarisClient {
         query: HistoricalRowsQuery,
     ) -> Result<HistoricalIterator<TradeRow>, PolarisError> {
         let stream = self.run(self.inner.trades(query))?;
+        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
+    }
+
+    pub fn events(
+        &self,
+        query: EventsQuery,
+    ) -> Result<HistoricalIterator<MixedEventRow>, PolarisError> {
+        let stream = self.run(self.inner.events(query))?;
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 

@@ -23,6 +23,8 @@ from polaris_data import (
     OptionContract,
     OptionContractStatistics,
     FundingRateRow,
+    MixedEventRow,
+    MixedEventType,
     IntentRow,
     OhlcvRow,
     OrderbookL2Row,
@@ -91,6 +93,8 @@ def test_top_level_exports_are_stable() -> None:
         "OptionContract",
         "OptionContractStatistics",
         "FundingRateRow",
+        "MixedEventRow",
+        "MixedEventType",
         "IntentRow",
         "OhlcvRow",
         "OrderbookL2Row",
@@ -149,7 +153,7 @@ def test_client_constructor_signature_and_defaults_are_stable() -> None:
 
 def test_removed_client_methods_are_absent() -> None:
     for method in (
-        "events", "replay", "list_snapshots", "propamm_quote_ladders", "raw_replay",
+        "replay", "list_snapshots", "propamm_quote_ladders", "raw_replay",
         "bbo_changes", "bbo", "depth_metrics", "intent_rows", "ohlcv_rows",
         "quote_rows", "volume", "vwap", "volatility", "mark_prices",
     ):
@@ -175,6 +179,16 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("instrument", keyword_only, None),
         ("include_buffer", keyword_only, False),
         ("materialize_orderbooks", keyword_only, True),
+    ]
+
+    assert _parameters(PolarisClient.events) == [
+        ("self", positional, required),
+        ("start", keyword_only, required),
+        ("end", keyword_only, required),
+        ("types", keyword_only, None),
+        ("source", keyword_only, None),
+        ("market", keyword_only, None),
+        ("instrument", keyword_only, None),
     ]
 
     assert _parameters(PolarisClient.option_tickers) == [

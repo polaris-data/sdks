@@ -7,6 +7,7 @@ use crate::errors::PolarisError;
 pub(crate) enum AuthMode {
     None,
     IfAvailable,
+    Required,
 }
 
 #[derive(Clone)]
@@ -70,6 +71,17 @@ impl HttpClient {
                 if let Some(api_key) = &self.api_key {
                     request = request.bearer_auth(api_key);
                 }
+            }
+            AuthMode::Required => {
+                let api_key = self
+                    .api_key
+                    .as_ref()
+                    .ok_or_else(|| PolarisError::Unauthorized {
+                        message: "a Polaris API key is required for this endpoint".to_owned(),
+                        status_code: None,
+                        body: None,
+                    })?;
+                request = request.bearer_auth(api_key);
             }
         }
 

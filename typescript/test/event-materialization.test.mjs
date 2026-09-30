@@ -5,10 +5,44 @@ import test from "node:test";
 test("removed client methods are absent", async () => {
   const { PolarisClient } = await import("../dist/node/index.js");
   const client = new PolarisClient();
-  for (const name of ["events", "replay", "listSnapshots", "getSnapshotDownloadUrls", "propammQuoteLadders", "bboChanges", "bbo", "depthMetrics", "intentRows", "ohlcvRows", "quoteRows", "volume", "vwap", "volatility", "markPrices"]) {
+  for (const name of ["replay", "listSnapshots", "getSnapshotDownloadUrls", "propammQuoteLadders", "bboChanges", "bbo", "depthMetrics", "intentRows", "ohlcvRows", "quoteRows", "volume", "vwap", "volatility", "markPrices"]) {
     assert.equal(name in client, false, `${name} should be removed`);
   }
   client.close();
+});
+
+test("events pages typed rows with required auth and exact filters", async () => {
+  const { PolarisClient } = await import("../dist/node/index.js");
+  const identity = { source: "binance", market: "BTC-USDT", collector_timestamp: 10,
+    source_capture_id: "capture", schema_version: 1 };
+  const trade = { type: "trade", data: { ...identity, event_id: "t1", price: 100, quantity: 2 } };
+  const funding = { type: "funding_rate", data: { ...identity, event_id: "f1", funding_rate: null, mark_price: "100" } };
+  const calls = [];
+  const fetch = async (input, init) => {
+    const url = new URL(input);
+    calls.push({ url, headers: init.headers });
+    const second = url.searchParams.has("cursor");
+    return new Response(JSON.stringify({ items: [second ? funding : trade], has_more: !second,
+      next_cursor: second ? null : "next" }), { status: 200 });
+  };
+  const client = new PolarisClient({ baseUrl: "https://api.example", apiKey: "secret", fetch });
+  const options = { start: 10, end: 10, types: ["trade", "funding_rate"],
+    source: "binance", market: "BTC-USDT", instrument: "BTCUSDT" };
+  assert.deepEqual(await client.events(options), [trade, funding]);
+  assert.equal(calls[0].url.pathname, "/events");
+  assert.equal(calls[0].url.searchParams.get("types"), "trade,funding_rate");
+  assert.equal(calls[0].url.searchParams.get("start"), "10");
+  assert.equal(calls[0].url.searchParams.get("end"), "10");
+  assert.equal(calls[0].url.searchParams.get("instrument"), "BTCUSDT");
+  assert.equal(calls[1].url.searchParams.get("cursor"), "next");
+  assert.equal(calls[0].headers.Authorization, "Bearer secret");
+  await assert.rejects(client.events({ start: 11, end: 10 }), /start and end/);
+  await assert.rejects(client.events({ start: 10, end: 10, types: [] }), /types/);
+  client.close();
+  const anonymous = new PolarisClient({ baseUrl: "https://api.example", fetch });
+  await assert.rejects(anonymous.events({ start: 10, end: 10 }), /API key is required/);
+  assert.equal(calls.length, 2);
+  anonymous.close();
 });
 
 test("direct L2 routes paginate and accept variable ranges", async () => {

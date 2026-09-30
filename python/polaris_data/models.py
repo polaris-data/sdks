@@ -347,6 +347,11 @@ class OhlcvRow(_OhlcvRowRequired, total=False):
     is_closed: Optional[bool]
 
 
+MixedEventType = Literal[
+    "trade", "l2_update", "funding_rate", "intent", "quote", "option_ticker", "ohlcv"
+]
+
+
 class _OrderbookL2RowRequired(TypedDict):
     event_id: str
     source: str
@@ -521,6 +526,48 @@ class QuoteRow(_QuoteRowRequired, total=False):
     exchange_timestamp: Optional[int]
     oracle: Optional[str]
     pool: Optional[str]
+
+
+class _TradeMixedEvent(TypedDict):
+    type: Literal["trade"]
+    data: TradeRow
+
+
+class _L2UpdateMixedEvent(TypedDict):
+    type: Literal["l2_update"]
+    data: OrderbookL2Row
+
+
+class _FundingRateMixedEvent(TypedDict):
+    type: Literal["funding_rate"]
+    data: FundingRateRow
+
+
+class _IntentMixedEvent(TypedDict):
+    type: Literal["intent"]
+    data: IntentRow
+
+
+class _QuoteMixedEvent(TypedDict):
+    type: Literal["quote"]
+    data: QuoteRow
+
+
+class _OptionTickerMixedEvent(TypedDict):
+    type: Literal["option_ticker"]
+    data: OptionTickerRow
+
+
+class _OhlcvMixedEvent(TypedDict):
+    type: Literal["ohlcv"]
+    data: OhlcvRow
+
+
+MixedEventRow = Union[
+    _TradeMixedEvent, _L2UpdateMixedEvent, _FundingRateMixedEvent,
+    _IntentMixedEvent, _QuoteMixedEvent, _OptionTickerMixedEvent,
+    _OhlcvMixedEvent,
+]
 
 
 class RawCaptureRow(TypedDict):
