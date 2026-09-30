@@ -36,18 +36,51 @@ test("event APIs materialize orderbooks by default and expose raw L2 updates", a
   }
   assert.deepEqual(replayed, materialized);
 
-  const l2 = await client.l2Snapshots({ source: "lighter", market: "BTC-USD" });
-  assert.deepEqual(l2.map(({ type }) => type), ["orderbook", "orderbook"]);
-
-  const updates = await client.l2Updates({ source: "lighter", market: "BTC-USD" });
-  assert.deepEqual(updates, [rows[0], rows[1], rows[3]]);
-
+  const updates = raw.filter(({ type }) => type.startsWith("orderbook"));
   const books = new OrderbookBuilder();
   const rebuilt = updates.flatMap((update) => {
     const book = books.apply(update);
     return book ? [book] : [];
   });
-  assert.deepEqual(rebuilt, l2);
+  assert.deepEqual(rebuilt, materialized.filter(({ type }) => type === "orderbook"));
+  client.close();
+});
+
+test("direct L2 routes paginate and validate their bounded range", async () => {
+  const { PolarisClient } = await import("../dist/node/index.js");
+  const row = (snapshot) => {
+    const value = {
+      event_id: snapshot ? "snapshot" : "delta", source: "hyperliquid", market: "0G",
+      instrument: null, collector_timestamp: 10, exchange_timestamp: null,
+      source_capture_id: "capture", schema_version: 1, source_event_is_snapshot: snapshot,
+    };
+    for (let index = 0; index < 25; index++) {
+      for (const side of ["bid", "ask"]) for (const field of ["px", "sz"]) {
+        value[`${side}_${field}_${String(index).padStart(2, "0")}`] = null;
+      }
+    }
+    value.bid_px_00 = 100;
+    value.bid_sz_00 = 2;
+    return value;
+  };
+  const calls = [];
+  const client = new PolarisClient({ baseUrl: "https://api.example", apiKey: "secret", fetch: async (input, init) => {
+    const url = new URL(input);
+    calls.push({ url, headers: init.headers });
+    const second = url.searchParams.has("cursor");
+    const body = url.pathname === "/historical/l2-updates"
+      ? { items: [row(!second)], has_more: !second, next_cursor: second ? null : "next" }
+      : { items: [row(false)], has_more: false, next_cursor: null };
+    return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+  } });
+  assert.deepEqual(await client.l2Updates({ source: "hyperliquid", market: "0G", instrument: "0G", start: 10, end: 10 }), [row(true), row(false)]);
+  assert.deepEqual(await client.l2Snapshots({ source: "hyperliquid", market: "0G", start: 10, end: 300010 }), [row(false)]);
+  await assert.rejects(client.l2Snapshots({ source: "hyperliquid", market: "0G", start: 10, end: 300011 }));
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0].url.searchParams.get("instrument"), "0G");
+  assert.equal(calls[1].url.searchParams.get("cursor"), "next");
+  assert.equal(calls[2].url.searchParams.get("end"), "300010");
+  assert.equal(calls[0].headers.Authorization, "Bearer secret");
   client.close();
 });
 

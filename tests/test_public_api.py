@@ -22,6 +22,7 @@ from polaris_data import (
     FundingRateRow,
     IntentRow,
     OhlcvRow,
+    OrderbookL2Row,
     QuoteRow,
     IntentData,
     IntentEvent,
@@ -86,6 +87,7 @@ def test_top_level_exports_are_stable() -> None:
         "FundingRateRow",
         "IntentRow",
         "OhlcvRow",
+        "OrderbookL2Row",
         "QuoteRow",
         "LegacyOptionTickerEvent",
         "LegacyPerpetualTickerEvent",
@@ -226,19 +228,18 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("self", positional, required),
         ("source", keyword_only, required),
         ("market", keyword_only, required),
-        ("from_", keyword_only, None),
-        ("to", keyword_only, None),
-        ("allow_gaps", keyword_only, False),
-        ("materialize_orderbooks", keyword_only, True),
+        ("start", keyword_only, required),
+        ("end", keyword_only, required),
+        ("instrument", keyword_only, None),
     ]
 
     assert _parameters(PolarisClient.l2_updates) == [
         ("self", positional, required),
-        ("source", keyword_only, required),
-        ("market", keyword_only, required),
-        ("from_", keyword_only, None),
-        ("to", keyword_only, None),
-        ("allow_gaps", keyword_only, False),
+        ("source", keyword_only, None),
+        ("market", keyword_only, None),
+        ("instrument", keyword_only, None),
+        ("start", keyword_only, None),
+        ("end", keyword_only, None),
     ]
 
     direct_methods = [PolarisClient.trades, PolarisClient.funding_rates, PolarisClient.mark_prices]
@@ -389,7 +390,7 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
         PolarisClient.l2_snapshots,
         PolarisClient.l2_updates,
     ]:
-        assert inspect.signature(method).return_annotation == "Iterator[JSONDict]"
+        assert inspect.signature(method).return_annotation == "Iterator[OrderbookL2Row]"
     for method in [
         PolarisClient.events,
         PolarisClient.bbo,

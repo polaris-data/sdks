@@ -4,11 +4,11 @@ mod columnar;
 
 use polaris_data::{
     BboQuery, BboQuote, DepthMetricsRow, FundingRateRow, HistoricalQuery, HistoricalRowsQuery,
-    IntentRow, IntentRowsQuery, ListSnapshotsQuery, OhlcvFormat, OhlcvInterval, OhlcvOutput,
-    OhlcvQuery, OhlcvRow, OhlcvRowsQuery, OptionTickerRow, OptionTickerRowsQuery, OrderbookBuilder,
-    PolarisError, PropammQuoteLadderEvent, QuoteRow, QuoteRowsQuery, RawCaptureRow,
-    RawChannelQuery, RawQuery, RawReplayQuery, ReplayQuery, StandardEvent, StreamQuery, TimeInput,
-    TradeRow,
+    IntentRow, IntentRowsQuery, L2OrderbooksQuery, L2UpdatesQuery, ListSnapshotsQuery, OhlcvFormat,
+    OhlcvInterval, OhlcvOutput, OhlcvQuery, OhlcvRow, OhlcvRowsQuery, OptionTickerRow,
+    OptionTickerRowsQuery, OrderbookBuilder, OrderbookL2Row, PolarisError, PropammQuoteLadderEvent,
+    QuoteRow, QuoteRowsQuery, RawCaptureRow, RawChannelQuery, RawQuery, RawReplayQuery,
+    ReplayQuery, StandardEvent, StreamQuery, TimeInput, TradeRow,
     blocking::{self, RawReplayCacheConfig},
 };
 use pyo3::{
@@ -843,47 +843,54 @@ impl NativeClient {
         }
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, materialize_orderbooks=true))]
+    #[pyo3(signature = (source, market, start, end, instrument=None))]
     fn l2_snapshots<'py>(
         &self,
         py: Python<'py>,
         source: String,
         market: String,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
-        materialize_orderbooks: bool,
+        start: i64,
+        end: i64,
+        instrument: Option<String>,
     ) -> PyResult<NativeHistorical> {
         let iterator = py
             .detach(|| {
-                let mut query = historical_query(source, market, from_, to, allow_gaps);
-                query.materialize_orderbooks = materialize_orderbooks;
-                self.inner.events(query)
+                self.inner.l2_snapshots(L2OrderbooksQuery {
+                    source,
+                    market,
+                    instrument,
+                    start,
+                    end,
+                })
             })
             .map_err(native_error)?;
-        Ok(NativeHistorical::new(NativeHistoricalIterator::L2Events(
+        Ok(NativeHistorical::new(NativeHistoricalIterator::L2Rows(
             iterator,
         )))
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
+    #[pyo3(signature = (source=None, market=None, instrument=None, start=None, end=None))]
     fn l2_updates<'py>(
         &self,
         py: Python<'py>,
-        source: String,
-        market: String,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
+        source: Option<String>,
+        market: Option<String>,
+        instrument: Option<String>,
+        start: Option<i64>,
+        end: Option<i64>,
     ) -> PyResult<NativeHistorical> {
         let iterator = py
             .detach(|| {
-                let mut query = historical_query(source, market, from_, to, allow_gaps);
-                query.materialize_orderbooks = false;
-                self.inner.events(query)
+                self.inner.l2_updates(L2UpdatesQuery {
+                    source,
+                    market,
+                    instrument,
+                    start,
+                    end,
+                })
             })
             .map_err(native_error)?;
-        Ok(NativeHistorical::new(NativeHistoricalIterator::L2Events(
+        Ok(NativeHistorical::new(NativeHistoricalIterator::L2Rows(
             iterator,
         )))
     }
@@ -1300,7 +1307,7 @@ struct NativeHistorical {
 
 enum NativeHistoricalIterator {
     Events(blocking::HistoricalIterator<StandardEvent>),
-    L2Events(blocking::HistoricalIterator<StandardEvent>),
+    L2Rows(blocking::HistoricalIterator<OrderbookL2Row>),
     Trades(blocking::HistoricalIterator<TradeRow>),
     Intents(blocking::HistoricalIterator<IntentRow>),
     IntentRows(blocking::HistoricalIterator<IntentRow>),
@@ -1346,27 +1353,6 @@ fn next_standard_event<'py>(
     }
 }
 
-fn next_l2_event<'py>(
-    py: Python<'py>,
-    iterator: &mut blocking::HistoricalIterator<StandardEvent>,
-) -> PyResult<Option<Bound<'py, PyAny>>> {
-    loop {
-        match py.detach(|| iterator.next()) {
-            Some(Ok(event))
-                if matches!(
-                    event.event_type(),
-                    "orderbook" | "orderbook_delta" | "l2_snapshot" | "orderbook_snapshot"
-                ) =>
-            {
-                return standard_event_to_python(py, &event).map(Some);
-            }
-            Some(Ok(_)) => {}
-            Some(Err(error)) => return Err(native_error(error)),
-            None => return Ok(None),
-        }
-    }
-}
-
 #[pymethods]
 impl NativeHistorical {
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -1379,7 +1365,7 @@ impl NativeHistorical {
         };
         let result = match iterator {
             NativeHistoricalIterator::Events(iterator) => next_standard_event(py, iterator),
-            NativeHistoricalIterator::L2Events(iterator) => next_l2_event(py, iterator),
+            NativeHistoricalIterator::L2Rows(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Trades(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Intents(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::IntentRows(iterator) => next_historical(py, iterator),

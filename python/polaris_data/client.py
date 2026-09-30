@@ -31,6 +31,7 @@ from .models import (
     JSONDict,
     OptionTickerRow,
     OhlcvRow,
+    OrderbookL2Row,
     PerpetualTickerEvent,
     PropammQuoteLadderEvent,
     QuoteRow,
@@ -840,40 +841,33 @@ class PolarisClient:
         *,
         source: str,
         market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        materialize_orderbooks: bool = True,
-    ) -> Iterator[JSONDict]:
-        iterator = self._call(
-            "l2_snapshots",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            allow_gaps,
-            materialize_orderbooks,
-        )
+        start: int,
+        end: int,
+        instrument: str | None = None,
+    ) -> Iterator[OrderbookL2Row]:
+        """Read reconstructed top-25 books after each L2 event in a window of at most five minutes."""
+        for name, value in (("start", start), ("end", end)):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise TypeError(f"{name} must be an integer Unix millisecond timestamp")
+        if start < 0 or end < start or end - start > 300_000:
+            raise ValueError("l2_snapshots requires a non-negative inclusive range of at most five minutes")
+        iterator = self._call("l2_snapshots", source, market, start, end, instrument)
         return self._iterate(iterator, "l2_snapshots")
 
     def l2_updates(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-    ) -> Iterator[JSONDict]:
-        """Iterate raw orderbook snapshots and deltas without reconstruction."""
-        iterator = self._call(
-            "l2_updates",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            allow_gaps,
-        )
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+    ) -> Iterator[OrderbookL2Row]:
+        """Read flat source snapshots and sparse L2 deltas without reconstruction."""
+        for name, value in (("start", start), ("end", end)):
+            if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+                raise TypeError(f"{name} must be an integer Unix millisecond timestamp")
+        iterator = self._call("l2_updates", source, market, instrument, start, end)
         return self._iterate(iterator, "l2_updates")
 
     @overload

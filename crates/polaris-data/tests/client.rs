@@ -5,9 +5,9 @@ use log::Level;
 use logtest::Logger;
 use polaris_data::{
     AmountKind, CatalogQuery, HistoricalQuery, HistoricalRowsQuery, HistoricalStream,
-    IntentRowsQuery, IntentStatus, OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery,
-    OhlcvRowsQuery, OptionTickerRowsQuery, PolarisClient, PolarisError, QuoteRowsQuery,
-    RawChannelQuery, ReplayQuery, blocking,
+    IntentRowsQuery, IntentStatus, L2OrderbooksQuery, L2UpdatesQuery, OhlcvFormat, OhlcvInterval,
+    OhlcvOutput, OhlcvQuery, OhlcvRowsQuery, OptionTickerRowsQuery, PolarisClient, PolarisError,
+    QuoteRowsQuery, RawChannelQuery, ReplayQuery, blocking,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -1147,79 +1147,113 @@ async fn legacy_midnight_shard_replays_without_remote_coverage_lookup() {
     assert_eq!(diagnostics[0].code, "estimated_snapshot_coverage");
 }
 
+fn l2_row(snapshot: bool) -> serde_json::Value {
+    let mut row = json!({
+        "event_id": if snapshot { "snapshot" } else { "delta" },
+        "source": "hyperliquid", "market": "0G", "instrument": null,
+        "collector_timestamp": 10, "exchange_timestamp": null,
+        "source_capture_id": "capture", "schema_version": 1,
+        "source_event_is_snapshot": snapshot,
+    });
+    let object = row.as_object_mut().expect("row object");
+    for index in 0..25 {
+        for side in ["bid", "ask"] {
+            for field in ["px", "sz"] {
+                object.insert(
+                    format!("{side}_{field}_{index:02}"),
+                    serde_json::Value::Null,
+                );
+            }
+        }
+    }
+    object.insert("bid_px_00".to_owned(), json!(100.0));
+    object.insert("bid_sz_00".to_owned(), json!(2.0));
+    row
+}
+
 #[tokio::test]
-async fn l2_updates_returns_raw_snapshots_and_deltas() {
+async fn l2_direct_rows_page_and_validate_bounded_books() {
     let server = MockServer::start().await;
     let root = TempDir::new().expect("tempdir");
     let client = build_client(&server, &root);
-    let path = root
-        .path()
-        .join("daily/binance/BTC-USDT/2024-01-01.jsonl.zst");
-    std::fs::create_dir_all(path.parent().expect("parent")).expect("data directory");
-    std::fs::write(
-        &path,
-        zstd_ndjson(&[
-            json!({
-                "timestamp": 1_704_067_200_000_i64,
-                "source": "binance",
-                "market": "BTC-USDT",
-                "type": "orderbook",
-                "data": {"bids": [[100.0, 2.0]], "asks": [[101.0, 3.0]]}
-            }),
-            json!({
-                "timestamp": 1_704_067_201_000_i64,
-                "source": "binance",
-                "market": "BTC-USDT",
-                "type": "orderbook_delta",
-                "data": {"bids": [[100.0, 4.0]]}
-            }),
-        ]),
+    Mock::given(method("GET"))
+        .and(path("/historical/l2-updates"))
+        .respond_with(|request: &wiremock::Request| {
+            let second = request.url.query_pairs().any(|(key, _)| key == "cursor");
+            ResponseTemplate::new(200).set_body_json(json!({
+                "items": [l2_row(!second)], "has_more": !second,
+                "next_cursor": if second { None } else { Some("next") }
+            }))
+        })
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/historical/l2-orderbooks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [l2_row(false)], "has_more": false, "next_cursor": null
+        })))
+        .mount(&server)
+        .await;
+    let updates = collect_stream(
+        client
+            .l2_updates(L2UpdatesQuery {
+                source: Some("hyperliquid".to_owned()),
+                market: Some("0G".to_owned()),
+                instrument: Some("0G".to_owned()),
+                start: Some(10),
+                end: Some(10),
+            })
+            .await
+            .expect("updates"),
     )
-    .expect("snapshot");
-
-    let query = HistoricalQuery {
-        source: "binance".to_owned(),
-        market: "BTC-USDT".to_owned(),
-        from: Some("2024-01-01T00:00:00Z".into()),
-        to: Some("2024-01-01T01:00:00Z".into()),
-        allow_gaps: false,
-        materialize_orderbooks: true,
-    };
-    let rows = collect_stream(client.l2_updates(query).await.expect("l2 updates"))
-        .await
-        .expect("rows");
-
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].event_type(), "orderbook");
-    assert_eq!(rows[0].data()["bids"], json!([[100.0, 2.0]]));
-    assert_eq!(rows[0].data()["asks"], json!([[101.0, 3.0]]));
-    assert_eq!(rows[1].event_type(), "orderbook_delta");
-    assert_eq!(rows[1].data()["bids"], json!([[100.0, 4.0]]));
-    assert!(rows[1].data().get("asks").is_none());
-
-    let mut books = polaris_data::OrderbookBuilder::new();
-    assert_eq!(
-        books
-            .apply(rows[0].clone())
-            .expect("snapshot")
-            .expect("complete snapshot")
-            .event_type(),
-        "orderbook"
+    .await
+    .expect("rows");
+    assert_eq!(updates.len(), 2);
+    assert!(updates[0].source_event_is_snapshot);
+    assert!(!updates[1].source_event_is_snapshot);
+    assert_eq!(updates[0].bid_px_00, Some(100.0));
+    assert_eq!(updates[0].ask_px_24, None);
+    let books = collect_stream(
+        client
+            .l2_snapshots(L2OrderbooksQuery {
+                source: "hyperliquid".to_owned(),
+                market: "0G".to_owned(),
+                instrument: None,
+                start: 10,
+                end: 300_010,
+            })
+            .await
+            .expect("books"),
+    )
+    .await
+    .expect("rows");
+    assert_eq!(books.len(), 1);
+    assert!(!books[0].source_event_is_snapshot);
+    assert!(
+        client
+            .l2_snapshots(L2OrderbooksQuery {
+                source: "hyperliquid".to_owned(),
+                market: "0G".to_owned(),
+                instrument: None,
+                start: 10,
+                end: 300_011,
+            })
+            .await
+            .is_err()
     );
-    assert_eq!(
-        books
-            .apply(rows[1].clone())
-            .expect("delta")
-            .expect("complete update")
-            .event_type(),
-        "orderbook"
+    let requests = server.received_requests().await.expect("requests");
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests[0]
+            .url
+            .query_pairs()
+            .any(|(key, value)| key == "instrument" && value == "0G")
     );
     assert!(
-        server
-            .received_requests()
-            .await
-            .expect("requests")
-            .is_empty()
+        requests[2]
+            .url
+            .query_pairs()
+            .any(|(key, value)| key == "end" && value == "300010")
     );
 }
 

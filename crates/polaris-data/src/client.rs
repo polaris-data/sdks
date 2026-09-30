@@ -21,19 +21,18 @@ use crate::{
         CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic, DownloadManifestQuery,
         DownloadManifestResponse, FundingRateRow, HistoricalQuery, HistoricalRowsQuery,
         HistoricalStream, IntentData, IntentEvent, IntentEventV2, IntentRow, IntentRowsQuery,
-        LegacyIntentEvent, LegacyOrderbookEvent, LegacyPerpetualTickerEvent,
+        L2OrderbooksQuery, L2UpdatesQuery, LegacyIntentEvent, LegacyPerpetualTickerEvent,
         LegacyPointSeriesEvent, LegacyTradeData, LegacyTradeEvent, ListSnapshotsQuery, OhlcvBar,
         OhlcvFormat, OhlcvOutput, OhlcvQuery, OhlcvRow, OhlcvRowsQuery, OptionTickerRow,
-        OptionTickerRowsQuery, OrderbookData, OrderbookDataV2, OrderbookEvent, OrderbookEventV2,
-        OrderbookLevel, PerpetualTickerData, PerpetualTickerEvent, PerpetualTickerEventV2,
-        PointSeriesData, PointSeriesEvent, PointSeriesEventV2, PropammQuoteLadderData,
-        PropammQuoteLadderEvent, QuoteRow, QuoteRowsQuery, RawCaptureRow, RawChannelQuery,
-        RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, ReplayStream,
-        SnapshotEntry, StandardEvent, StreamQuery, TradeDataV2, TradeEvent, TradeEventV2, TradeRow,
-        VolatilityBar, VolumeBar, VwapBar,
+        OptionTickerRowsQuery, OrderbookL2Row, PerpetualTickerData, PerpetualTickerEvent,
+        PerpetualTickerEventV2, PointSeriesData, PointSeriesEvent, PointSeriesEventV2,
+        PropammQuoteLadderData, PropammQuoteLadderEvent, QuoteRow, QuoteRowsQuery, RawCaptureRow,
+        RawChannelQuery, RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery,
+        ReplayStream, SnapshotEntry, StandardEvent, StreamQuery, TradeDataV2, TradeEvent,
+        TradeEventV2, TradeRow, VolatilityBar, VolumeBar, VwapBar,
     },
     ohlcv,
-    orderbook::{BookUpdate, BookView, parse_level_tuple},
+    orderbook::{BookUpdate, BookView},
     realtime, replay,
     storage::{
         LocalSnapshotFile, SnapshotCoverage, StorageLayout, acquire_sync_lock, data_file_path,
@@ -1272,50 +1271,58 @@ impl PolarisClient {
     // New data schema methods
     // -----------------------------------------------------------------------
 
-    /// Return standardized orderbook snapshot events for a time range.
+    /// Return one reconstructed, sorted top-25 book after each source L2 event.
+    /// The inclusive range must be at most five minutes.
     pub async fn l2_snapshots(
         &self,
-        query: HistoricalQuery,
-    ) -> Result<HistoricalStream<OrderbookEvent>, PolarisError> {
-        let mut events = self.events(query).await?;
-        Ok(Box::pin(try_stream! {
-            while let Some(event) = events.next().await {
-                let event = event?;
-                if !matches!(
-                    event.event_type(),
-                    "orderbook" | "orderbook_delta" | "orderbook_snapshot" | "l2_snapshot"
-                ) {
-                    continue;
-                }
-                if let Some(orderbook) = Self::try_parse_orderbook(event) {
-                    yield orderbook;
-                }
-            }
-        }))
+        query: L2OrderbooksQuery,
+    ) -> Result<HistoricalStream<OrderbookL2Row>, PolarisError> {
+        if query.source.trim().is_empty() || query.market.trim().is_empty() {
+            return Err(PolarisError::InvalidResponse(
+                "source and market are required for l2_snapshots".to_owned(),
+            ));
+        }
+        if query.start < 0 || query.end < query.start || query.end - query.start > 300_000 {
+            return Err(PolarisError::InvalidResponse(
+                "l2_snapshots requires a non-negative inclusive range of at most five minutes"
+                    .to_owned(),
+            ));
+        }
+        let mut params = vec![
+            ("source".to_owned(), query.source.trim().to_owned()),
+            ("market".to_owned(), query.market.trim().to_owned()),
+            ("start".to_owned(), query.start.to_string()),
+            ("end".to_owned(), query.end.to_string()),
+            ("limit".to_owned(), "1000".to_owned()),
+        ];
+        if let Some(instrument) = validate_optional_filter("instrument", query.instrument)? {
+            params.push(("instrument".to_owned(), instrument));
+        }
+        self.paginated_rows(
+            "/historical/l2-orderbooks".to_owned(),
+            params,
+            AuthMode::IfAvailable,
+        )
     }
 
-    /// Return raw standardized orderbook snapshots and deltas for a time range.
-    ///
-    /// Unlike [`Self::l2_snapshots`], this method never reconstructs complete
-    /// books. Feed the updates into [`OrderbookBuilder`] when application-managed
-    /// book state is needed.
+    /// Return flat stateless source snapshots and deltas, capped at 25 levels.
     pub async fn l2_updates(
         &self,
-        mut query: HistoricalQuery,
-    ) -> Result<HistoricalStream<StandardEvent>, PolarisError> {
-        query.materialize_orderbooks = false;
-        let mut events = self.events(query).await?;
-        Ok(Box::pin(try_stream! {
-            while let Some(event) = events.next().await {
-                let event = event?;
-                if matches!(
-                    event.event_type(),
-                    "orderbook" | "orderbook_delta" | "orderbook_snapshot" | "l2_snapshot"
-                ) {
-                    yield event;
-                }
-            }
-        }))
+        query: L2UpdatesQuery,
+    ) -> Result<HistoricalStream<OrderbookL2Row>, PolarisError> {
+        let filters = validate_optional_filter("instrument", query.instrument)?
+            .map(|value| vec![("instrument", value)])
+            .unwrap_or_default();
+        self.historical_rows(
+            "/historical/l2-updates",
+            HistoricalRowsQuery {
+                source: query.source,
+                market: query.market,
+                start: query.start,
+                end: query.end,
+            },
+            filters,
+        )
     }
 
     /// Derive best bid / offer quotes directly from standardized orderbook updates.
@@ -1681,69 +1688,6 @@ impl PolarisClient {
                     market: event.market,
                     event_type: event.event_type,
                     data,
-                }))
-            }
-        }
-    }
-
-    fn try_parse_orderbook(event: StandardEvent) -> Option<OrderbookEvent> {
-        let mut payload = event.data().clone();
-        if !payload.is_object() {
-            payload = Value::Object(Default::default());
-        }
-        let object = payload.as_object_mut()?;
-        for key in ["bids", "asks"] {
-            if !object.contains_key(key) {
-                if let Some(value) = event.extra().get(key) {
-                    object.insert(key.to_owned(), value.clone());
-                }
-            }
-        }
-        let is_delta = match &event {
-            StandardEvent::Legacy(_) => event.event_type() == "orderbook_delta",
-            StandardEvent::V2(_) => !object.get("is_snapshot")?.as_bool()?,
-        };
-        let bids = match object.get("bids") {
-            Some(value) => parse_orderbook_levels(value)?,
-            None if is_delta => Vec::new(),
-            None => return None,
-        };
-        let asks = match object.get("asks") {
-            Some(value) => parse_orderbook_levels(value)?,
-            None if is_delta => Vec::new(),
-            None => return None,
-        };
-        let mut extra = object.clone();
-        extra.remove("bids");
-        extra.remove("asks");
-        match event {
-            StandardEvent::Legacy(event) => Some(OrderbookEvent::Legacy(LegacyOrderbookEvent {
-                timestamp: event.timestamp,
-                source: event.source,
-                market: event.market,
-                event_type: event.event_type,
-                data: OrderbookData {
-                    bids,
-                    asks,
-                    extra: extra.into_iter().collect(),
-                },
-            })),
-            StandardEvent::V2(event) => {
-                let is_snapshot = extra.remove("is_snapshot")?.as_bool()?;
-                Some(OrderbookEvent::V2(OrderbookEventV2 {
-                    collector_timestamp: event.collector_timestamp,
-                    collector_sequence: event.collector_sequence,
-                    exchange_timestamp: event.exchange_timestamp,
-                    exchange_sequence: event.exchange_sequence,
-                    source: event.source,
-                    market: event.market,
-                    event_type: event.event_type,
-                    data: OrderbookDataV2 {
-                        is_snapshot,
-                        bids,
-                        asks,
-                        extra: extra.into_iter().collect(),
-                    },
                 }))
             }
         }
@@ -2566,18 +2510,6 @@ fn validate_perpetual_ticker_data(
         )));
     }
     Ok(())
-}
-
-fn parse_orderbook_levels(value: &Value) -> Option<Vec<OrderbookLevel>> {
-    let rows = value.as_array()?;
-    let mut levels = Vec::new();
-    for row in rows {
-        let (price, quantity) = parse_level_tuple(row);
-        if let (Some(price), Some(quantity)) = (price, quantity) {
-            levels.push(OrderbookLevel { price, quantity });
-        }
-    }
-    Some(levels)
 }
 
 fn micros_to_iso8601(value: i64) -> Result<String, PolarisError> {

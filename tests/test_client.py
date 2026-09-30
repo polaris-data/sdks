@@ -1657,181 +1657,57 @@ def test_events_allow_gaps_returns_covered_rows_and_warns(tmp_path) -> None:
         client.close()
 
 
-def test_l2_snapshots_use_snapshot_download_flow_by_default(tmp_path) -> None:
-    snapshot_rows = [
-        {
-            "timestamp": _ts("2024-01-01T00:00:00Z"),
-            "type": "l2_snapshot",
-            "data": {
-                "bids": [[100.0, 1.25], [99.5, 2.0]],
-                "asks": [[100.5, 0.75], [101.0, 1.0]],
-            },
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:00:01Z"),
-            "type": "trade",
-            "data": {"price": 100.25, "quantity": 0.5},
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:00:02Z"),
-            "type": "l2_snapshot",
-            "bids": [[100.1, 1.0]],
-            "asks": [[100.6, 1.5]],
-        },
-    ]
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/snapshots":
-            return httpx.Response(
-                200,
-                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
-            )
-        if request.url.path == "/download":
-            return httpx.Response(
-                200,
-                json=_bulk_download_manifest(
-                    source="binance",
-                    market="BTC-USDT",
-                    day="2024-01-01",
-                    keys=[SNAPSHOT_KEY_DAY_1],
-                ),
-            )
-        if _is_download_request(request):
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(snapshot_rows),
-                headers={"content-type": "application/zstd"},
-            )
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        assert list(
-            client.l2_snapshots(
-                source="binance",
-                market="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-            )
-        ) == [
-            {
-                "timestamp": _ts("2024-01-01T00:00:00Z"),
-                "type": "orderbook",
-                "data": {
-                    "bids": [
-                        {"price": 100.0, "quantity": 1.25},
-                        {"price": 99.5, "quantity": 2.0},
-                    ],
-                    "asks": [
-                        {"price": 100.5, "quantity": 0.75},
-                        {"price": 101.0, "quantity": 1.0},
-                    ],
-                },
-            },
-            {
-                "timestamp": _ts("2024-01-01T00:00:02Z"),
-                "type": "orderbook",
-                "data": {
-                    "bids": [{"price": 100.1, "quantity": 1.0}],
-                    "asks": [{"price": 100.6, "quantity": 1.5}],
-                },
-            },
-        ]
-    finally:
-        client.close()
-
-
-def test_l2_snapshots_materialize_deltas_and_support_raw_opt_out(tmp_path) -> None:
-    snapshot_key = "standard-lighter-BTC-USD-2024-01-01"
-    snapshot_rows = [
-        {
-            "timestamp": _ts("2024-01-01T00:00:00Z"),
-            "type": "orderbook_delta",
-            "source": "lighter",
-            "market": "BTC-USD",
-            "data": {"bids": [[999.0, 1.0]]},
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:00:01Z"),
-            "type": "orderbook",
-            "source": "lighter",
-            "market": "BTC-USD",
-            "data": {"bids": [[100.0, 2.0]], "asks": [[101.0, 3.0]]},
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:00:02Z"),
-            "type": "orderbook_delta",
-            "source": "lighter",
-            "market": "BTC-USD",
-            "data": {"bids": [[100.0, 0.0], [99.0, 4.0]]},
-        },
-    ]
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/snapshots":
-            return httpx.Response(
-                200,
-                json={"snapshots": [{"key": snapshot_key, "date": "2024-01-01"}]},
-            )
-        if request.url.path == "/download":
-            return httpx.Response(
-                200,
-                json=_bulk_download_manifest(
-                    source="lighter",
-                    market="BTC-USD",
-                    day="2024-01-01",
-                    keys=[snapshot_key],
-                ),
-            )
-        if _is_download_request(request):
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(snapshot_rows),
-                headers={"content-type": "application/zstd"},
-            )
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        materialized = list(
-            client.l2_snapshots(
-                source="lighter",
-                market="BTC-USD",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-            )
-        )
-        raw = list(
-            client.l2_snapshots(
-                source="lighter",
-                market="BTC-USD",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-                materialize_orderbooks=False,
-            )
-        )
-        updates = list(
-            client.l2_updates(
-                source="lighter",
-                market="BTC-USD",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-            )
-        )
-    finally:
-        client.close()
-
-    assert [row["type"] for row in materialized] == ["orderbook", "orderbook"]
-    assert materialized[-1]["data"] == {
-        "bids": [{"price": 99.0, "quantity": 4.0}],
-        "asks": [{"price": 101.0, "quantity": 3.0}],
+def _l2_row(snapshot: bool) -> dict:
+    row = {
+        "event_id": "snapshot" if snapshot else "delta",
+        "source": "hyperliquid", "market": "0G", "instrument": None,
+        "collector_timestamp": 10, "exchange_timestamp": None,
+        "source_capture_id": "capture", "schema_version": 1,
+        "source_event_is_snapshot": snapshot,
     }
-    assert raw == snapshot_rows
-    assert updates == snapshot_rows
+    for index in range(25):
+        for side in ("bid", "ask"):
+            for field in ("px", "sz"):
+                row[f"{side}_{field}_{index:02}"] = None
+    row["bid_px_00"] = 100.0
+    row["bid_sz_00"] = 2.0
+    return row
 
-    builder = OrderbookBuilder()
-    rebuilt = [book for update in updates if (book := builder.apply(update)) is not None]
-    assert rebuilt == materialized
+
+def test_l2_direct_routes_paginate_and_keep_nullable_levels(tmp_path) -> None:
+    calls: list[httpx.Request] = []
+    snapshot, delta = _l2_row(True), _l2_row(False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        assert request.headers["authorization"] == "Bearer polaris_key_test"
+        if request.url.path == "/historical/l2-updates":
+            second = "cursor" in request.url.params
+            return httpx.Response(200, json={
+                "items": [delta if second else snapshot],
+                "has_more": not second,
+                "next_cursor": None if second else "next",
+            })
+        assert request.url.path == "/historical/l2-orderbooks"
+        return httpx.Response(200, json={"items": [delta], "has_more": False, "next_cursor": None})
+
+    client = make_client(handler, dataset_root=tmp_path)
+    try:
+        updates = list(client.l2_updates(source="hyperliquid", market="0G", instrument="0G", start=10, end=10))
+        books = list(client.l2_snapshots(source="hyperliquid", market="0G", start=10, end=300010))
+        with pytest.raises((ValueError, PolarisError)):
+            list(client.l2_snapshots(source="hyperliquid", market="0G", start=10, end=300011))
+    finally:
+        client.close()
+
+    assert updates == [snapshot, delta]
+    assert books == [delta]
+    assert calls[0].url.params["instrument"] == "0G"
+    assert calls[0].url.params["start"] == "10"
+    assert calls[0].url.params["end"] == "10"
+    assert calls[1].url.params["cursor"] == "next"
+    assert calls[2].url.params["end"] == "300010"
+    assert len(calls) == 3
 
 
 def test_direct_historical_rows_paginate_filter_and_keep_nullable_fields(tmp_path) -> None:

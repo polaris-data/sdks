@@ -487,6 +487,24 @@ export interface OrderbookEventV2 extends StandardEventV2 {
 
 export type OrderbookEvent = LegacyOrderbookEvent | OrderbookEventV2;
 
+type L2LevelIndex = "00" | "01" | "02" | "03" | "04" | "05" | "06" | "07" | "08" | "09"
+  | "10" | "11" | "12" | "13" | "14" | "15" | "16" | "17" | "18" | "19"
+  | "20" | "21" | "22" | "23" | "24";
+type L2LevelField = `${"bid" | "ask"}_${"px" | "sz"}_${L2LevelIndex}`;
+
+/** Flat top-25 source update or reconstructed book from a historical L2 route. */
+export type OrderbookL2Row = {
+  event_id: string;
+  source: string;
+  market: string;
+  instrument: string | null;
+  collector_timestamp: number;
+  exchange_timestamp: number | null;
+  source_capture_id: string;
+  schema_version: number;
+  source_event_is_snapshot: boolean;
+} & Record<L2LevelField, number | null>;
+
 export interface BboQuote {
   timestamp: number;
   bid_price: number;
@@ -704,8 +722,18 @@ export interface QuoteRowsOptions extends HistoricalRowsOptions {
   observationId?: string;
 }
 
-/** Options for raw snapshot-and-delta orderbook reads. */
-export type L2UpdatesOptions = Omit<HistoricalQueryOptions, "materializeOrderbooks">;
+/** Optional filters for flat source snapshots and deltas. */
+export interface L2UpdatesOptions extends HistoricalRowsOptions {
+  instrument?: string;
+}
+
+/** Required inclusive window of at most five minutes for reconstructed books. */
+export interface L2OrderbooksOptions extends L2UpdatesOptions {
+  source: string;
+  market: string;
+  start: number;
+  end: number;
+}
 
 export interface ListSnapshotsOptions {
   source: string;

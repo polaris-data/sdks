@@ -24,6 +24,7 @@ import type {
   HistoricalQueryOptions,
   HistoricalRowsOptions,
   L2UpdatesOptions,
+  L2OrderbooksOptions,
   ListSnapshotsOptions,
   MarkPriceEvent,
   IntentData,
@@ -35,6 +36,7 @@ import type {
   OhlcvBar,
   OhlcvOptions,
   OrderbookEvent,
+  OrderbookL2Row,
   StandardEvent,
   TradeRow,
   PolarisClientOptions,
@@ -409,13 +411,31 @@ export class BasePolarisClient {
     return this.fundingRates(options);
   }
 
-  /**
-   * Return standardised orderbook snapshot events for a time range.
-   *
-   * Reads snapshots and deltas from locally-cached standard snapshot files.
-   * By default every returned row contains a complete reconstructed book.
-   */
-  async l2Snapshots(
+  /** Return reconstructed, sorted top-25 books after each L2 event. */
+  async l2Snapshots(options: L2OrderbooksOptions): Promise<OrderbookL2Row[]> {
+    const source = optionalFilter("source", options.source);
+    const market = optionalFilter("market", options.market);
+    if (!source || !market) {
+      throw new PolarisError("source and market are required");
+    }
+    if (!Number.isSafeInteger(options.start) || !Number.isSafeInteger(options.end) ||
+        options.start < 0 || options.end < options.start || options.end - options.start > 300_000) {
+      throw new PolarisError("l2Snapshots requires an inclusive range of at most five minutes");
+    }
+    const instrument = optionalFilter("instrument", options.instrument);
+    return this._historicalRows("/historical/l2-orderbooks", { ...options, source, market }, isOrderbookL2Row,
+      instrument ? { instrument } : {});
+  }
+
+  /** Return flat source snapshots and sparse deltas from the direct API. */
+  async l2Updates(options: L2UpdatesOptions = {}): Promise<OrderbookL2Row[]> {
+    const instrument = optionalFilter("instrument", options.instrument);
+    return this._historicalRows("/historical/l2-updates", options, isOrderbookL2Row,
+      instrument ? { instrument } : {});
+  }
+
+  /** Read snapshot-backed complete books for calculations that need full depth. */
+  private async _snapshotOrderbooks(
     options: HistoricalQueryOptions,
   ): Promise<OrderbookEvent[]> {
     const { fromMs, toMs } = await this._resolveHistoricalRange(options);
@@ -437,32 +457,11 @@ export class BasePolarisClient {
   }
 
   /**
-   * Return raw standardized orderbook snapshots and deltas for a time range.
-   *
-   * No complete-book reconstruction is performed. Feed the returned rows into
-   * `OrderbookBuilder` when application-managed book state is needed.
-   */
-  async l2Updates(options: L2UpdatesOptions): Promise<OrderbookEvent[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: OrderbookEvent[] = [];
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      isOrderbookEvent,
-    )) {
-      result.push(event);
-    }
-    return result;
-  }
-
-  /**
    * Derive best bid / offer quotes from standardised orderbook snapshots.
    */
   async bbo(options: HistoricalQueryOptions): Promise<BboQuote[]> {
     const result: BboQuote[] = [];
-    for (const event of await this.l2Snapshots({
+    for (const event of await this._snapshotOrderbooks({
       ...options,
       materializeOrderbooks: true,
     })) {
@@ -563,7 +562,7 @@ export class BasePolarisClient {
     }
 
     const result: DepthMetricsRow[] = [];
-    for (const event of await this.l2Snapshots({
+    for (const event of await this._snapshotOrderbooks({
       ...options,
       materializeOrderbooks: true,
     })) {
@@ -1851,6 +1850,25 @@ function isOhlcvRow(value: unknown): value is OhlcvRow {
     nullableFields(value, ["is_closed"], "boolean") &&
     ["base_volume", "quote_volume"].every((key) => value[key] === undefined || value[key] === null ||
       (typeof value[key] === "number" && Number.isFinite(value[key])));
+}
+
+function isOrderbookL2Row(value: unknown): value is OrderbookL2Row {
+  if (!isHistoricalIdentity(value) ||
+      typeof value.source_event_is_snapshot !== "boolean" ||
+      !nullableFields(value, ["instrument"], "string") ||
+      !nullableFields(value, ["exchange_timestamp"], "number") ||
+      !("instrument" in value) || !("exchange_timestamp" in value)) return false;
+  for (let i = 0; i < 25; i++) {
+    const index = String(i).padStart(2, "0");
+    for (const side of ["bid", "ask"]) {
+      for (const kind of ["px", "sz"]) {
+        const field = `${side}_${kind}_${index}`;
+        const level = value[field];
+        if (level !== null && (typeof level !== "number" || !Number.isFinite(level))) return false;
+      }
+    }
+  }
+  return true;
 }
 
 function isIntentRow(value: unknown): value is IntentRow {

@@ -19,17 +19,17 @@ use crate::{
     BboQuery, BboQuote, CatalogCount, CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic,
     DownloadManifestQuery, DownloadManifestResponse, FundingRateRow, HistoricalQuery,
     HistoricalRowsQuery, HistoricalStream, IntentEvent, IntentRow, IntentRowsQuery,
-    ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OhlcvRow, OhlcvRowsQuery, OptionTickerRow,
-    OptionTickerRowsQuery, OrderbookEvent, PerpetualTickerEvent, PointSeriesEvent, PolarisError,
-    PropammQuoteLadderEvent, QuoteRow, QuoteRowsQuery, RawCaptureRow, RawChannelQuery, RawQuery,
-    RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, SnapshotEntry, StandardEvent,
-    StreamQuery, TimeInput, TradeEvent, TradeRow, VolatilityBar, VolumeBar, VwapBar,
+    L2OrderbooksQuery, L2UpdatesQuery, ListSnapshotsQuery, OhlcvOutput, OhlcvQuery, OhlcvRow,
+    OhlcvRowsQuery, OptionTickerRow, OptionTickerRowsQuery, OrderbookL2Row, PerpetualTickerEvent,
+    PointSeriesEvent, PolarisError, PropammQuoteLadderEvent, QuoteRow, QuoteRowsQuery,
+    RawCaptureRow, RawChannelQuery, RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream,
+    ReplayQuery, SnapshotEntry, StandardEvent, StreamQuery, TimeInput, TradeEvent, TradeRow,
+    VolatilityBar, VolumeBar, VwapBar,
     replay::{LocalExactReplayIterator, LocalReplayIterator},
 };
 
 const DEFAULT_REPLAY_CHUNK_HOURS: i64 = 24;
 const HISTORICAL_CHANNEL_CAPACITY: usize = 16;
-const MATERIALIZED_BOOK_CHANNEL_CAPACITY: usize = 1;
 
 /// Configuration for persistent raw-replay caching.
 #[derive(Clone, Debug)]
@@ -367,32 +367,19 @@ impl PolarisClient {
 
     pub fn l2_snapshots(
         &self,
-        query: HistoricalQuery,
-    ) -> Result<HistoricalIterator<OrderbookEvent>, PolarisError> {
+        query: L2OrderbooksQuery,
+    ) -> Result<HistoricalIterator<OrderbookL2Row>, PolarisError> {
         let stream = self.run(self.inner.l2_snapshots(query))?;
-        Ok(self.historical_iterator(stream, MATERIALIZED_BOOK_CHANNEL_CAPACITY))
+        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 
-    /// Return raw standardized orderbook snapshots and deltas without
-    /// reconstructing complete books.
+    /// Return flat stateless source snapshots and deltas from the direct API.
     pub fn l2_updates(
         &self,
-        mut query: HistoricalQuery,
-    ) -> Result<HistoricalIterator<StandardEvent>, PolarisError> {
-        query.materialize_orderbooks = false;
-        let updates = self.events(query)?.filter_map(|event| match event {
-            Ok(event)
-                if matches!(
-                    event.event_type(),
-                    "orderbook" | "orderbook_delta" | "orderbook_snapshot" | "l2_snapshot"
-                ) =>
-            {
-                Some(Ok(event))
-            }
-            Ok(_) => None,
-            Err(error) => Some(Err(error)),
-        });
-        Ok(HistoricalIterator::direct(updates))
+        query: L2UpdatesQuery,
+    ) -> Result<HistoricalIterator<OrderbookL2Row>, PolarisError> {
+        let stream = self.run(self.inner.l2_updates(query))?;
+        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 
     pub fn bbo(&self, query: BboQuery) -> Result<HistoricalIterator<BboQuote>, PolarisError> {
