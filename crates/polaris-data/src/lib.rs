@@ -4,7 +4,6 @@ mod client;
 mod errors;
 mod http;
 mod models;
-mod ohlcv;
 mod orderbook;
 mod realtime;
 mod storage;

@@ -2,10 +2,9 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use polaris_data::{
-    BboQuery, CatalogQuery, HistoricalRowsQuery, HistoricalStream, InstrumentsQuery,
-    IntentRowsQuery, L2OrderbooksQuery, L2UpdatesQuery, OhlcvFormat, OhlcvInterval, OhlcvOutput,
-    OhlcvQuery, OhlcvRowsQuery, OptionTickerRowsQuery, PolarisClient, PolarisError, QuoteRowsQuery,
-    RawChannelQuery, blocking,
+    CatalogQuery, HistoricalRowsQuery, HistoricalStream, InstrumentsQuery, IntentRowsQuery,
+    L2OrderbooksQuery, L2UpdatesQuery, OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery,
+    OptionTickerRowsQuery, PolarisClient, PolarisError, RawChannelQuery, blocking,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -516,16 +515,7 @@ async fn direct_trades_and_funding_paginate_and_keep_nullable_fields() {
     )
     .await
     .expect("ticker rows");
-    let marks = collect_stream(
-        client
-            .mark_prices(HistoricalRowsQuery::default())
-            .await
-            .expect("marks"),
-    )
-    .await
-    .expect("mark rows");
     assert_eq!(tickers, funding);
-    assert_eq!(marks, vec![funding[0].clone()]);
     let requests = server.received_requests().await.expect("requests");
     let funding_request = requests
         .iter()
@@ -615,28 +605,10 @@ async fn raw_channel_paginates_exact_text_and_keeps_legacy_raw_separate() {
 }
 
 #[tokio::test]
-async fn direct_ohlcv_intent_and_quote_rows_keep_published_observations() {
+async fn intents_queries_direct_route_with_exact_filter() {
     let server = MockServer::start().await;
     let root = TempDir::new().expect("tempdir");
-    let client = PolarisClient::builder()
-        .base_url(server.uri())
-        .api_key("secret")
-        .dataset_root(root.path())
-        .build()
-        .expect("client");
-    Mock::given(method("GET")).and(path("/historical/ohlcv"))
-        .and(query_param("interval", "1m")).and(query_param("start", "10"))
-        .and(query_param("end", "10")).and(header("authorization", "Bearer secret"))
-        .respond_with(|request: &wiremock::Request| {
-            let second = request.url.query_pairs().any(|(key, value)| key == "cursor" && value == "next");
-            ResponseTemplate::new(200).set_body_json(json!({
-                "items": [{"event_id": if second { "c2" } else { "c1" }, "source": "binance", "market": "BTC-USDT",
-                    "collector_timestamp": 10, "source_capture_id": "capture", "schema_version": 1,
-                    "interval": "1m", "open_timestamp": 10, "open": 100.0, "high": 102.0,
-                    "low": 99.0, "close": if second { 101.0 } else { 100.0 }, "is_closed": second}],
-                "has_more": !second, "next_cursor": if second { None } else { Some("next") }
-            }))
-        }).mount(&server).await;
+    let client = build_client(&server, &root);
     Mock::given(method("GET"))
         .and(path("/historical/intents"))
         .and(query_param("intent_id", "intent-1"))
@@ -648,76 +620,22 @@ async fn direct_ohlcv_intent_and_quote_rows_keep_published_observations() {
         })))
         .mount(&server)
         .await;
-    Mock::given(method("GET")).and(path("/historical/quotes"))
-        .and(query_param("observation_id", "obs-1"))
-        .and(query_param("instrument", "pool-1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "items": [{"event_id": "q1", "source": "propamm", "market": "ethereum", "instrument": "pool-1",
-                "collector_timestamp": 10, "source_capture_id": "capture", "schema_version": 1,
-                "observation_id": "obs-1", "input_asset_id": "ETH", "input_chain_id": "1", "input_amount": "1000000000000000000",
-                "input_decimals": 18, "output_asset_id": "USDC", "output_chain_id": "1", "output_amount": "2000000",
-                "output_decimals": 6, "amount_kind": "exact_input", "block_number": 100, "block_hash": "0xblock",
-                "transaction_hash": "0xtx", "transaction_index": 0, "router": "0xrouter", "pool": null}],
-            "has_more": false, "next_cursor": null
-        }))).mount(&server).await;
 
-    let candles = collect_stream(
-        client
-            .ohlcv_rows(OhlcvRowsQuery {
-                interval: Some("1m".into()),
-                start: Some(10),
-                end: Some(10),
-                ..Default::default()
-            })
-            .await
-            .expect("ohlcv rows"),
-    )
-    .await
-    .expect("candles");
-    assert_eq!(candles.len(), 2);
-    assert_eq!(candles[0].open_timestamp, candles[1].open_timestamp);
-    assert_eq!(candles[0].is_closed, Some(false));
-    let intents = collect_stream(
-        client
-            .intent_rows(IntentRowsQuery {
-                intent_id: Some("intent-1".into()),
-                ..Default::default()
-            })
-            .await
-            .expect("intent rows"),
-    )
-    .await
-    .expect("intents");
-    assert_eq!(intents[0].input_asset_id, None);
-    let alias = collect_stream(
+    let rows = collect_stream(
         client
             .intents(IntentRowsQuery {
                 intent_id: Some("intent-1".into()),
                 ..Default::default()
             })
             .await
-            .expect("intents alias"),
+            .expect("intents"),
     )
     .await
     .expect("intent rows");
-    assert_eq!(alias, intents);
-    let quotes = collect_stream(
-        client
-            .quote_rows(QuoteRowsQuery {
-                observation_id: Some("obs-1".into()),
-                instrument: Some("pool-1".into()),
-                ..Default::default()
-            })
-            .await
-            .expect("quote rows"),
-    )
-    .await
-    .expect("quotes");
-    assert_eq!(quotes[0].input_amount, "1000000000000000000");
-    assert_eq!(quotes[0].pool, None);
+    assert_eq!(rows[0].input_asset_id, None);
     assert!(
         client
-            .intent_rows(IntentRowsQuery {
+            .intents(IntentRowsQuery {
                 intent_id: Some(" ".into()),
                 ..Default::default()
             })
@@ -846,71 +764,6 @@ async fn l2_direct_rows_page_and_accept_variable_ranges() {
 }
 
 #[tokio::test]
-async fn bbo_and_depth_use_reconstructed_orderbook_rows() {
-    let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
-    let client = build_client(&server, &root);
-    let mut first = l2_row(true);
-    let start = 1_704_067_200_000_i64;
-    first["collector_timestamp"] = json!(start);
-    first["bid_px_01"] = json!(99.5);
-    first["bid_sz_01"] = json!(3.0);
-    first["ask_px_00"] = json!(100.5);
-    first["ask_sz_00"] = json!(1.0);
-    first["ask_px_01"] = json!(101.0);
-    first["ask_sz_01"] = json!(2.0);
-    Mock::given(method("GET"))
-        .and(path("/historical/l2-orderbooks"))
-        .and(query_param("start", "1704067200000"))
-        .and(query_param("end", "1704070800000"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "items": [first], "has_more": false, "next_cursor": null
-        })))
-        .mount(&server)
-        .await;
-    let bbo = collect_stream(
-        client
-            .bbo(BboQuery {
-                source: "hyperliquid".to_owned(),
-                market: "0G".to_owned(),
-                start,
-                end: start + 3_600_000,
-                interval: None,
-            })
-            .await
-            .expect("bbo"),
-    )
-    .await
-    .expect("quotes");
-    assert_eq!(bbo.len(), 1);
-    assert_eq!(bbo[0].bid_price, 100.0);
-    assert_eq!(bbo[0].ask_price, 100.5);
-    let depth = collect_stream(
-        client
-            .depth_metrics(
-                L2OrderbooksQuery {
-                    source: "hyperliquid".to_owned(),
-                    market: "0G".to_owned(),
-                    instrument: None,
-                    start,
-                    end: start + 3_600_000,
-                },
-                Some(0.01),
-                Some(100.25),
-            )
-            .await
-            .expect("depth"),
-    )
-    .await
-    .expect("metrics");
-    assert_eq!(depth.len(), 1);
-    assert_eq!(depth[0].bid_depth_notional, 498.5);
-    assert_eq!(depth[0].ask_depth_notional, 302.5);
-    assert_eq!(depth[0].buy_average_price, Some(100.5));
-    assert_eq!(server.received_requests().await.expect("requests").len(), 2);
-}
-
-#[tokio::test]
 async fn ohlcv_returns_tradingview_output() {
     let server = MockServer::start().await;
     let root = TempDir::new().expect("tempdir");
@@ -951,22 +804,6 @@ async fn ohlcv_returns_tradingview_output() {
         }
         other => panic!("unexpected output: {other:?}"),
     }
-    let query = OhlcvQuery {
-        source: "binance".to_owned(),
-        market: "BTC-USDT".to_owned(),
-        from: Some("2024-01-01T00:00:00Z".into()),
-        to: Some("2024-01-01T01:00:00Z".into()),
-        interval: OhlcvInterval::M1,
-        format: OhlcvFormat::Bars,
-        allow_gaps: false,
-    };
-    assert_eq!(
-        client.volume(query.clone()).await.expect("volume")[0].volume,
-        2.0
-    );
-    let vwap = client.vwap(query).await.expect("vwap");
-    assert_eq!(vwap[0].vwap, Some(101.0));
-    assert_eq!(vwap[0].trades, 2);
 }
 
 #[tokio::test]

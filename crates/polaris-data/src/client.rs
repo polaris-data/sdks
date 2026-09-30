@@ -15,16 +15,14 @@ use crate::{
     errors::PolarisError,
     http::{AuthMode, HttpClient},
     models::{
-        BboQuery, BboQuote, CatalogAccess, CatalogCount, CatalogInstrument, CatalogMarket,
-        CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic, FundingRateRow,
-        HistoricalRowsQuery, HistoricalStream, InstrumentsQuery, InstrumentsResponse, IntentRow,
-        IntentRowsQuery, L2OrderbooksQuery, L2UpdatesQuery, OhlcvBar, OhlcvFormat, OhlcvOutput,
-        OhlcvQuery, OhlcvRow, OhlcvRowsQuery, OptionContract, OptionTickerRow,
-        OptionTickerRowsQuery, OrderbookL2Row, QuoteRow, QuoteRowsQuery, RawCaptureRow,
-        RawChannelQuery, RawQuery, RealtimeStream, StreamQuery, TradeRow, VolatilityBar, VolumeBar,
-        VwapBar,
+        CatalogAccess, CatalogCount, CatalogInstrument, CatalogMarket, CatalogQuery,
+        CatalogResponse, Diagnostic, FundingRateRow, HistoricalRowsQuery, HistoricalStream,
+        InstrumentsQuery, InstrumentsResponse, IntentRow, IntentRowsQuery, L2OrderbooksQuery,
+        L2UpdatesQuery, OhlcvBar, OhlcvFormat, OhlcvOutput, OhlcvQuery, OhlcvRow, OhlcvRowsQuery,
+        OptionContract, OptionTickerRow, OptionTickerRowsQuery, OrderbookL2Row, RawCaptureRow,
+        RawChannelQuery, RawQuery, RealtimeStream, StreamQuery, TradeRow,
     },
-    ohlcv, realtime,
+    realtime,
     storage::StorageLayout,
     time::{DEFAULT_INFERRED_LOOKBACK, end_of_public_cutoff_day, to_datetime, to_epoch_micros},
 };
@@ -462,14 +460,6 @@ impl PolarisClient {
         &self,
         query: IntentRowsQuery,
     ) -> Result<HistoricalStream<IntentRow>, PolarisError> {
-        self.intent_rows(query).await
-    }
-
-    /// Stream pair-shaped intent observations from the direct historical API.
-    pub async fn intent_rows(
-        &self,
-        query: IntentRowsQuery,
-    ) -> Result<HistoricalStream<IntentRow>, PolarisError> {
         let mut filters = Vec::new();
         if let Some(value) = validate_optional_filter("instrument", query.instrument)? {
             filters.push(("instrument", value));
@@ -489,8 +479,8 @@ impl PolarisClient {
         )
     }
 
-    /// Stream venue-published candle updates from the direct historical API.
-    pub async fn ohlcv_rows(
+    /// Fetch venue-published candle updates for OHLCV calculations.
+    async fn fetch_ohlcv_rows(
         &self,
         query: OhlcvRowsQuery,
     ) -> Result<HistoricalStream<OhlcvRow>, PolarisError> {
@@ -503,30 +493,6 @@ impl PolarisClient {
         }
         self.historical_rows(
             "/historical/ohlcv",
-            HistoricalRowsQuery {
-                source: query.source,
-                market: query.market,
-                start: query.start,
-                end: query.end,
-            },
-            filters,
-        )
-    }
-
-    /// Stream individual PropAMM quote points from the direct historical API.
-    pub async fn quote_rows(
-        &self,
-        query: QuoteRowsQuery,
-    ) -> Result<HistoricalStream<QuoteRow>, PolarisError> {
-        let mut filters = Vec::new();
-        if let Some(value) = validate_optional_filter("instrument", query.instrument)? {
-            filters.push(("instrument", value));
-        }
-        if let Some(value) = validate_optional_filter("observation_id", query.observation_id)? {
-            filters.push(("observation_id", value));
-        }
-        self.historical_rows(
-            "/historical/quotes",
             HistoricalRowsQuery {
                 source: query.source,
                 market: query.market,
@@ -627,7 +593,7 @@ impl PolarisClient {
             .transpose()?
             .map(|value| value.div_euclid(1_000));
         let mut rows = self
-            .ohlcv_rows(OhlcvRowsQuery {
+            .fetch_ohlcv_rows(OhlcvRowsQuery {
                 source: Some(query.source.clone()),
                 market: Some(query.market.clone()),
                 instrument: None,
@@ -869,314 +835,12 @@ impl PolarisClient {
         )
     }
 
-    /// Derive best bid / offer quotes directly from standardized orderbook updates.
-    pub async fn bbo(&self, query: BboQuery) -> Result<HistoricalStream<BboQuote>, PolarisError> {
-        self.bbo_inner(query, false).await
-    }
-
-    /// Derive only best bid / offer changes, suppressing deep and no-op updates.
-    pub async fn bbo_changes(
-        &self,
-        query: BboQuery,
-    ) -> Result<HistoricalStream<BboQuote>, PolarisError> {
-        self.bbo_inner(query, true).await
-    }
-
-    async fn bbo_inner(
-        &self,
-        query: BboQuery,
-        changes_only: bool,
-    ) -> Result<HistoricalStream<BboQuote>, PolarisError> {
-        let interval_ms = query.interval.map(ohlcv::interval_to_millis);
-        let mut rows = self
-            .l2_snapshots(L2OrderbooksQuery {
-                source: query.source,
-                market: query.market,
-                instrument: None,
-                start: query.start,
-                end: query.end,
-            })
-            .await?;
-        Ok(Box::pin(try_stream! {
-            let mut buckets = BTreeMap::<i64, BboQuote>::new();
-            let mut last_quote: Option<BboQuote> = None;
-            while let Some(row) = rows.next().await {
-                let row = row?;
-                let (Some((bid_price, bid_quantity)), Some((ask_price, ask_quantity))) =
-                    (row.bids().next(), row.asks().next()) else { continue };
-                let mut quote = BboQuote {
-                    timestamp: row.collector_timestamp,
-                    bid_price, bid_quantity, ask_price, ask_quantity,
-                };
-                if changes_only {
-                    let unchanged = last_quote.as_ref().is_some_and(|previous| {
-                        previous.bid_price == quote.bid_price
-                            && previous.bid_quantity == quote.bid_quantity
-                            && previous.ask_price == quote.ask_price
-                            && previous.ask_quantity == quote.ask_quantity
-                    });
-                    if unchanged { continue; }
-                    last_quote = Some(quote.clone());
-                }
-                let Some(width) = interval_ms else {
-                    yield quote;
-                    continue;
-                };
-                let bucket = quote.timestamp.div_euclid(width) * width;
-                quote.timestamp = bucket;
-                buckets.insert(bucket, quote);
-            }
-            for quote in buckets.into_values() { yield quote; }
-        }))
-    }
-
     /// Return partial flat funding observations from the direct historical API.
     pub async fn funding_rates(
         &self,
         query: HistoricalRowsQuery,
     ) -> Result<HistoricalStream<FundingRateRow>, PolarisError> {
         self.historical_rows("/historical/funding-rates", query, vec![])
-    }
-
-    /// Return funding-bearing observations that include a mark price.
-    pub async fn mark_prices(
-        &self,
-        query: HistoricalRowsQuery,
-    ) -> Result<HistoricalStream<FundingRateRow>, PolarisError> {
-        let mut rows = self.funding_rates(query).await?;
-        Ok(Box::pin(try_stream! {
-            while let Some(row) = rows.next().await {
-                let row = row?;
-                if row.mark_price.is_some() {
-                    yield row;
-                }
-            }
-        }))
-    }
-
-    /// Return standardized PropAMM quote-ladder records for a time range.
-    pub async fn volume(&self, query: OhlcvQuery) -> Result<Vec<VolumeBar>, PolarisError> {
-        let ohlcv_output = self.ohlcv(query).await?;
-        match ohlcv_output {
-            OhlcvOutput::Bars(bars) => Ok(bars
-                .into_iter()
-                .map(|bar| VolumeBar {
-                    timestamp: bar.timestamp,
-                    volume: bar.volume,
-                })
-                .collect()),
-            OhlcvOutput::TradingView(tv) => Ok(tv
-                .volumes
-                .into_iter()
-                .map(|v| VolumeBar {
-                    timestamp: v.time,
-                    volume: v.value,
-                })
-                .collect()),
-        }
-    }
-
-    /// Derive candle VWAP from venue-reported quote and base volume.
-    pub async fn vwap(&self, query: OhlcvQuery) -> Result<Vec<VwapBar>, PolarisError> {
-        let rows = self
-            .venue_candles(&query, Some(query.interval.as_str()))
-            .await?;
-        Ok(rows
-            .into_iter()
-            .map(|row| {
-                let volume = row.base_volume.unwrap_or_default();
-                let quote_volume = row.quote_volume.unwrap_or(row.close * volume);
-                VwapBar {
-                    timestamp: row.open_timestamp,
-                    vwap: (volume > 0.0).then_some(quote_volume / volume),
-                    volume,
-                    quote_volume,
-                    trades: row.trade_count.unwrap_or_default(),
-                }
-            })
-            .collect())
-    }
-
-    /// Estimate realized volatility from the finest available venue candle closes.
-    pub async fn volatility(&self, query: OhlcvQuery) -> Result<Vec<VolatilityBar>, PolarisError> {
-        let target = ohlcv::interval_to_millis(query.interval);
-        let mut rows = self.venue_candles(&query, None).await?;
-        let finest = rows
-            .iter()
-            .filter_map(|row| candle_interval_ms(&row.interval))
-            .filter(|width| *width < target)
-            .min();
-        let Some(finest) = finest else {
-            return Ok(Vec::new());
-        };
-        rows.retain(|row| candle_interval_ms(&row.interval) == Some(finest));
-        let mut aggregator = VolatilityAggregator::new(target);
-        for row in rows {
-            aggregator.add(row.open_timestamp, row.close);
-        }
-        Ok(aggregator.finish())
-    }
-
-    /// Derive spread, depth, imbalance, and slippage metrics from orderbooks.
-    pub async fn depth_metrics(
-        &self,
-        query: L2OrderbooksQuery,
-        depth_pct: Option<f64>,
-        slippage_notional: Option<f64>,
-    ) -> Result<HistoricalStream<DepthMetricsRow>, PolarisError> {
-        let depth_pct = depth_pct.unwrap_or(0.01);
-        let slippage_notional = slippage_notional.unwrap_or(10_000.0);
-
-        if depth_pct <= 0.0 {
-            return Err(PolarisError::InvalidResponse(
-                "depth_pct must be greater than 0".to_owned(),
-            ));
-        }
-        if slippage_notional <= 0.0 {
-            return Err(PolarisError::InvalidResponse(
-                "slippage_notional must be greater than 0".to_owned(),
-            ));
-        }
-
-        let mut rows = self.l2_snapshots(query).await?;
-        Ok(Box::pin(try_stream! {
-            while let Some(row) = rows.next().await {
-                let row = row?;
-                let bids: Vec<_> = row.bids().collect();
-                let asks: Vec<_> = row.asks().collect();
-                if let Some(metrics) = Self::derive_depth_metrics(
-                    row.collector_timestamp, &bids, &asks,
-                    depth_pct, slippage_notional,
-                ) { yield metrics; }
-            }
-        }))
-    }
-
-    fn derive_depth_metrics(
-        timestamp: i64,
-        bids: &[(f64, f64)],
-        asks: &[(f64, f64)],
-        depth_pct: f64,
-        slippage_notional: f64,
-    ) -> Option<DepthMetricsRow> {
-        let (bid_price, _bid_quantity) = *bids.first()?;
-        let (ask_price, _ask_quantity) = *asks.first()?;
-
-        if ask_price < bid_price {
-            return None;
-        }
-
-        let mid_price = (bid_price + ask_price) / 2.0;
-        let spread = ask_price - bid_price;
-        let spread_bps = if mid_price > 0.0 {
-            Some((spread / mid_price) * 10_000.0)
-        } else {
-            None
-        };
-
-        let bid_depth_notional =
-            Self::depth_notional_within_pct(bids.iter().copied(), true, mid_price, depth_pct);
-        let ask_depth_notional =
-            Self::depth_notional_within_pct(asks.iter().copied(), false, mid_price, depth_pct);
-        let total_depth_notional = bid_depth_notional + ask_depth_notional;
-        let depth_imbalance = if total_depth_notional > 0.0 {
-            Some((bid_depth_notional - ask_depth_notional) / total_depth_notional)
-        } else {
-            None
-        };
-
-        let target_base_quantity = if mid_price > 0.0 {
-            Some(slippage_notional / mid_price)
-        } else {
-            None
-        };
-
-        let (buy_avg_price, buy_slippage, buy_slippage_bps) = Self::calculate_slippage(
-            asks.iter().copied(),
-            target_base_quantity?,
-            slippage_notional,
-            mid_price,
-        );
-        let (sell_avg_price, sell_slippage, sell_slippage_bps) = Self::calculate_slippage(
-            bids.iter().copied(),
-            target_base_quantity?,
-            slippage_notional,
-            mid_price,
-        );
-
-        Some(DepthMetricsRow {
-            timestamp,
-            bid_price,
-            ask_price,
-            mid_price,
-            bid_ask_spread: spread,
-            bid_ask_spread_bps: spread_bps,
-            depth_pct,
-            bid_depth_notional,
-            ask_depth_notional,
-            depth_imbalance,
-            slippage_notional,
-            target_base_quantity,
-            buy_average_price: buy_avg_price,
-            sell_average_price: sell_avg_price,
-            buy_slippage,
-            sell_slippage,
-            buy_slippage_bps,
-            sell_slippage_bps,
-        })
-    }
-
-    fn depth_notional_within_pct(
-        levels: impl Iterator<Item = (f64, f64)>,
-        is_bid: bool,
-        mid_price: f64,
-        depth_pct: f64,
-    ) -> f64 {
-        let cutoff = if is_bid {
-            mid_price * (1.0 - depth_pct)
-        } else {
-            mid_price * (1.0 + depth_pct)
-        };
-
-        levels
-            .filter(|(price, _)| {
-                if is_bid {
-                    *price >= cutoff
-                } else {
-                    *price <= cutoff
-                }
-            })
-            .map(|(price, quantity)| price * quantity)
-            .sum()
-    }
-
-    fn calculate_slippage(
-        levels: impl Iterator<Item = (f64, f64)>,
-        target_quantity: f64,
-        slippage_notional: f64,
-        mid_price: f64,
-    ) -> (Option<f64>, Option<f64>, Option<f64>) {
-        let mut remaining_quantity = target_quantity;
-        let mut quote_total = 0.0;
-
-        for (price, available_quantity) in levels {
-            let fill_quantity = available_quantity.min(remaining_quantity);
-            quote_total += fill_quantity * price;
-            remaining_quantity -= fill_quantity;
-            if remaining_quantity <= 1e-12 {
-                break;
-            }
-        }
-
-        if remaining_quantity > 1e-12 {
-            return (None, None, None);
-        }
-
-        let avg_price = quote_total / target_quantity;
-        let slippage = (quote_total - slippage_notional).abs();
-        let slippage_bps = (((avg_price - mid_price) / mid_price) * 10_000.0).abs();
-
-        (Some(avg_price), Some(slippage), Some(slippage_bps))
     }
 }
 
@@ -1388,92 +1052,6 @@ fn stringify_nullable_field(
             "{field_name} was not a string, number, or null"
         ))),
     }
-}
-
-fn candle_interval_ms(interval: &str) -> Option<i64> {
-    match interval {
-        "100ms" => Some(100),
-        "1s" => Some(1_000),
-        "10s" => Some(10_000),
-        "1m" => Some(60_000),
-        "5m" => Some(300_000),
-        "15m" => Some(900_000),
-        "1h" => Some(3_600_000),
-        _ => None,
-    }
-}
-
-struct VolatilityAggregator {
-    interval_ms: i64,
-    points: Vec<(i64, f64)>,
-}
-
-impl VolatilityAggregator {
-    fn new(interval_ms: i64) -> Self {
-        Self {
-            interval_ms,
-            points: Vec::new(),
-        }
-    }
-
-    fn add(&mut self, timestamp: i64, price: f64) {
-        if price <= 0.0 || !price.is_finite() {
-            return;
-        }
-        self.points.push((timestamp, price));
-    }
-
-    fn finish(self) -> Vec<VolatilityBar> {
-        let mut buckets: std::collections::HashMap<i64, VolatilityBucket> =
-            std::collections::HashMap::new();
-
-        for (timestamp, price) in self.points {
-            let bucket = (timestamp / self.interval_ms) * self.interval_ms;
-            let state = buckets.entry(bucket).or_insert_with(|| VolatilityBucket {
-                timestamp: bucket,
-                returns: 0,
-                mean: 0.0,
-                m2: 0.0,
-                last_price: None,
-            });
-
-            if let Some(last_price) = state.last_price {
-                let log_return = (price / last_price).ln();
-                state.returns += 1;
-                let delta = log_return - state.mean;
-                state.mean += delta / state.returns as f64;
-                let delta2 = log_return - state.mean;
-                state.m2 += delta * delta2;
-            }
-
-            state.last_price = Some(price);
-        }
-
-        let mut result = Vec::new();
-        for state in buckets.into_values() {
-            if state.returns < 2 {
-                continue;
-            }
-
-            let variance = state.m2 / (state.returns - 1) as f64;
-            result.push(VolatilityBar {
-                timestamp: state.timestamp,
-                volatility: variance.sqrt(),
-                returns: state.returns as u64,
-            });
-        }
-
-        result.sort_by_key(|bar| bar.timestamp);
-        result
-    }
-}
-
-struct VolatilityBucket {
-    timestamp: i64,
-    returns: usize,
-    mean: f64,
-    m2: f64,
-    last_price: Option<f64>,
 }
 
 // ===========================================================================

@@ -7,12 +7,10 @@ use serde_json::Value;
 use tokio::runtime::{Handle, Runtime};
 
 use crate::{
-    BboQuery, BboQuote, CatalogCount, CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic,
-    FundingRateRow, HistoricalRowsQuery, HistoricalStream, IntentRow, IntentRowsQuery,
-    L2OrderbooksQuery, L2UpdatesQuery, OhlcvOutput, OhlcvQuery, OhlcvRow, OhlcvRowsQuery,
-    OptionTickerRow, OptionTickerRowsQuery, OrderbookL2Row, PolarisError, QuoteRow, QuoteRowsQuery,
+    CatalogCount, CatalogQuery, CatalogResponse, Diagnostic, FundingRateRow, HistoricalRowsQuery,
+    HistoricalStream, IntentRow, IntentRowsQuery, L2OrderbooksQuery, L2UpdatesQuery, OhlcvOutput,
+    OhlcvQuery, OptionTickerRow, OptionTickerRowsQuery, OrderbookL2Row, PolarisError,
     RawCaptureRow, RawChannelQuery, RawQuery, RealtimeStream, StandardEvent, StreamQuery, TradeRow,
-    VolatilityBar, VolumeBar, VwapBar,
 };
 
 const HISTORICAL_CHANNEL_CAPACITY: usize = 16;
@@ -171,30 +169,6 @@ impl PolarisClient {
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 
-    pub fn intent_rows(
-        &self,
-        query: IntentRowsQuery,
-    ) -> Result<HistoricalIterator<IntentRow>, PolarisError> {
-        let stream = self.run(self.inner.intent_rows(query))?;
-        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
-    }
-
-    pub fn ohlcv_rows(
-        &self,
-        query: OhlcvRowsQuery,
-    ) -> Result<HistoricalIterator<OhlcvRow>, PolarisError> {
-        let stream = self.run(self.inner.ohlcv_rows(query))?;
-        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
-    }
-
-    pub fn quote_rows(
-        &self,
-        query: QuoteRowsQuery,
-    ) -> Result<HistoricalIterator<QuoteRow>, PolarisError> {
-        let stream = self.run(self.inner.quote_rows(query))?;
-        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
-    }
-
     pub fn option_tickers(
         &self,
         query: OptionTickerRowsQuery,
@@ -253,57 +227,11 @@ impl PolarisClient {
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 
-    pub fn bbo(&self, query: BboQuery) -> Result<HistoricalIterator<BboQuote>, PolarisError> {
-        let stream = self.run(self.inner.bbo(query))?;
-        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
-    }
-
-    pub fn bbo_changes(
-        &self,
-        query: BboQuery,
-    ) -> Result<HistoricalIterator<BboQuote>, PolarisError> {
-        let stream = self.run(self.inner.bbo_changes(query))?;
-        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
-    }
-
     pub fn funding_rates(
         &self,
         query: HistoricalRowsQuery,
     ) -> Result<HistoricalIterator<FundingRateRow>, PolarisError> {
         let stream = self.run(self.inner.funding_rates(query))?;
-        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
-    }
-
-    pub fn mark_prices(
-        &self,
-        query: HistoricalRowsQuery,
-    ) -> Result<HistoricalIterator<FundingRateRow>, PolarisError> {
-        let stream = self.run(self.inner.mark_prices(query))?;
-        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
-    }
-
-    pub fn volume(&self, query: OhlcvQuery) -> Result<Vec<VolumeBar>, PolarisError> {
-        self.run(self.inner.volume(query))
-    }
-
-    pub fn vwap(&self, query: OhlcvQuery) -> Result<Vec<VwapBar>, PolarisError> {
-        self.run(self.inner.vwap(query))
-    }
-
-    pub fn volatility(&self, query: OhlcvQuery) -> Result<Vec<VolatilityBar>, PolarisError> {
-        self.run(self.inner.volatility(query))
-    }
-
-    pub fn depth_metrics(
-        &self,
-        query: L2OrderbooksQuery,
-        depth_pct: Option<f64>,
-        slippage_notional: Option<f64>,
-    ) -> Result<HistoricalIterator<DepthMetricsRow>, PolarisError> {
-        let stream = self.run(
-            self.inner
-                .depth_metrics(query, depth_pct, slippage_notional),
-        )?;
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 
