@@ -59,26 +59,23 @@ All direct historical methods fetch every cursor page. Their `start` and `end` f
 | `option_tickers` | `optionTickers` | `/historical/option-tickers` | Flat option observations; optional exact `instrument` |
 | `funding_rates` | `fundingRates` | `/historical/funding-rates` | Flat partial funding observations with nullable fields |
 | `perpetual_tickers` | `perpetualTickers` | `/historical/funding-rates` | Funding-bearing observations; not a complete ticker stream |
-| `mark_prices` | `markPrices` | `/historical/funding-rates` | Funding observations with a present `mark_price`; not a complete mark stream |
-| `ohlcv_rows` | `ohlcvRows` | `/historical/ohlcv` | Each venue candle update, including revisions |
-| `intent_rows`, `intents` | `intentRows`, `intents` | `/historical/intents` | Single input/output asset observations |
-| `quote_rows` | `quoteRows` | `/historical/quotes` | Individual quote observations |
+| `intents` | `intents` | `/historical/intents` | Single input/output asset observations |
 | `l2_updates` | `l2Updates` | `/historical/l2-updates` | Flat source snapshots and sparse deltas |
 | `l2_snapshots` | `l2Snapshots` | `/historical/l2-orderbooks` | Reconstructed, sorted top-25 books after each update |
-| `bbo`, `bbo_changes` (Rust) | `bbo` | `/historical/l2-orderbooks` | Quotes derived from reconstructed books |
-| `depth_metrics` | `depthMetrics` | `/historical/l2-orderbooks` | Metrics from the available top-25 levels |
-| `ohlcv`, `volume`, `vwap`, `volatility` | Same names, plus `ohlcvTradingView` | `/historical/ohlcv` | Aggregates from venue candle updates |
+| `ohlcv` | `ohlcv`, `ohlcvTradingView` | `/historical/ohlcv` | Bars from venue candle updates |
 | `raw_channel` | `rawChannel` | `/raw/{exchange}/{event}` | Exact venue-native capture text |
 
 Python returns iterators by default and supports Arrow batches or Pandas DataFrames on methods with an `output` option. Rust uses async streams and also offers a blocking facade. TypeScript returns arrays. `catalog`, `count`, `instruments`, `health`, and realtime `stream` remain available. Rust and Python retain the older source/market `raw` method separately from `raw_channel`.
 
-`l2_snapshots` refers to reconstructed L2 books, not the removed `/snapshots` API. Its `source`, `market`, `start`, and `end` inputs are required. The book rows contain at most 25 levels per side, so depth calculations use only those levels. `OrderbookBuilder` still accepts realtime event envelopes.
+`l2_snapshots` refers to reconstructed L2 books, not the removed `/snapshots` API. Its `source`, `market`, `start`, and `end` inputs are required. The book rows contain at most 25 levels per side. `OrderbookBuilder` still accepts realtime event envelopes.
 
 ## Breaking changes
 
 The SDKs no longer expose `events`, `replay`, `list_snapshots` / `listSnapshots`, or the snapshot-backed `propamm_quote_ladders` / `propammQuoteLadders`. TypeScript also removes `getSnapshotDownloadUrls`. Rust and Python remove their cross-channel `raw_replay` variants; Python's `replay(standard=False)` disappears with `replay`. The channel-specific `raw_channel` / `rawChannel` method remains.
 
-Use the matching direct historical method for flat rows, `quote_rows` / `quoteRows` for individual PropAMM quotes, and `raw_channel` / `rawChannel` for exact raw captures. Full standardized event replay and complete PropAMM quote ladders have no replacement method yet. These SDKs no longer call `/snapshots` or `/download`.
+Use the matching direct historical method for flat rows and `raw_channel` / `rawChannel` for exact raw captures. Full standardized event replay and PropAMM quote methods have no replacement yet. These SDKs no longer call `/snapshots` or `/download`.
+
+The clients also remove `bbo`, Rust `bbo_changes`, `depth_metrics` / `depthMetrics`, `intent_rows` / `intentRows`, `ohlcv_rows` / `ohlcvRows`, `quote_rows` / `quoteRows`, `volume`, `vwap`, `volatility`, and `mark_prices` / `markPrices`. These methods may return in a later release.
 
 The snapshot-backed methods' `allow_gaps` and local replay cache options are removed. TypeScript also removes `datasetRoot`, `storage`, and `snapshotDownloadConcurrency` constructor options because historical requests no longer use local snapshot storage. Python removes `replay_cache_enabled` and `replay_cache_dir` constructor options.
 
