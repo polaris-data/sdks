@@ -529,6 +529,7 @@ def test_raw_channel_pages_exact_captures(tmp_path) -> None:
         assert request.url.path == "/raw"
         assert request.url.params["source"] == "binance"
         assert request.url.params["channel"] == "trades"
+        assert request.url.params["market"] == "BTC-USDT"
         assert request.url.params["start"] == "1970-01-01T00:00:00.010Z"
         assert request.url.params["end"] == "1970-01-01T00:00:00.010Z"
         assert request.url.params["limit"] == "1000"
@@ -541,7 +542,7 @@ def test_raw_channel_pages_exact_captures(tmp_path) -> None:
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        rows = list(client.raw_channel(exchange="binance", event="trades", start=10, end=10))
+        rows = list(client.raw_channel(exchange="binance", event="trades", start=10, end=10, market="BTC-USDT"))
         assert [row["capture_id"] for row in rows] == ["c1", "c2"]
         assert rows[0]["original_json"] == '{ "price": 1.0 }'
         assert rows[0]["raw_table"] == "raw.binance_trades"
@@ -619,6 +620,7 @@ def test_raw_paginates() -> None:
         assert request.url.path == "/raw"
         assert request.url.params["source"] == "binance"
         assert request.url.params["market"] == "BTC-USDT"
+        assert request.url.params["channel"] == "trades"
         assert request.url.params["start"] == "2024-01-01T00:00:00Z"
         assert request.url.params["end"] == "2024-01-01T01:00:00Z"
         assert "format" not in request.url.params
@@ -647,6 +649,7 @@ def test_raw_paginates() -> None:
         assert client.raw(
             source="binance",
             market="BTC-USDT",
+            channel="trades",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-01T01:00:00Z",
             limit=1,
@@ -660,7 +663,8 @@ def test_raw_uses_paged_json_without_file_export() -> None:
         assert request.url.path == "/raw"
         assert "format" not in request.url.params
         assert request.url.params.get("source") == "binance"
-        assert request.url.params.get("market") == "BTC-USDT"
+        assert "market" not in request.url.params
+        assert "channel" not in request.url.params
         return httpx.Response(200, json={
             "data": [{"raw_table": "raw.binance_trades", "capture_id": "42"}],
             "has_more": False,
@@ -671,7 +675,6 @@ def test_raw_uses_paged_json_without_file_export() -> None:
     try:
         assert client.raw(
             source="binance",
-            market="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-01T01:00:00Z",
         ) == [{"raw_table": "raw.binance_trades", "capture_id": "42"}]

@@ -420,21 +420,23 @@ impl NativeClient {
         ))
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, limit=1000))]
+    #[pyo3(signature = (source, market=None, from_=None, to=None, limit=1000, channel=None))]
     fn raw<'py>(
         &self,
         py: Python<'py>,
         source: String,
-        market: String,
+        market: Option<String>,
         from_: Option<String>,
         to: Option<String>,
         limit: usize,
+        channel: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let result = py
             .detach(|| {
                 self.inner.raw(RawQuery {
                     source,
                     market,
+                    channel,
                     from: time_input(from_),
                     to: time_input(to),
                     limit,
@@ -444,7 +446,7 @@ impl NativeClient {
         to_python(py, &result)
     }
 
-    #[pyo3(signature = (exchange, event, start, end))]
+    #[pyo3(signature = (exchange, event, start, end, market=None))]
     fn raw_channel(
         &self,
         py: Python<'_>,
@@ -452,12 +454,14 @@ impl NativeClient {
         event: String,
         start: i64,
         end: i64,
+        market: Option<String>,
     ) -> PyResult<NativeHistorical> {
         let iterator = py
             .detach(|| {
                 self.inner.raw_channel(RawChannelQuery {
                     exchange,
                     event,
+                    market,
                     start,
                     end,
                 })

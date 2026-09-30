@@ -251,10 +251,11 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
     assert _parameters(PolarisClient.raw) == [
         ("self", positional, required),
         ("source", keyword_only, required),
-        ("market", keyword_only, required),
+        ("market", keyword_only, None),
         ("from_", keyword_only, None),
         ("to", keyword_only, None),
         ("limit", keyword_only, 1000),
+        ("channel", keyword_only, None),
     ]
     assert _parameters(PolarisClient.raw_channel) == [
         ("self", positional, required),
@@ -262,6 +263,7 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("event", keyword_only, required),
         ("start", keyword_only, required),
         ("end", keyword_only, required),
+        ("market", keyword_only, None),
     ]
     assert _parameters(PolarisClient.ohlcv) == [
         ("self", positional, required),

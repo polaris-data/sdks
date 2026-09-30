@@ -543,12 +543,13 @@ class PolarisClient:
         self,
         *,
         source: str,
-        market: str,
+        market: str | None = None,
         from_: TimeInput | None = None,
         to: TimeInput | None = None,
         limit: int = 1000,
+        channel: str | None = None,
     ) -> list[JSONDict]:
-        """Read paged raw captures; omitted bounds use a recent seven-day window."""
+        """Read paged raw captures with optional exact market and channel filters."""
         if limit <= 0:
             raise ValueError("limit must be > 0")
         return self._call(
@@ -558,6 +559,7 @@ class PolarisClient:
             self._time(from_),
             self._time(to),
             limit,
+            channel,
         )
 
     def raw_channel(
@@ -567,6 +569,7 @@ class PolarisClient:
         event: str,
         start: int,
         end: int,
+        market: str | None = None,
     ) -> Iterator[RawCaptureRow]:
         """Iterate exact raw captures for one venue-native channel via `/raw`."""
         if not exchange.strip() or not event.strip() or exchange in {".", ".."} or event in {".", ".."}:
@@ -576,7 +579,7 @@ class PolarisClient:
                 raise TypeError(f"{name} must be an integer Unix millisecond timestamp")
         if start < 0 or end < start:
             raise ValueError("start and end must be non-negative inclusive milliseconds with start <= end")
-        iterator = self._call("raw_channel", exchange, event, start, end)
+        iterator = self._call("raw_channel", exchange, event, start, end, market)
         return self._iterate(iterator, "raw_channel")
 
     def l2_snapshots(
