@@ -509,6 +509,7 @@ class PolarisClient:
         to: TimeInput | None = None,
         limit: int = 1000,
     ) -> list[JSONDict]:
+        """Read paged raw captures; omitted bounds use a recent seven-day window."""
         if limit <= 0:
             raise ValueError("limit must be > 0")
         return self._call(
@@ -528,7 +529,7 @@ class PolarisClient:
         start: int,
         end: int,
     ) -> Iterator[RawCaptureRow]:
-        """Iterate exact raw captures for one venue-native channel."""
+        """Iterate exact raw captures for one venue-native channel via `/raw`."""
         if not exchange.strip() or not event.strip() or exchange in {".", ".."} or event in {".", ".."}:
             raise ValueError("exchange and event must be non-empty channel identifiers")
         for name, value in (("start", start), ("end", end)):

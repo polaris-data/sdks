@@ -524,6 +524,7 @@ class QuoteRow(_QuoteRowRequired, total=False):
 
 
 class RawCaptureRow(TypedDict):
+    raw_table: str
     capture_id: str
     collector_timestamp: int
     recorder_version: str

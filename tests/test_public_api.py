@@ -343,6 +343,7 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
     assert get_type_hints(OptionTickerRow)["instrument"] is str
     assert get_type_hints(FundingRateRow)["funding_rate"] == str | None
     assert get_type_hints(RawCaptureRow)["original_json"] is str
+    assert get_type_hints(RawCaptureRow)["raw_table"] is str
     assert get_type_hints(OptionTickerData)["option_type"] == Literal["call", "put"]
     assert get_type_hints(PerpetualTickerData)["funding_timestamp"] is int
     assert get_type_hints(PerpetualTickerEventV2)["data"] is PerpetualTickerData

@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import httpx
 import pytest
-import zstandard as zstd
 
 from polaris_data import OrderbookBuilder, PolarisClient
 from polaris_data.errors import (
@@ -17,14 +16,6 @@ from polaris_data.errors import (
     RateLimitedError,
     UnauthorizedError,
 )
-
-
-def _zstd_ndjson(rows: list[dict]) -> bytes:
-    ndjson = b"".join(
-        f"{json.dumps(row, separators=(',', ':'), ensure_ascii=True)}\n".encode("utf-8")
-        for row in rows
-    )
-    return zstd.ZstdCompressor().compress(ndjson)
 
 
 def make_client(
@@ -82,63 +73,6 @@ def make_client(
 
     client.close = close
     return client
-
-
-def _catalog_payload(
-    *,
-    source: str = "binance",
-    market: str = "BTC-USDT",
-    start: str,
-    end: str,
-    access_status: str = "open",
-    public_cutoff_date: str | None = None,
-    flattened: bool = True,
-) -> dict:
-    access: dict[str, str] = {"status": access_status}
-    if public_cutoff_date is not None:
-        access["public_cutoff_date"] = public_cutoff_date
-
-    market_entry = {
-        "source": source,
-        "market": market,
-        "start": start,
-        "end": end,
-        "source_type": "manifest",
-        "categories": ["perp"],
-        "access": access,
-        "instrument": {
-            "base": "BTC",
-            "quote": "USDT",
-            "tick_size": "0.1",
-            "lot_size": "0.001",
-            "min_notional": "10",
-        },
-    }
-
-    if flattened:
-        return {
-            "markets": [market_entry],
-            "updatedAt": "2026-05-19T10:28:00.000Z",
-        }
-
-    return {
-        "sources": [
-            {
-                "id": source,
-                "markets": [
-                    {
-                        "id": market,
-                        "start": start,
-                        "end": end,
-                        "source": "manifest",
-                        "categories": ["perp"],
-                        "access": access,
-                    }
-                ],
-            }
-        ],
-        "updatedAt": "2026-05-19T10:28:00.000Z",
-    }
 
 
 def _ts(iso8601: str) -> int:
@@ -305,102 +239,63 @@ def test_count_returns_catalog_totals() -> None:
         client.close()
 
 
-def test_raw_infers_last_7_days_from_catalog_for_open_dataset() -> None:
-    rows = [{"timestamp": _ts("2024-01-09T12:00:00Z"), "payload": "ok"}]
-
+@pytest.mark.parametrize(
+    ("api_key", "window"),
+    [(None, timedelta(days=7) - timedelta(minutes=1)),
+     ("polaris_key_test", timedelta(days=7))],
+)
+def test_raw_defaults_to_the_latest_seven_days_without_catalog(api_key, window) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/catalog":
-            assert request.url.params.get("source") == "binance"
-            assert request.url.params.get("market") == "BTC-USDT"
-            return httpx.Response(
-                200,
-                json=_catalog_payload(
-                    start="2024-01-01T00:00:00Z",
-                    end="2024-01-10T00:00:00Z",
-                ),
-            )
-        if request.url.path == "/raw":
-            assert request.url.params.get("from") == "2024-01-03T00:00:00Z"
-            assert request.url.params.get("to") == "2024-01-10T00:00:00Z"
-            assert request.url.params.get("format") == "file"
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(rows),
-                headers={"content-type": "application/zstd"},
-            )
-        raise AssertionError(f"unexpected request: {request.url}")
+        assert request.url.path == "/raw"
+        assert request.url.params["source"] == "binance"
+        assert request.url.params["market"] == "BTC-USDT"
+        start = datetime.fromisoformat(request.url.params["start"].replace("Z", "+00:00"))
+        end = datetime.fromisoformat(request.url.params["end"].replace("Z", "+00:00"))
+        assert end - start == window
+        assert abs((datetime.now(timezone.utc) - end).total_seconds()) < 5
+        assert request.headers.get("authorization") == (
+            None if api_key is None else "Bearer polaris_key_test"
+        )
+        return httpx.Response(200, json={"data": [], "has_more": False, "next_cursor": None})
 
-    client = make_client(handler)
+    client = make_client(handler, api_key=api_key)
     try:
-        assert client.raw(source="binance", market="BTC-USDT") == rows
+        assert client.raw(source="binance", market="BTC-USDT") == []
     finally:
         client.close()
 
 
-def test_raw_infers_bounded_range_when_dataset_is_shorter_than_7_days() -> None:
-    rows = [{"timestamp": _ts("2024-01-09T12:00:00Z"), "payload": "ok"}]
-
+@pytest.mark.parametrize(
+    ("from_", "to", "start", "end"),
+    [
+        ("2024-01-01T00:00:00Z", None, "2024-01-01T00:00:00Z", "2024-01-08T00:00:00Z"),
+        (None, "2024-01-10T00:00:00Z", "2024-01-03T00:00:00Z", "2024-01-10T00:00:00Z"),
+        ("2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z"),
+    ],
+)
+def test_raw_infers_one_bound_and_accepts_inclusive_equal_bounds(from_, to, start, end) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/catalog":
-            return httpx.Response(
-                200,
-                json=_catalog_payload(
-                    start="2024-01-08T00:00:00Z",
-                    end="2024-01-10T00:00:00Z",
-                ),
-            )
-        if request.url.path == "/raw":
-            assert request.url.params.get("from") == "2024-01-08T00:00:00Z"
-            assert request.url.params.get("to") == "2024-01-10T00:00:00Z"
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(rows),
-                headers={"content-type": "application/zstd"},
-            )
-        raise AssertionError(f"unexpected request: {request.url}")
+        assert request.url.path == "/raw"
+        assert request.url.params["start"] == start
+        assert request.url.params["end"] == end
+        return httpx.Response(200, json={"data": [], "has_more": False, "next_cursor": None})
 
     client = make_client(handler)
     try:
-        assert client.raw(source="binance", market="BTC-USDT") == rows
+        assert client.raw(source="binance", market="BTC-USDT", from_=from_, to=to) == []
     finally:
         client.close()
 
 
-def test_raw_rejects_legacy_catalog_shape() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/catalog":
-            return httpx.Response(
-                200,
-                json=_catalog_payload(
-                    start="2024-01-01T00:00:00Z",
-                    end="2024-01-10T00:00:00Z",
-                    flattened=False,
-                ),
-            )
-        if request.url.path == "/raw":
-            raise AssertionError(
-                "raw endpoint should not be called for legacy catalog shape"
-            )
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = make_client(handler)
-    try:
-        with pytest.raises(
-            PolarisError,
-            match="Catalog response did not include market metadata needed",
-        ):
-            client.raw(source="binance", market="BTC-USDT")
-    finally:
-        client.close()
-
-
-def test_unauthorized_raw_requires_api_key_before_request() -> None:
+def test_older_raw_range_maps_server_authentication_error() -> None:
     called = False
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal called
         called = True
-        return httpx.Response(500)
+        assert request.url.path == "/raw"
+        assert "authorization" not in request.headers
+        return httpx.Response(401, json={"error": "API key required for older raw history"})
 
     client = make_client(handler, api_key=None)
     try:
@@ -411,7 +306,7 @@ def test_unauthorized_raw_requires_api_key_before_request() -> None:
                 from_="2024-01-01T00:00:00Z",
                 to="2024-01-01T01:00:00Z",
             )
-        assert called is False
+        assert called is True
     finally:
         client.close()
 
@@ -435,10 +330,6 @@ def test_rate_limited_error_maps_reset_at(tmp_path) -> None:
         assert exc_info.value.reset_at == "2026-05-01T00:00:00.000Z"
     finally:
         client.close()
-
-
-
-
 
 
 def test_ohlcv_rejects_stale_parquet_format() -> None:
@@ -483,14 +374,14 @@ def test_l2_direct_routes_paginate_and_keep_nullable_levels(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
         assert request.headers["authorization"] == "Bearer polaris_key_test"
-        if request.url.path == "/historical/l2-updates":
+        if request.url.path == "/l2-updates":
             second = "cursor" in request.url.params
             return httpx.Response(200, json={
                 "items": [delta if second else snapshot],
                 "has_more": not second,
                 "next_cursor": None if second else "next",
             })
-        assert request.url.path == "/historical/l2-orderbooks"
+        assert request.url.path == "/l2-orderbooks"
         return httpx.Response(200, json={"items": [delta], "has_more": False, "next_cursor": None})
 
     client = make_client(handler, dataset_root=tmp_path)
@@ -527,16 +418,16 @@ def test_direct_historical_rows_paginate_filter_and_keep_nullable_fields(tmp_pat
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
-        if request.url.path == "/historical/trades":
+        if request.url.path == "/trades":
             next_page = request.url.params.get("cursor") == "next"
             return httpx.Response(200, json={
                 "items": [{**trade, "event_id": "t2" if next_page else "t1"}],
                 "has_more": not next_page,
                 "next_cursor": None if next_page else "next",
             })
-        if request.url.path == "/historical/options-ticker":
+        if request.url.path == "/options-ticker":
             return httpx.Response(200, json={"items": [option], "has_more": False, "next_cursor": None})
-        if request.url.path == "/historical/funding-rates":
+        if request.url.path in {"/funding-rates", "/perpetual-ticker"}:
             return httpx.Response(200, json={"items": [funding, funding_without_mark], "has_more": False, "next_cursor": None})
         raise AssertionError(f"unexpected request: {request.url}")
 
@@ -559,6 +450,7 @@ def test_direct_historical_rows_paginate_filter_and_keep_nullable_fields(tmp_pat
         assert len(funding_rows) == 2
         assert all(funding_rows[0][key] == value for key, value in funding.items())
         assert list(client.perpetual_tickers()) == funding_rows
+        assert calls[4].url.path == "/perpetual-ticker"
         assert "start" not in calls[3].url.params
         assert "end" not in calls[3].url.params
         with pytest.raises(ValueError, match="instrument must be non-empty"):
@@ -569,7 +461,7 @@ def test_direct_historical_rows_paginate_filter_and_keep_nullable_fields(tmp_pat
 
 def test_direct_historical_older_range_maps_missing_authentication(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/historical/trades"
+        assert request.url.path == "/trades"
         assert request.url.params["start"] == "1704067200000"
         assert "authorization" not in request.headers
         return httpx.Response(401, json={"error": "API key required for older history"})
@@ -585,6 +477,7 @@ def test_direct_historical_older_range_maps_missing_authentication(tmp_path) -> 
 def test_raw_channel_pages_exact_captures(tmp_path) -> None:
     calls: list[httpx.Request] = []
     capture = {
+        "raw_table": "raw.binance_trades",
         "capture_id": "c1", "collector_timestamp": 10, "recorder_version": "v1",
         "ingested_at": 11, "additional_context": {"channel": "trades"},
         "original_json": '{ "price": 1.0 }',
@@ -592,13 +485,15 @@ def test_raw_channel_pages_exact_captures(tmp_path) -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
-        assert request.url.path == "/raw/binance/trades"
-        assert request.url.params["start"] == "10"
-        assert request.url.params["end"] == "10"
+        assert request.url.path == "/raw"
+        assert request.url.params["source"] == "binance"
+        assert request.url.params["channel"] == "trades"
+        assert request.url.params["start"] == "1970-01-01T00:00:00.010Z"
+        assert request.url.params["end"] == "1970-01-01T00:00:00.010Z"
         assert request.url.params["limit"] == "1000"
         next_page = request.url.params.get("cursor") == "next"
         return httpx.Response(200, json={
-            "items": [{**capture, "capture_id": "c2" if next_page else "c1"}],
+            "data": [{**capture, "capture_id": "c2" if next_page else "c1"}],
             "has_more": not next_page,
             "next_cursor": None if next_page else "next",
         })
@@ -608,6 +503,7 @@ def test_raw_channel_pages_exact_captures(tmp_path) -> None:
         rows = list(client.raw_channel(exchange="binance", event="trades", start=10, end=10))
         assert [row["capture_id"] for row in rows] == ["c1", "c2"]
         assert rows[0]["original_json"] == '{ "price": 1.0 }'
+        assert rows[0]["raw_table"] == "raw.binance_trades"
         assert rows[0]["additional_context"] == {"channel": "trades"}
         assert calls[0].headers["authorization"] == "Bearer polaris_key_test"
         assert calls[1].url.params["cursor"] == "next"
@@ -625,7 +521,7 @@ def test_intents_queries_direct_route_with_exact_filter(tmp_path) -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
-        assert request.url.path == "/historical/intents"
+        assert request.url.path == "/intents"
         return httpx.Response(200, json={"items": [intent], "has_more": False, "next_cursor": None})
 
     client = make_client(handler, dataset_root=tmp_path)
@@ -659,7 +555,7 @@ def test_venue_candle_aggregates_use_latest_revision_and_reported_volumes(tmp_pa
             for i, price in enumerate(closes)]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/historical/ohlcv"
+        assert request.url.path == "/ohlcv"
         assert request.url.params["source"] == "binance"
         assert request.url.params["start"] == str(start)
         assert request.url.params["end"] == str(start + 60_000)
@@ -682,19 +578,14 @@ def test_venue_candle_aggregates_use_latest_revision_and_reported_volumes(tmp_pa
         client.close()
 
 
-
-
-
-
-
-
-
-
-
-
 def test_raw_paginates() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/raw"
+        assert request.url.params["source"] == "binance"
+        assert request.url.params["market"] == "BTC-USDT"
+        assert request.url.params["start"] == "2024-01-01T00:00:00Z"
+        assert request.url.params["end"] == "2024-01-01T01:00:00Z"
+        assert "format" not in request.url.params
         cursor = request.url.params.get("cursor")
         if cursor is None:
             return httpx.Response(
@@ -728,17 +619,17 @@ def test_raw_paginates() -> None:
         client.close()
 
 
-def test_raw_uses_file_export_by_default() -> None:
+def test_raw_uses_paged_json_without_file_export() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/raw"
-        assert request.url.params.get("format") == "file"
+        assert "format" not in request.url.params
         assert request.url.params.get("source") == "binance"
         assert request.url.params.get("market") == "BTC-USDT"
-        return httpx.Response(
-            200,
-            content=_zstd_ndjson([{"exchange_payload": {"id": 42}}]),
-            headers={"content-type": "application/zstd"},
-        )
+        return httpx.Response(200, json={
+            "data": [{"raw_table": "raw.binance_trades", "capture_id": "42"}],
+            "has_more": False,
+            "next_cursor": None,
+        })
 
     client = make_client(handler)
     try:
@@ -747,7 +638,7 @@ def test_raw_uses_file_export_by_default() -> None:
             market="BTC-USDT",
             from_="2024-01-01T00:00:00Z",
             to="2024-01-01T01:00:00Z",
-        ) == [{"exchange_payload": {"id": 42}}]
+        ) == [{"raw_table": "raw.binance_trades", "capture_id": "42"}]
     finally:
         client.close()
 
