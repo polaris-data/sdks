@@ -64,10 +64,10 @@ All direct historical methods fetch every cursor page. Their `start` and `end` f
 | `l2_updates` | `l2Updates` | `/l2-updates` | Flat source snapshots and sparse deltas |
 | `l2_snapshots` | `l2Snapshots` | `/l2-orderbooks` | Reconstructed, sorted top-25 books after each update |
 | `ohlcv` | `ohlcv` | `/ohlcv` | Every venue-published candle update as a flat row |
-| `raw` | — | `/raw` | Paged raw captures across channels for a source and market |
-| `raw_channel` | `rawChannel` | `/raw` with `channel` | Exact captures from one native channel |
+| `raw` | `raw` | `/raw` | Paged raw captures for a source; optional exact `market` and `channel` |
+| `raw_channel` | `rawChannel` | `/raw` with `channel` | Exact captures from one native channel; optional `market` |
 
-Python returns iterators by default and supports Arrow batches or Pandas DataFrames on methods with an `output` option. Rust uses async streams and also offers a blocking facade. TypeScript returns arrays. `catalog`, `count`, `instruments`, `health`, and realtime `stream` remain available. Rust and Python offer `raw` for a source and market, while all three SDKs offer `raw_channel` / `rawChannel` for one channel. Both use the paged JSON `/raw` route. The `raw` method infers a recent seven-day window when bounds are omitted, leaving a one-minute margin inside the public cutoff for anonymous requests. Raw responses include `raw_table`; the SDKs convert raw-channel millisecond bounds to the API's ISO date-time parameters. Recent raw history is public, while older ranges may require an API key.
+Python returns iterators by default and supports Arrow batches or Pandas DataFrames on methods with an `output` option. Rust uses async streams and also offers a blocking facade. TypeScript returns arrays. `catalog`, `count`, `instruments`, `health`, and realtime `stream` remain available. All three SDKs offer `raw` for a source with optional `market` and `channel` filters, plus `raw_channel` / `rawChannel` as a channel-specific convenience. Both use the paged JSON `/raw` route. Rust and Python infer a recent seven-day window when `raw` bounds are omitted, leaving a one-minute margin inside the public cutoff for anonymous requests; TypeScript requires inclusive millisecond `start` and `end`. The SDKs send RFC 3339 time query parameters. The `market` filter matches the capture's recorded `additional_context.market` exactly; it does not search `original_json`. Raw responses include `raw_table`. Recent raw history is public, while older ranges may require an API key.
 
 `ohlcv` uses optional `source`, `market`, `instrument`, `interval`, `start`, and `end` filters. Its inclusive bounds refer to candle open time. It preserves every published revision, so multiple rows can share an `open_timestamp`. TypeScript's `ohlcvTradingView` remains a derived latest-revision view.
 
@@ -77,9 +77,11 @@ Python returns iterators by default and supports Arrow batches or Pandas DataFra
 
 The SDKs no longer expose `replay`, `list_snapshots` / `listSnapshots`, or the snapshot-backed `propamm_quote_ladders` / `propammQuoteLadders`. TypeScript also removes `getSnapshotDownloadUrls`. Rust and Python remove their cross-channel `raw_replay` variants; Python's `replay(standard=False)` disappears with `replay`. The channel-specific `raw_channel` / `rawChannel` method remains.
 
-Use the matching direct data method for flat rows and `raw_channel` / `rawChannel` for exact raw captures. The new `events` method requires an API key and inclusive `start` and `end` collector timestamps in Unix milliseconds. It returns mixed flat rows with typed `data`, not the former snapshot event envelopes. The API also has `/quotes`, which these SDKs do not yet wrap. These SDKs no longer call `/snapshots` or `/download`.
+Use the matching direct data method for flat rows and `raw` or `raw_channel` / `rawChannel` for exact raw captures. The new `events` method requires an API key and inclusive `start` and `end` collector timestamps in Unix milliseconds. It returns mixed flat rows with typed `data`, not the former snapshot event envelopes. The API also has `/quotes`, which these SDKs do not yet wrap. These SDKs no longer call `/snapshots` or `/download`.
 
 The API moved data routes from `/historical/*` to top-level paths. The old routes no longer work. It also replaced `/raw/{exchange}/{event}` with `/raw?source=...&channel=...`; raw responses now include `raw_table`, and the server supports paged JSON rather than file export.
+
+Rust `RawQuery.market` is now optional and `RawQuery.channel` is new; `RawChannelQuery.market` is also optional. Python `raw(market=...)` is optional and accepts `channel=...`. TypeScript adds `raw()` with required inclusive millisecond bounds. Existing channel-specific methods also accept an optional exact market filter.
 
 The clients also remove `bbo`, Rust `bbo_changes`, `depth_metrics` / `depthMetrics`, `intent_rows` / `intentRows`, `ohlcv_rows` / `ohlcvRows`, `quote_rows` / `quoteRows`, `volume`, `vwap`, `volatility`, and `mark_prices` / `markPrices`. These methods may return in a later release.
 
