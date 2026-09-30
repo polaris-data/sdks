@@ -1,7 +1,5 @@
 import type {
   AuthMode,
-  BboQuote,
-  BboOptions,
   CatalogCount,
   CatalogInstrument,
   CatalogMarket,
@@ -10,16 +8,11 @@ import type {
   InstrumentsOptions,
   InstrumentsResponse,
   OptionContract,
-  DepthMetricsOptions,
-  DepthMetricsRow,
   FetchLike,
   FundingRateRow,
   IntentRow,
   IntentRowsOptions,
   OhlcvRow,
-  OhlcvRowsOptions,
-  QuoteRow,
-  QuoteRowsOptions,
   RawCaptureRow,
   RawChannelOptions,
   HistoricalQueryOptions,
@@ -35,12 +28,6 @@ import type {
   PolarisClientOptions,
   StreamOptions,
   TradingViewOhlcvResponse,
-  VolumeBar,
-  VolumeOptions,
-  VolatilityBar,
-  VolatilityOptions,
-  VwapBar,
-  VwapOptions,
 } from "./types";
 
 import {
@@ -293,38 +280,13 @@ export class BasePolarisClient {
     }, isRawCaptureRow);
   }
 
-  /** Return canonical RFQ, quote, and executable-intent observations. */
-  async intents(options: IntentRowsOptions = {}): Promise<IntentRow[]> {
-    return this.intentRows(options);
-  }
-
   /** Return pair-shaped flat intent observations. */
-  async intentRows(options: IntentRowsOptions = {}): Promise<IntentRow[]> {
+  async intents(options: IntentRowsOptions = {}): Promise<IntentRow[]> {
     const instrument = optionalFilter("instrument", options.instrument);
     const intentId = optionalFilter("intentId", options.intentId);
     return this._historicalRows("/historical/intents", options, isIntentRow, {
       ...(instrument !== undefined && { instrument }),
       ...(intentId !== undefined && { intent_id: intentId }),
-    });
-  }
-
-  /** Return every venue-published candle update. */
-  async ohlcvRows(options: OhlcvRowsOptions = {}): Promise<OhlcvRow[]> {
-    const instrument = optionalFilter("instrument", options.instrument);
-    const interval = optionalFilter("interval", options.interval);
-    return this._historicalRows("/historical/ohlcv", options, isOhlcvRow, {
-      ...(instrument !== undefined && { instrument }),
-      ...(interval !== undefined && { interval }),
-    });
-  }
-
-  /** Return individual flat PropAMM quote points. */
-  async quoteRows(options: QuoteRowsOptions = {}): Promise<QuoteRow[]> {
-    const instrument = optionalFilter("instrument", options.instrument);
-    const observationId = optionalFilter("observationId", options.observationId);
-    return this._historicalRows("/historical/quotes", options, isQuoteRow, {
-      ...(instrument !== undefined && { instrument }),
-      ...(observationId !== undefined && { observation_id: observationId }),
     });
   }
 
@@ -364,111 +326,9 @@ export class BasePolarisClient {
       instrument ? { instrument } : {});
   }
 
-  /** Derive best bid and offer quotes from reconstructed top-25 books. */
-  async bbo(options: BboOptions): Promise<BboQuote[]> {
-    const width = options.interval === undefined ? undefined : candleIntervalMs(options.interval);
-    if (width !== undefined && !Number.isFinite(width)) {
-      throw new PolarisError(`Invalid interval: ${options.interval}`);
-    }
-    const result: BboQuote[] = [];
-    const buckets = new Map<number, BboQuote>();
-    let lastQuote: BboQuote | undefined;
-    for (const row of await this.l2Snapshots({
-      source: options.source, market: options.market, start: options.start, end: options.end,
-    })) {
-      const quote = deriveBbo(row);
-      if (!quote) continue;
-      if (options.changesOnly) {
-        if (lastQuote && lastQuote.bid_price === quote.bid_price &&
-            lastQuote.bid_quantity === quote.bid_quantity &&
-            lastQuote.ask_price === quote.ask_price &&
-            lastQuote.ask_quantity === quote.ask_quantity) continue;
-        lastQuote = quote;
-      }
-      if (width === undefined) {
-        result.push(quote);
-      } else {
-        const timestamp = Math.floor(quote.timestamp / width) * width;
-        buckets.set(timestamp, { ...quote, timestamp });
-      }
-    }
-    return width === undefined ? result : [...buckets.values()].sort((a, b) => a.timestamp - b.timestamp);
-  }
-
   /** Return partial flat funding observations from the direct historical API. */
   async fundingRates(options: HistoricalRowsOptions = {}): Promise<FundingRateRow[]> {
     return this._historicalRows("/historical/funding-rates", options, isFundingRateRow);
-  }
-
-  /**
-   * Return standardised mark-price point-series events for a time range.
-   */
-  async markPrices(options: HistoricalRowsOptions = {}): Promise<FundingRateRow[]> {
-    return (await this.fundingRates(options)).filter((row) => row.mark_price != null);
-  }
-
-  /**
-   * Aggregate per-bucket trade volume from standardised trade data.
-   */
-  async volume(options: VolumeOptions): Promise<VolumeBar[]> {
-    const bars = await this.ohlcv(options);
-    return bars.map((bar) => ({
-      timestamp: bar.timestamp,
-      volume: bar.volume,
-    }));
-  }
-
-  /** Derive VWAP from the latest venue candle revision and its reported volumes. */
-  async vwap(options: VwapOptions): Promise<VwapBar[]> {
-    return (await this._venueCandles(options, options.interval)).map((row) => {
-      const volume = row.base_volume ?? 0;
-      const quoteVolume = row.quote_volume ?? row.close * volume;
-      return { timestamp: row.open_timestamp, vwap: volume > 0 ? quoteVolume / volume : null,
-        volume, quote_volume: quoteVolume, trades: row.trade_count ?? 0 };
-    });
-  }
-
-  /** Estimate realised volatility from finer venue candle closes. */
-  async volatility(options: VolatilityOptions): Promise<VolatilityBar[]> {
-    if (options.method !== undefined && options.method !== "log_returns") {
-      throw new PolarisError("method must be 'log_returns'");
-    }
-
-    const rows = await this._venueCandles(options);
-    const target = intervalToMs(options.interval);
-    const widths = rows.map((row) => candleIntervalMs(row.interval)).filter((value) => value < target);
-    if (widths.length === 0) return [];
-    const finest = Math.min(...widths);
-    const agg = new VolatilityAggregator(options.interval);
-    for (const row of rows) {
-      if (candleIntervalMs(row.interval) === finest) agg.add(row.open_timestamp, row.close);
-    }
-    return agg.finish();
-  }
-
-  /**
-   * Derive spread, depth, imbalance, and slippage metrics from orderbooks.
-   */
-  async depthMetrics(
-    options: DepthMetricsOptions,
-  ): Promise<DepthMetricsRow[]> {
-    const depthPct = options.depthPct ?? 0.01;
-    const slippageNotional = options.slippageNotional ?? 10_000;
-
-    if (depthPct <= 0) {
-      throw new PolarisError("depthPct must be greater than 0");
-    }
-    if (slippageNotional <= 0) {
-      throw new PolarisError("slippageNotional must be greater than 0");
-    }
-
-    const result: DepthMetricsRow[] = [];
-    for (const book of await this.l2Snapshots(options)) {
-      const row = deriveDepthMetrics(book, depthPct, slippageNotional);
-      if (row) result.push(row);
-    }
-
-    return result;
   }
 
   /** Return the latest venue-published revision of each candle. */
@@ -483,11 +343,11 @@ export class BasePolarisClient {
     options: HistoricalQueryOptions,
     interval?: string,
   ): Promise<OhlcvRow[]> {
-    const rows = await this.ohlcvRows({
-      source: options.source, market: options.market, interval,
+    const rows = await this._historicalRows("/historical/ohlcv", {
+      source: options.source, market: options.market,
       ...(options.from !== undefined && { start: toEpochMs(options.from) }),
       ...(options.to !== undefined && { end: toEpochMs(options.to) }),
-    });
+    }, isOhlcvRow, interval ? { interval } : {});
     const latest = new Map<string, OhlcvRow>();
     for (const row of rows) {
       const key = JSON.stringify([row.source, row.market, row.instrument, row.interval, row.open_timestamp]);
@@ -700,73 +560,6 @@ export class BasePolarisClient {
 // ===========================================================================
 // Module-level helpers (not exported)
 // ===========================================================================
-
-class VolatilityAggregator {
-  private readonly _intervalMs: number;
-  private readonly _points: Array<[timestamp: number, price: number]> = [];
-
-  constructor(interval: string) {
-    this._intervalMs = intervalToMs(interval);
-  }
-
-  add(timestamp: number, price: number): void {
-    if (!Number.isFinite(timestamp) || price <= 0) return;
-    this._points.push([timestamp, price]);
-  }
-
-  finish(): VolatilityBar[] {
-    const buckets = new Map<
-      number,
-      {
-        timestamp: number;
-        returns: number;
-        mean: number;
-        m2: number;
-        lastPrice: number | undefined;
-      }
-    >();
-
-    for (const [timestamp, price] of this._points) {
-      const bucket =
-        Math.floor(timestamp / this._intervalMs) * this._intervalMs;
-
-      let state = buckets.get(bucket);
-      if (!state) {
-        state = {
-          timestamp: bucket,
-          returns: 0,
-          mean: 0,
-          m2: 0,
-          lastPrice: undefined,
-        };
-        buckets.set(bucket, state);
-      }
-
-      if (state.lastPrice !== undefined) {
-        const logReturn = Math.log(price / state.lastPrice);
-        state.returns += 1;
-        const delta = logReturn - state.mean;
-        state.mean += delta / state.returns;
-        const delta2 = logReturn - state.mean;
-        state.m2 += delta * delta2;
-      }
-
-      state.lastPrice = price;
-    }
-
-    return Array.from(buckets.values())
-      .sort((a, b) => a.timestamp - b.timestamp)
-      .flatMap((state) => {
-        if (state.returns < 2) return [];
-        const variance = state.m2 / (state.returns - 1);
-        return [{
-          timestamp: state.timestamp,
-          volatility: Math.sqrt(variance),
-          returns: state.returns,
-        }];
-      });
-  }
-}
 
 function normalizeCatalogResponse(payload: {
   updatedAt?: string;
@@ -997,18 +790,6 @@ function isIntentRow(value: unknown): value is IntentRow {
       "quoted_output_amount", "rfq_id", "status"], "string");
 }
 
-function isQuoteRow(value: unknown): value is QuoteRow {
-  return isHistoricalIdentity(value) &&
-    ["instrument", "observation_id", "input_asset_id", "input_chain_id", "input_amount",
-      "output_asset_id", "output_chain_id", "output_amount", "amount_kind", "block_hash",
-      "transaction_hash", "router"].every((key) => typeof value[key] === "string") &&
-    ["input_decimals", "output_decimals", "block_number", "transaction_index"].every(
-      (key) => Number.isSafeInteger(value[key]) && (value[key] as number) >= 0,
-    ) &&
-    nullableFields(value, ["exchange_timestamp"], "number") &&
-    nullableFields(value, ["oracle", "pool"], "string");
-}
-
 function isRawCaptureRow(value: unknown): value is RawCaptureRow {
   return isRecord(value) &&
     typeof value.capture_id === "string" &&
@@ -1017,31 +798,6 @@ function isRawCaptureRow(value: unknown): value is RawCaptureRow {
     Number.isSafeInteger(value.ingested_at) &&
     "additional_context" in value &&
     typeof value.original_json === "string";
-}
-
-function intervalToMs(interval: string): number {
-  const match = interval.match(/^(\d+)(ms|s|m|h)$/);
-  if (!match) {
-    throw new PolarisError(`Invalid interval: ${interval}`);
-  }
-
-  const amount = Number.parseInt(match[1], 10);
-  switch (match[2]) {
-    case "ms":
-      return amount;
-    case "s":
-      return amount * 1_000;
-    case "m":
-      return amount * 60_000;
-    case "h":
-      return amount * 3_600_000;
-    default:
-      throw new PolarisError(`Invalid interval: ${interval}`);
-  }
-}
-
-function candleIntervalMs(interval: string): number {
-  return /^(100ms|1s|10s|1m|5m|15m|1h)$/.test(interval) ? intervalToMs(interval) : Infinity;
 }
 
 function normalizeInstrumentFilter(instrument: string | undefined): string | undefined {
@@ -1058,162 +814,6 @@ function optionalFilter(name: string, value: string | undefined): string | undef
   const normalized = value.trim();
   if (!normalized) throw new PolarisError(`${name} must be non-empty`);
   return normalized;
-}
-
-function l2Levels(row: OrderbookL2Row, side: "bid" | "ask"): Array<[number, number]> {
-  const levels: Array<[number, number]> = [];
-  for (let i = 0; i < 25; i++) {
-    const index = String(i).padStart(2, "0");
-    const price = row[`${side}_px_${index}` as keyof OrderbookL2Row];
-    const quantity = row[`${side}_sz_${index}` as keyof OrderbookL2Row];
-    if (typeof price === "number" && price > 0 &&
-        typeof quantity === "number" && quantity > 0) levels.push([price, quantity]);
-  }
-  return levels;
-}
-
-function deriveBbo(row: OrderbookL2Row): BboQuote | undefined {
-  const bid = l2Levels(row, "bid")[0];
-  const ask = l2Levels(row, "ask")[0];
-  if (!bid || !ask) return undefined;
-  return {
-    timestamp: row.collector_timestamp,
-    bid_price: bid[0], bid_quantity: bid[1],
-    ask_price: ask[0], ask_quantity: ask[1],
-  };
-}
-
-function depthNotionalWithinPct(
-  levels: Array<[number, number]>,
-  side: "bid" | "ask",
-  midPrice: number,
-  depthPct: number,
-): number {
-  if (side === "bid") {
-    const cutoff = midPrice * (1 - depthPct);
-    return levels.reduce(
-      (sum, [price, quantity]) =>
-        price >= cutoff ? sum + price * quantity : sum,
-      0,
-    );
-  }
-
-  const cutoff = midPrice * (1 + depthPct);
-  return levels.reduce(
-    (sum, [price, quantity]) =>
-      price <= cutoff ? sum + price * quantity : sum,
-    0,
-  );
-}
-
-function quoteTotalForBaseQuantity(
-  levels: Array<[number, number]>,
-  targetQuantity: number,
-): number | undefined {
-  let remainingQuantity = targetQuantity;
-  let quoteTotal = 0;
-
-  for (const [price, availableQuantity] of levels) {
-    const fillQuantity = Math.min(availableQuantity, remainingQuantity);
-    quoteTotal += fillQuantity * price;
-    remainingQuantity -= fillQuantity;
-    if (remainingQuantity <= 1e-12) {
-      return quoteTotal;
-    }
-  }
-
-  return undefined;
-}
-
-function deriveDepthMetrics(
-  row: OrderbookL2Row,
-  depthPct: number,
-  slippageNotional: number,
-): DepthMetricsRow | undefined {
-  const timestamp = row.collector_timestamp;
-  const bids = l2Levels(row, "bid");
-  const asks = l2Levels(row, "ask");
-  if (bids.length === 0 || asks.length === 0) {
-    return undefined;
-  }
-
-  const [bidPrice] = bids[0];
-  const [askPrice] = asks[0];
-  if (askPrice < bidPrice) {
-    return undefined;
-  }
-
-  const midPrice = (bidPrice + askPrice) / 2;
-  const spread = askPrice - bidPrice;
-  const spreadBps = midPrice > 0 ? (spread / midPrice) * 10_000 : null;
-
-  const bidDepthNotional = depthNotionalWithinPct(
-    bids,
-    "bid",
-    midPrice,
-    depthPct,
-  );
-  const askDepthNotional = depthNotionalWithinPct(
-    asks,
-    "ask",
-    midPrice,
-    depthPct,
-  );
-  const totalDepthNotional = bidDepthNotional + askDepthNotional;
-  const depthImbalance =
-    totalDepthNotional > 0
-      ? (bidDepthNotional - askDepthNotional) / totalDepthNotional
-      : null;
-
-  const targetBaseQuantity =
-    midPrice > 0 ? slippageNotional / midPrice : null;
-
-  let buyAveragePrice: number | null = null;
-  let sellAveragePrice: number | null = null;
-  let buySlippage: number | null = null;
-  let sellSlippage: number | null = null;
-  let buySlippageBps: number | null = null;
-  let sellSlippageBps: number | null = null;
-
-  if (targetBaseQuantity !== null && targetBaseQuantity > 0) {
-    const buyQuoteTotal = quoteTotalForBaseQuantity(asks, targetBaseQuantity);
-    const sellQuoteTotal = quoteTotalForBaseQuantity(bids, targetBaseQuantity);
-
-    if (buyQuoteTotal !== undefined) {
-      buyAveragePrice = buyQuoteTotal / targetBaseQuantity;
-      buySlippage = buyQuoteTotal - slippageNotional;
-      buySlippageBps =
-        ((buyAveragePrice - midPrice) / midPrice) * 10_000;
-    }
-
-    if (sellQuoteTotal !== undefined) {
-      sellAveragePrice = sellQuoteTotal / targetBaseQuantity;
-      sellSlippage = slippageNotional - sellQuoteTotal;
-      sellSlippageBps =
-        ((midPrice - sellAveragePrice) / midPrice) * 10_000;
-    }
-  }
-
-  return {
-    timestamp: Math.trunc(timestamp),
-    bid_price: bidPrice,
-    ask_price: askPrice,
-    mid_price: midPrice,
-    bid_ask_spread: spread,
-    bid_ask_spread_bps: spreadBps,
-    depth_pct: depthPct,
-    bid_depth_notional: bidDepthNotional,
-    ask_depth_notional: askDepthNotional,
-    depth_imbalance: depthImbalance,
-    slippage_notional: slippageNotional,
-    target_base_quantity: targetBaseQuantity,
-    buy_average_price: buyAveragePrice,
-    sell_average_price: sellAveragePrice,
-    buy_slippage: buySlippage,
-    sell_slippage: sellSlippage,
-    buy_slippage_bps: buySlippageBps,
-    sell_slippage_bps: sellSlippageBps,
-  };
 }
 
 function assertOk(response: Response, body: string): void {

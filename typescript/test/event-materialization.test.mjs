@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("snapshot and replay methods are absent", async () => {
+test("removed client methods are absent", async () => {
   const { PolarisClient } = await import("../dist/node/index.js");
   const client = new PolarisClient();
-  for (const name of ["events", "replay", "listSnapshots", "getSnapshotDownloadUrls", "propammQuoteLadders"]) {
+  for (const name of ["events", "replay", "listSnapshots", "getSnapshotDownloadUrls", "propammQuoteLadders", "bboChanges", "bbo", "depthMetrics", "intentRows", "ohlcvRows", "quoteRows", "volume", "vwap", "volatility", "markPrices"]) {
     assert.equal(name in client, false, `${name} should be removed`);
   }
   client.close();
@@ -43,88 +43,12 @@ test("direct L2 routes paginate and accept variable ranges", async () => {
   assert.deepEqual(await client.l2Updates({ source: "hyperliquid", market: "0G", instrument: "0G", start: 10, end: 10 }), [row(true), row(false)]);
   assert.deepEqual(await client.l2Snapshots({ source: "hyperliquid", market: "0G", start: 10, end: 300010 }), [row(false)]);
   assert.deepEqual(await client.l2Snapshots({ source: "hyperliquid", market: "0G", start: 10, end: 600010 }), [row(false)]);
-  const bbo = await client.bbo({ source: "hyperliquid", market: "0G", start: 10, end: 600010 });
-  assert.equal(bbo[0].bid_price, 100);
-  assert.equal(bbo[0].ask_price, 101);
-  const depth = await client.depthMetrics({ source: "hyperliquid", market: "0G", start: 10, end: 600010 });
-  assert.equal(depth[0].bid_depth_notional, 200);
-  assert.equal(depth[0].ask_depth_notional, 101);
-  assert.equal(calls.length, 6);
+  assert.equal(calls.length, 4);
   assert.equal(calls[0].url.searchParams.get("instrument"), "0G");
   assert.equal(calls[1].url.searchParams.get("cursor"), "next");
   assert.equal(calls[2].url.searchParams.get("end"), "300010");
-  assert.equal(calls[4].url.searchParams.get("end"), "600010");
+  assert.equal(calls[3].url.searchParams.get("end"), "600010");
   assert.equal(calls[0].headers.Authorization, "Bearer secret");
-  client.close();
-});
-
-test("TypeScript BBO filters quote changes and buckets reconstructed books", async () => {
-  const { PolarisClient } = await import("../dist/node/index.js");
-  const base = 1_700_000_000_000;
-  const row = (offset, bidPrice, bidQuantity, askPrice, askQuantity) => {
-    const value = {
-      event_id: String(offset), source: "hyperliquid", market: "0G", instrument: null,
-      collector_timestamp: base + offset, exchange_timestamp: null,
-      source_capture_id: String(offset), schema_version: 1, source_event_is_snapshot: false,
-    };
-    for (let index = 0; index < 25; index++) {
-      for (const side of ["bid", "ask"]) for (const field of ["px", "sz"]) {
-        value[`${side}_${field}_${String(index).padStart(2, "0")}`] = null;
-      }
-    }
-    value.bid_px_00 = bidPrice;
-    value.bid_sz_00 = bidQuantity;
-    value.ask_px_00 = askPrice;
-    value.ask_sz_00 = askQuantity;
-    return value;
-  };
-  const rows = [
-    row(100, 100, 2, 101, 3),
-    row(800, 100, 2, 101, 3), // Only deeper levels changed.
-    row(1200, 100, 2, 101, 4), // Quantity changes also count.
-    row(1500, 100, 2, 101, 4),
-    row(3100, 100.25, 1, 101, 4),
-    row(3200, 100.25, 1, null, null), // No two-sided BBO.
-  ];
-  const calls = [];
-  const client = new PolarisClient({ baseUrl: "https://api.example", fetch: async (input) => {
-    const url = new URL(input);
-    calls.push(url);
-    assert.equal(url.pathname, "/historical/l2-orderbooks");
-    const second = url.searchParams.has("cursor");
-    return new Response(JSON.stringify({
-      items: second ? rows.slice(3) : rows.slice(0, 3),
-      has_more: !second, next_cursor: second ? null : "next",
-    }), { status: 200, headers: { "Content-Type": "application/json" } });
-  } });
-  const options = { source: "hyperliquid", market: "0G", start: base, end: base + 4000 };
-  const quote = (timestamp, bid_price, bid_quantity, ask_price, ask_quantity) =>
-    ({ timestamp, bid_price, bid_quantity, ask_price, ask_quantity });
-  const expected = [
-    quote(base + 100, 100, 2, 101, 3),
-    quote(base + 800, 100, 2, 101, 3),
-    quote(base + 1200, 100, 2, 101, 4),
-    quote(base + 1500, 100, 2, 101, 4),
-    quote(base + 3100, 100.25, 1, 101, 4),
-  ];
-  assert.deepEqual(await client.bbo(options), expected);
-  assert.deepEqual(await client.bbo({ ...options, changesOnly: true }),
-    [expected[0], expected[2], expected[4]]);
-  const bucketed = [
-    { ...expected[1], timestamp: base },
-    { ...expected[3], timestamp: base + 1000 },
-    { ...expected[4], timestamp: base + 3000 },
-  ];
-  assert.deepEqual(await client.bbo({ ...options, interval: "1s" }), bucketed);
-  assert.deepEqual(await client.bbo({ ...options, interval: "1s", changesOnly: true }), bucketed);
-  assert.equal(calls.length, 8);
-  assert.equal(calls[0].searchParams.get("start"), String(base));
-  assert.equal(calls[0].searchParams.get("end"), String(base + 4000));
-  assert.equal(calls[1].searchParams.get("cursor"), "next");
-  assert.equal(calls[0].searchParams.has("interval"), false);
-  assert.equal(calls[0].searchParams.has("changesOnly"), false);
-  await assert.rejects(client.bbo({ ...options, interval: "2s" }), /Invalid interval: 2s/);
-  assert.equal(calls.length, 8);
   client.close();
 });
 
@@ -168,7 +92,6 @@ test("direct historical rows paginate, filter, and keep flat nullable fields", a
   assert.equal(calls[2].url.searchParams.get("instrument"), option.instrument);
   assert.deepEqual(await client.fundingRates({}), [funding, fundingWithoutMark]);
   assert.deepEqual(await client.perpetualTickers({}), [funding, fundingWithoutMark]);
-  assert.deepEqual(await client.markPrices({}), [funding]);
   assert.equal(calls[3].url.searchParams.has("start"), false);
   await assert.rejects(
     client.optionTickers({ source: "deribit", market: "BTC", instrument: "" }),
@@ -209,42 +132,22 @@ test("rawChannel pages exact captures with required channel and time bounds", as
   client.close();
 });
 
-test("flat OHLCV, intent, and quote rows use their distinct direct routes", async () => {
+test("intents use the direct route with an exact filter", async () => {
   const { PolarisClient } = await import("../dist/node/index.js");
-  const identity = { collector_timestamp: 10, source_capture_id: "capture", schema_version: 1 };
-  const candle = { ...identity, event_id: "c1", source: "binance", market: "BTC-USDT",
-    interval: "1m", open_timestamp: 10, open: 100, high: 102, low: 99, close: 100, is_closed: false };
-  const intent = { ...identity, event_id: "i1", source: "uniswapx", market: "intents",
+  const intent = { event_id: "i1", source: "uniswapx", market: "intents",
+    collector_timestamp: 10, source_capture_id: "capture", schema_version: 1,
     intent_id: "intent-1", input_asset_id: null };
-  const quote = { ...identity, event_id: "q1", source: "propamm", market: "ethereum",
-    instrument: "pool-1", observation_id: "obs-1", input_asset_id: "ETH", input_chain_id: "1",
-    input_amount: "1000000000000000000", input_decimals: 18, output_asset_id: "USDC",
-    output_chain_id: "1", output_amount: "2000000", output_decimals: 6,
-    amount_kind: "exact_input", block_number: 100, block_hash: "0xblock",
-    transaction_hash: "0xtx", transaction_index: 0, router: "0xrouter", pool: null };
   const calls = [];
   const client = new PolarisClient({ baseUrl: "https://api.example", apiKey: "secret", fetch: async (input, init) => {
     const url = new URL(input);
     calls.push({ url, headers: init.headers });
-    const second = url.searchParams.has("cursor");
-    const body = url.pathname === "/historical/ohlcv"
-      ? { items: [{ ...candle, event_id: second ? "c2" : "c1" }], has_more: !second, next_cursor: second ? null : "next" }
-      : { items: [url.pathname === "/historical/intents" ? intent : quote], has_more: false, next_cursor: null };
-    return new Response(JSON.stringify(body), { status: 200 });
+    assert.equal(url.pathname, "/historical/intents");
+    return new Response(JSON.stringify({ items: [intent], has_more: false, next_cursor: null }), { status: 200 });
   } });
-  const candles = await client.ohlcvRows({ interval: "1m", start: 10, end: 10 });
-  assert.deepEqual(candles.map((row) => row.event_id), ["c1", "c2"]);
-  assert.equal(candles[0].open_timestamp, candles[1].open_timestamp);
-  assert.equal(calls[0].url.searchParams.get("interval"), "1m");
-  assert.equal(calls[1].url.searchParams.get("cursor"), "next");
-  assert.deepEqual(await client.intentRows({ intentId: "intent-1" }), [intent]);
   assert.deepEqual(await client.intents({ intentId: "intent-1" }), [intent]);
-  assert.equal(calls[2].url.searchParams.get("intent_id"), "intent-1");
-  assert.deepEqual(await client.quoteRows({ observationId: "obs-1", instrument: "pool-1" }), [quote]);
-  assert.equal(calls[4].url.searchParams.get("observation_id"), "obs-1");
-  assert.equal(calls[4].url.searchParams.get("instrument"), "pool-1");
-  assert.equal(calls[4].headers.Authorization, "Bearer secret");
-  await assert.rejects(client.intentRows({ intentId: " " }), /intentId must be non-empty/);
+  assert.equal(calls[0].url.searchParams.get("intent_id"), "intent-1");
+  assert.equal(calls[0].headers.Authorization, "Bearer secret");
+  await assert.rejects(client.intents({ intentId: " " }), /intentId must be non-empty/);
   client.close();
 });
 
@@ -275,12 +178,6 @@ test("venue candle aggregates use latest revisions and reported volumes", async 
     from: "2024-01-01T00:00:00Z", to: "2024-01-01T00:01:00Z" };
   assert.deepEqual(await client.ohlcv(options), [{ timestamp: start, open: 100, high: 103,
     low: 99, close: 102, volume: 2, trades: 5 }]);
-  assert.deepEqual(await client.volume(options), [{ timestamp: start, volume: 2 }]);
-  assert.deepEqual(await client.vwap(options), [{ timestamp: start, vwap: 102,
-    volume: 2, quote_volume: 204, trades: 5 }]);
   assert.equal((await client.ohlcvTradingView(options)).candles[0].c, 102);
-  const volatility = await client.volatility(options);
-  assert.equal(volatility[0].returns, 3);
-  assert.ok(volatility[0].volatility > 0);
   client.close();
 });
