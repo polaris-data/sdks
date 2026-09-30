@@ -18,6 +18,7 @@ from polaris_data import (
     CatalogInstrument,
     CatalogMarketEntry,
     CatalogResponse,
+    MetaResponse,
     InstrumentsResponse,
     ObservedStatistic,
     OptionContract,
@@ -88,6 +89,7 @@ def test_top_level_exports_are_stable() -> None:
         "CatalogInstrument",
         "CatalogMarketEntry",
         "CatalogResponse",
+        "MetaResponse",
         "InstrumentsResponse",
         "ObservedStatistic",
         "OptionContract",
@@ -166,6 +168,7 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
     required = inspect.Parameter.empty
 
     assert _parameters(PolarisClient.health) == [("self", positional, required)]
+    assert _parameters(PolarisClient.meta) == [("self", positional, required)]
     assert _parameters(PolarisClient.catalog) == [
         ("self", positional, required),
         ("source", positional, None),
@@ -236,17 +239,25 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("end", keyword_only, None),
     ]
 
-    direct_methods = [PolarisClient.trades, PolarisClient.funding_rates]
-    for method in direct_methods:
-        assert _parameters(method) == [
-            ("self", positional, required),
-            ("source", keyword_only, None),
-            ("market", keyword_only, None),
-            ("start", keyword_only, None),
-            ("end", keyword_only, None),
-            ("output", keyword_only, "iterator"),
-            ("batch_size", keyword_only, 65_536),
-        ]
+    assert _parameters(PolarisClient.trades) == [
+        ("self", positional, required),
+        ("source", keyword_only, None),
+        ("market", keyword_only, None),
+        ("instrument", keyword_only, None),
+        ("start", keyword_only, None),
+        ("end", keyword_only, None),
+        ("output", keyword_only, "iterator"),
+        ("batch_size", keyword_only, 65_536),
+    ]
+    assert _parameters(PolarisClient.funding_rates) == [
+        ("self", positional, required),
+        ("source", keyword_only, None),
+        ("market", keyword_only, None),
+        ("start", keyword_only, None),
+        ("end", keyword_only, None),
+        ("output", keyword_only, "iterator"),
+        ("batch_size", keyword_only, 65_536),
+    ]
 
     assert _parameters(PolarisClient.raw) == [
         ("self", positional, required),
@@ -311,6 +322,7 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
     assert inspect.signature(PolarisClient.option_tickers).return_annotation == "Iterator[OptionTickerRow]"
     assert inspect.signature(PolarisClient.raw_channel).return_annotation == "Iterator[RawCaptureRow]"
     assert inspect.signature(PolarisClient.stream).return_annotation == "RealtimeStream"
+    assert inspect.signature(PolarisClient.meta).return_annotation == "MetaResponse"
     assert (
         inspect.signature(PolarisClient.ohlcv).return_annotation
         == "Iterator[OhlcvRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"

@@ -5,6 +5,7 @@ use polaris_data::{
     L2OrderbooksQuery, L2UpdatesQuery, MixedEventRow, MixedEventType, OhlcvRow, OhlcvRowsQuery,
     OptionTickerRow, OptionTickerRowsQuery, OrderbookBuilder, OrderbookL2Row, PolarisError,
     RawCaptureRow, RawChannelQuery, RawQuery, StandardEvent, StreamQuery, TimeInput, TradeRow,
+    TradeRowsQuery,
     blocking::{self},
 };
 use pyo3::{
@@ -230,6 +231,11 @@ impl NativeClient {
         to_python(py, &result)
     }
 
+    fn meta<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let result = py.detach(|| self.inner.meta()).map_err(native_error)?;
+        to_python(py, &result)
+    }
+
     #[pyo3(signature = (source=None, market=None, q=None))]
     fn catalog<'py>(
         &self,
@@ -278,7 +284,7 @@ impl NativeClient {
         to_python(py, &result)
     }
 
-    #[pyo3(signature = (source=None, market=None, start=None, end=None))]
+    #[pyo3(signature = (source=None, market=None, start=None, end=None, instrument=None))]
     fn trades<'py>(
         &self,
         py: Python<'py>,
@@ -286,12 +292,14 @@ impl NativeClient {
         market: Option<String>,
         start: Option<i64>,
         end: Option<i64>,
+        instrument: Option<String>,
     ) -> PyResult<NativeHistorical> {
         let iterator = py
             .detach(|| {
-                self.inner.trades(HistoricalRowsQuery {
+                self.inner.trades(TradeRowsQuery {
                     source,
                     market,
+                    instrument,
                     start,
                     end,
                 })

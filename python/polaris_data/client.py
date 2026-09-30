@@ -24,6 +24,7 @@ from .errors import (
 from .models import (
     CatalogCount,
     CatalogResponse,
+    MetaResponse,
     InstrumentsResponse,
     FundingRateRow,
     MixedEventRow,
@@ -354,6 +355,8 @@ class PolarisClient:
             schema = self._direct_row_schema(method, pa)
         if method == "ohlcv":
             native_iterator = self._call(method, source, market, instrument, interval, start, end)
+        elif method == "trades":
+            native_iterator = self._call(method, source, market, start, end, instrument)
         else:
             native_iterator = self._call(method, source, market, start, end)
         iterator = self._iterate(native_iterator, method)
@@ -370,6 +373,10 @@ class PolarisClient:
 
     def health(self) -> JSONDict:
         return self._call("health")
+
+    def meta(self) -> MetaResponse:
+        """Return API documentation and machine-readable resource links."""
+        return self._call("meta")
 
     def stream(
         self,
@@ -425,6 +432,7 @@ class PolarisClient:
         *,
         source: str | None = None,
         market: str | None = None,
+        instrument: str | None = None,
         start: int | None = None,
         end: int | None = None,
         output: Literal["iterator"] = "iterator",
@@ -437,6 +445,7 @@ class PolarisClient:
         *,
         source: str | None = None,
         market: str | None = None,
+        instrument: str | None = None,
         start: int | None = None,
         end: int | None = None,
         output: Literal["batches"],
@@ -449,6 +458,7 @@ class PolarisClient:
         *,
         source: str | None = None,
         market: str | None = None,
+        instrument: str | None = None,
         start: int | None = None,
         end: int | None = None,
         output: Literal["dataframe"],
@@ -460,14 +470,17 @@ class PolarisClient:
         *,
         source: str | None = None,
         market: str | None = None,
+        instrument: str | None = None,
         start: int | None = None,
         end: int | None = None,
         output: OutputFormat = "iterator",
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> Iterator[TradeRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
         """Read flat trade rows from the direct historical API."""
+        if instrument is not None and not instrument.strip():
+            raise ValueError("instrument must be non-empty")
         return self._direct_row_output(
-            "trades", source, market, start, end, output, batch_size
+            "trades", source, market, start, end, output, batch_size, instrument
         )
 
     def events(

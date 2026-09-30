@@ -52,6 +52,16 @@ class CatalogResponse(TypedDict):
     updatedAt: str
 
 
+class MetaResponse(TypedDict):
+    name: str
+    docs: str
+    llms: str
+    openapi: str
+    skill: str
+    health: str
+    stream: str
+
+
 class ObservedStatistic(TypedDict):
     value: str
     observed_at: int

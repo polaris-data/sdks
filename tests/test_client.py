@@ -81,6 +81,28 @@ def _ts(iso8601: str) -> int:
     )
 
 
+def test_meta_returns_public_discovery_links() -> None:
+    payload = {
+        "name": "Polaris API", "docs": "https://docs.polaris.supply",
+        "llms": "https://api.polaris.supply/llms.txt",
+        "openapi": "https://api.polaris.supply/openapi.json",
+        "skill": "https://api.polaris.supply/skill.md",
+        "health": "https://api.polaris.supply/health",
+        "stream": "wss://api.polaris.supply/stream",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/meta"
+        assert "authorization" not in request.headers
+        return httpx.Response(200, json=payload)
+
+    client = make_client(handler)
+    try:
+        assert client.meta() == payload
+    finally:
+        client.close()
+
+
 def test_catalog_returns_payload() -> None:
     payload = {
         "markets": [
@@ -460,6 +482,7 @@ def test_direct_historical_rows_paginate_filter_and_keep_nullable_fields(tmp_pat
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
         if request.url.path == "/trades":
+            assert request.url.params["instrument"] == "BTC-29MAR24-50000-C"
             next_page = request.url.params.get("cursor") == "next"
             return httpx.Response(200, json={
                 "items": [{**trade, "event_id": "t2" if next_page else "t1"}],
@@ -474,7 +497,8 @@ def test_direct_historical_rows_paginate_filter_and_keep_nullable_fields(tmp_pat
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        trades = list(client.trades(source="deribit", market="BTC", start=10, end=10))
+        trades = list(client.trades(source="deribit", market="BTC",
+                                    instrument="BTC-29MAR24-50000-C", start=10, end=10))
         assert [row["event_id"] for row in trades] == ["t1", "t2"]
         assert trades[0]["side"] is None
         assert calls[0].url.params["start"] == "10"
@@ -496,6 +520,8 @@ def test_direct_historical_rows_paginate_filter_and_keep_nullable_fields(tmp_pat
         assert "end" not in calls[3].url.params
         with pytest.raises(ValueError, match="instrument must be non-empty"):
             client.option_tickers(instrument="")
+        with pytest.raises(ValueError, match="instrument must be non-empty"):
+            client.trades(instrument="")
     finally:
         client.close()
 
