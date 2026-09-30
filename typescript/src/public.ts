@@ -99,6 +99,7 @@ export type {
   QuoteRowsOptions,
   L2UpdatesOptions,
   L2OrderbooksOptions,
+  BboOptions,
   OhlcvOptions,
   VolumeOptions,
   VwapOptions,

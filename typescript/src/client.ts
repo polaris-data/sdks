@@ -3,6 +3,7 @@ import { decompress } from "fzstd";
 import type {
   AuthMode,
   BboQuote,
+  BboOptions,
   CatalogCount,
   CatalogInstrument,
   CatalogMarket,
@@ -435,13 +436,34 @@ export class BasePolarisClient {
   }
 
   /** Derive best bid and offer quotes from reconstructed top-25 books. */
-  async bbo(options: Omit<L2OrderbooksOptions, "instrument">): Promise<BboQuote[]> {
-    const result: BboQuote[] = [];
-    for (const row of await this.l2Snapshots(options)) {
-      const quote = deriveBbo(row);
-      if (quote) result.push(quote);
+  async bbo(options: BboOptions): Promise<BboQuote[]> {
+    const width = options.interval === undefined ? undefined : candleIntervalMs(options.interval);
+    if (width !== undefined && !Number.isFinite(width)) {
+      throw new PolarisError(`Invalid interval: ${options.interval}`);
     }
-    return result;
+    const result: BboQuote[] = [];
+    const buckets = new Map<number, BboQuote>();
+    let lastQuote: BboQuote | undefined;
+    for (const row of await this.l2Snapshots({
+      source: options.source, market: options.market, start: options.start, end: options.end,
+    })) {
+      const quote = deriveBbo(row);
+      if (!quote) continue;
+      if (options.changesOnly) {
+        if (lastQuote && lastQuote.bid_price === quote.bid_price &&
+            lastQuote.bid_quantity === quote.bid_quantity &&
+            lastQuote.ask_price === quote.ask_price &&
+            lastQuote.ask_quantity === quote.ask_quantity) continue;
+        lastQuote = quote;
+      }
+      if (width === undefined) {
+        result.push(quote);
+      } else {
+        const timestamp = Math.floor(quote.timestamp / width) * width;
+        buckets.set(timestamp, { ...quote, timestamp });
+      }
+    }
+    return width === undefined ? result : [...buckets.values()].sort((a, b) => a.timestamp - b.timestamp);
   }
 
   /** Return partial flat funding observations from the direct historical API. */

@@ -93,6 +93,76 @@ test("direct L2 routes paginate and accept variable ranges", async () => {
   client.close();
 });
 
+test("TypeScript BBO filters quote changes and buckets reconstructed books", async () => {
+  const { PolarisClient } = await import("../dist/node/index.js");
+  const base = 1_700_000_000_000;
+  const row = (offset, bidPrice, bidQuantity, askPrice, askQuantity) => {
+    const value = {
+      event_id: String(offset), source: "hyperliquid", market: "0G", instrument: null,
+      collector_timestamp: base + offset, exchange_timestamp: null,
+      source_capture_id: String(offset), schema_version: 1, source_event_is_snapshot: false,
+    };
+    for (let index = 0; index < 25; index++) {
+      for (const side of ["bid", "ask"]) for (const field of ["px", "sz"]) {
+        value[`${side}_${field}_${String(index).padStart(2, "0")}`] = null;
+      }
+    }
+    value.bid_px_00 = bidPrice;
+    value.bid_sz_00 = bidQuantity;
+    value.ask_px_00 = askPrice;
+    value.ask_sz_00 = askQuantity;
+    return value;
+  };
+  const rows = [
+    row(100, 100, 2, 101, 3),
+    row(800, 100, 2, 101, 3), // Only deeper levels changed.
+    row(1200, 100, 2, 101, 4), // Quantity changes also count.
+    row(1500, 100, 2, 101, 4),
+    row(3100, 100.25, 1, 101, 4),
+    row(3200, 100.25, 1, null, null), // No two-sided BBO.
+  ];
+  const calls = [];
+  const client = new PolarisClient({ baseUrl: "https://api.example", fetch: async (input) => {
+    const url = new URL(input);
+    calls.push(url);
+    assert.equal(url.pathname, "/historical/l2-orderbooks");
+    const second = url.searchParams.has("cursor");
+    return new Response(JSON.stringify({
+      items: second ? rows.slice(3) : rows.slice(0, 3),
+      has_more: !second, next_cursor: second ? null : "next",
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  } });
+  const options = { source: "hyperliquid", market: "0G", start: base, end: base + 4000 };
+  const quote = (timestamp, bid_price, bid_quantity, ask_price, ask_quantity) =>
+    ({ timestamp, bid_price, bid_quantity, ask_price, ask_quantity });
+  const expected = [
+    quote(base + 100, 100, 2, 101, 3),
+    quote(base + 800, 100, 2, 101, 3),
+    quote(base + 1200, 100, 2, 101, 4),
+    quote(base + 1500, 100, 2, 101, 4),
+    quote(base + 3100, 100.25, 1, 101, 4),
+  ];
+  assert.deepEqual(await client.bbo(options), expected);
+  assert.deepEqual(await client.bbo({ ...options, changesOnly: true }),
+    [expected[0], expected[2], expected[4]]);
+  const bucketed = [
+    { ...expected[1], timestamp: base },
+    { ...expected[3], timestamp: base + 1000 },
+    { ...expected[4], timestamp: base + 3000 },
+  ];
+  assert.deepEqual(await client.bbo({ ...options, interval: "1s" }), bucketed);
+  assert.deepEqual(await client.bbo({ ...options, interval: "1s", changesOnly: true }), bucketed);
+  assert.equal(calls.length, 8);
+  assert.equal(calls[0].searchParams.get("start"), String(base));
+  assert.equal(calls[0].searchParams.get("end"), String(base + 4000));
+  assert.equal(calls[1].searchParams.get("cursor"), "next");
+  assert.equal(calls[0].searchParams.has("interval"), false);
+  assert.equal(calls[0].searchParams.has("changesOnly"), false);
+  await assert.rejects(client.bbo({ ...options, interval: "2s" }), /Invalid interval: 2s/);
+  assert.equal(calls.length, 8);
+  client.close();
+});
+
 test("direct historical rows paginate, filter, and keep flat nullable fields", async () => {
   const { PolarisClient } = await import("../dist/node/index.js");
   const identity = { source: "deribit", market: "BTC", source_capture_id: "capture", schema_version: 1 };

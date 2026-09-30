@@ -727,12 +727,20 @@ export interface L2UpdatesOptions extends HistoricalRowsOptions {
   instrument?: string;
 }
 
-/** Required inclusive window of at most five minutes for reconstructed books. */
+/** Required inclusive window for reconstructed books. */
 export interface L2OrderbooksOptions extends L2UpdatesOptions {
   source: string;
   market: string;
   start: number;
   end: number;
+}
+
+/** Options for quotes derived from reconstructed top-of-book levels. */
+export interface BboOptions extends Omit<L2OrderbooksOptions, "instrument"> {
+  /** Keep the last quote in each UTC-aligned interval bucket. */
+  interval?: OhlcvInterval;
+  /** Suppress consecutive quotes whose best prices and quantities are unchanged. */
+  changesOnly?: boolean;
 }
 
 export interface ListSnapshotsOptions {
