@@ -24,7 +24,7 @@ Direct historical methods return arrays and follow every cursor page. `start` an
 
 | Method | Route | Result |
 | --- | --- | --- |
-| `trades` | `/trades` | Flat trades |
+| `trades` | `/trades` | Flat trades; optional exact `instrument` |
 | `optionTickers` | `/options-ticker` | Flat option observations; exact `instrument` filter |
 | `fundingRates` | `/funding-rates` | Partial funding observations with nullable fields |
 | `perpetualTickers` | `/perpetual-ticker` | Funding-bearing observations |
@@ -36,7 +36,7 @@ Direct historical methods return arrays and follow every cursor page. `start` an
 | `raw` | `/raw` | Exact captures for a source; optional `market` and `channel` |
 | `rawChannel` | `/raw` with `channel` | Exact captures from one native channel; optional `market` |
 
-`catalog`, `count`, `instruments`, `health`, and realtime `stream` are also available. `l2Snapshots` requires `source`, `market`, `start`, and `end`; it is unrelated to the removed `/snapshots` route. `raw` requires `source`, `start`, and `end` and accepts optional `market` and `channel`. `rawChannel` maps `exchange` and `event` to `source` and `channel` and also accepts `market`. Both convert inclusive millisecond bounds to RFC 3339 query parameters. The `market` filter matches the capture's recorded `additional_context.market` exactly; it does not search `original_json`. Raw rows include `raw_table`. `OrderbookBuilder` still handles realtime orderbook event envelopes.
+`catalog`, `count`, `instruments`, `health`, `meta`, and realtime `stream` are also available. `meta` returns public documentation, OpenAPI, skill, health, and stream links. `l2Snapshots` requires `source`, `market`, `start`, and `end`; it is unrelated to the removed `/snapshots` route. `raw` requires `source`, `start`, and `end` and accepts optional `market` and `channel`. `rawChannel` maps `exchange` and `event` to `source` and `channel` and also accepts `market`. Both convert inclusive millisecond bounds to RFC 3339 query parameters. The `market` filter matches the capture's recorded `additional_context.market` exactly; it does not search `original_json`. Raw rows include `raw_table`. `OrderbookBuilder` still handles realtime orderbook event envelopes.
 
 `ohlcv` accepts optional `source`, `market`, `instrument`, `interval`, `start`, and `end` filters. Inclusive bounds refer to candle open time. It preserves every candle revision. `ohlcvTradingView` remains available as a derived latest-revision view.
 

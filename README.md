@@ -55,7 +55,7 @@ All direct historical methods fetch every cursor page. Their `start` and `end` f
 
 | Rust / Python | TypeScript | API route | Result |
 | --- | --- | --- | --- |
-| `trades` | `trades` | `/trades` | Flat trade rows |
+| `trades` | `trades` | `/trades` | Flat trade rows; optional exact `instrument` |
 | `events` | `events` | `/events` | Authenticated mixed `{type, data}` flat rows in collector-time order |
 | `option_tickers` | `optionTickers` | `/options-ticker` | Flat option observations; optional exact `instrument` |
 | `funding_rates` | `fundingRates` | `/funding-rates` | Flat partial funding observations with nullable fields |
@@ -67,7 +67,9 @@ All direct historical methods fetch every cursor page. Their `start` and `end` f
 | `raw` | `raw` | `/raw` | Paged raw captures for a source; optional exact `market` and `channel` |
 | `raw_channel` | `rawChannel` | `/raw` with `channel` | Exact captures from one native channel; optional `market` |
 
-Python returns iterators by default and supports Arrow batches or Pandas DataFrames on methods with an `output` option. Rust uses async streams and also offers a blocking facade. TypeScript returns arrays. `catalog`, `count`, `instruments`, `health`, and realtime `stream` remain available. All three SDKs offer `raw` for a source with optional `market` and `channel` filters, plus `raw_channel` / `rawChannel` as a channel-specific convenience. Both use the paged JSON `/raw` route. Rust and Python infer a recent seven-day window when `raw` bounds are omitted, leaving a one-minute margin inside the public cutoff for anonymous requests; TypeScript requires inclusive millisecond `start` and `end`. The SDKs send RFC 3339 time query parameters. The `market` filter matches the capture's recorded `additional_context.market` exactly; it does not search `original_json`. Raw responses include `raw_table`. Recent raw history is public, while older ranges may require an API key.
+Python returns iterators by default and supports Arrow batches or Pandas DataFrames on methods with an `output` option. Rust uses async streams and also offers a blocking facade. TypeScript returns arrays. `catalog`, `count`, `instruments`, `health`, `meta`, and realtime `stream` remain available. `meta` returns public documentation, OpenAPI, skill, health, and stream links. All three SDKs offer `raw` for a source with optional `market` and `channel` filters, plus `raw_channel` / `rawChannel` as a channel-specific convenience. Both use the paged JSON `/raw` route. Rust and Python infer a recent seven-day window when `raw` bounds are omitted, leaving a one-minute margin inside the public cutoff for anonymous requests; TypeScript requires inclusive millisecond `start` and `end`. The SDKs send RFC 3339 time query parameters. The `market` filter matches the capture's recorded `additional_context.market` exactly; it does not search `original_json`. Raw responses include `raw_table`. Recent raw history is public, while older ranges may require an API key.
+
+For Rust trades, use `TradeRowsQuery` to select an `instrument`; existing `HistoricalRowsQuery` calls remain supported.
 
 `ohlcv` uses optional `source`, `market`, `instrument`, `interval`, `start`, and `end` filters. Its inclusive bounds refer to candle open time. It preserves every published revision, so multiple rows can share an `open_timestamp`. TypeScript's `ohlcvTradingView` remains a derived latest-revision view.
 
