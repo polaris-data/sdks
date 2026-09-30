@@ -74,12 +74,10 @@ def run_worker(root: Path, mode: str, deltas: int) -> None:
     with PolarisClient(dataset_root=root) as client:
         if mode == "l2_builder":
             builder = OrderbookBuilder()
-            updates = client.l2_updates(
-                source=SOURCE,
-                market=MARKET,
-                from_=from_us,
-                to=to_us,
-            )
+            updates = (row for row in client.events(
+                source=SOURCE, market=MARKET, from_=from_us, to=to_us,
+                materialize_orderbooks=False,
+            ) if row.get("type") in {"orderbook", "orderbook_delta"})
             count = sum(1 for update in updates if builder.update(update))
             if builder.snapshot(SOURCE, MARKET) is None:
                 raise RuntimeError("lazy orderbook builder did not initialize")
@@ -101,20 +99,15 @@ def run_worker(root: Path, mode: str, deltas: int) -> None:
                     changes_only=mode == "bbo_changes",
                 )
             elif mode == "l2_updates":
-                rows = client.l2_updates(
-                    source=SOURCE,
-                    market=MARKET,
-                    from_=from_us,
-                    to=to_us,
-                )
+                rows = (row for row in client.events(
+                    source=SOURCE, market=MARKET, from_=from_us, to=to_us,
+                    materialize_orderbooks=False,
+                ) if row.get("type") in {"orderbook", "orderbook_delta"})
             else:
-                rows = client.l2_snapshots(
-                    source=SOURCE,
-                    market=MARKET,
-                    from_=from_us,
-                    to=to_us,
+                rows = (row for row in client.events(
+                    source=SOURCE, market=MARKET, from_=from_us, to=to_us,
                     materialize_orderbooks=True,
-                )
+                ) if row.get("type") == "orderbook")
             count = sum(1 for _ in rows)
     elapsed = time.perf_counter() - started
     print(

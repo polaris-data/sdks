@@ -158,10 +158,7 @@ For option sources, `market` remains the normalized underlying (for example,
 subscribe to the entire option chain, or provide a non-empty exact instrument
 to narrow every market subscription in the stream.
 
-Use `l2_updates()` in Python and Rust or `l2Updates()` in TypeScript to read the
-initial snapshots and sparse deltas without reconstructing every intermediate
-book. Reusable `OrderbookBuilder` exports in all three SDKs let applications
-materialize those updates when needed:
+For snapshot-backed standardized orderbook events, use `events(..., materialize_orderbooks=False)` or replay. `OrderbookBuilder` accepts those event envelopes. The direct `l2_updates()` and `l2_snapshots()` methods below return flat top-25 rows and are not inputs to the builder.
 
 ```python
 from polaris_data import OrderbookBuilder
@@ -218,8 +215,8 @@ Use it to inspect available data, query historical market data, and open realtim
 | `intents(source=None, market=None, instrument=None, intent_id=None, start=None, end=None)` | Iterator of flat `IntentRow` values | Pair-shaped RFQ and intent observations |
 | `option_tickers(source=None, market=None, instrument=None, start=None, end=None)` | Iterator of flat `OptionTickerRow` values | Read an underlying's whole option chain or one exact contract |
 | `perpetual_tickers(source=None, market=None, start=None, end=None)` | Iterator of flat `FundingRateRow` values | Read funding-bearing perpetual ticker observations |
-| `l2_snapshots(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True)` | Iterator of complete orderbook rows | Order book reconstruction and microstructure analysis |
-| `l2_updates(source=..., market=..., from_=None, to=None, allow_gaps=False)` | Iterator of raw orderbook snapshots and deltas | High-throughput application-managed books |
+| `l2_snapshots(source=..., market=..., start=..., end=..., instrument=None)` | Iterator of flat `OrderbookL2Row` values | Reconstructed, sorted top-25 book after each L2 event |
+| `l2_updates(source=None, market=None, instrument=None, start=None, end=None)` | Iterator of flat `OrderbookL2Row` values | Stateless source snapshots and sparse deltas |
 | `funding_rates(source=None, market=None, start=None, end=None, output="iterator", batch_size=65536)` | Flat `FundingRateRow` iterator, Arrow batches, or Pandas DataFrame | Partial funding observations |
 | `ohlcv_rows(source=None, market=None, instrument=None, interval=None, start=None, end=None)` | Iterator of flat `OhlcvRow` values | Every venue-published candle update, including open-candle revisions |
 | `intent_rows(source=None, market=None, instrument=None, intent_id=None, start=None, end=None)` | Iterator of flat `IntentRow` values | Pair-shaped intent observations and exact intent ID filtering |
@@ -236,6 +233,8 @@ Use it to inspect available data, query historical market data, and open realtim
 Historical row methods are single-pass iterators. Iterate them directly for bounded memory, or call `list(...)` when you intentionally want an eager result. Direct endpoint request and decode errors can occur while iterating. If you stop early, call the generator's `close()` method to promptly release its native reader. `bbo(interval="1s")` emits the last quote from each non-empty, UTC-aligned interval.
 
 `trades`, `option_tickers`, and `funding_rates` query `/historical/trades`, `/historical/options-ticker`, and `/historical/funding-rates` respectively. Their `start` and `end` bounds are inclusive Unix milliseconds, and omitted bounds use the API defaults. They follow all cursor pages and return flat rows; fields such as `price`, `funding_rate`, and option Greeks are at the top level rather than under `data`. These methods no longer accept `from_`, `to`, or `allow_gaps`. Older direct history requires an API key and these methods do not provide snapshot coverage checks or local caching.
+
+`l2_updates` queries `/historical/l2-updates` with optional filters and inclusive Unix-millisecond bounds; omitted bounds use the API default window. `l2_snapshots` queries `/historical/l2-orderbooks` with required `source`, `market`, `start`, and `end`, plus optional `instrument`. Its inclusive window must be at most five minutes. Both follow cursor pages and return fixed top-25 nullable price and size fields. The `source_event_is_snapshot` flag identifies the original event: `l2_snapshots` includes books reconstructed after deltas too. These are breaking return-type and query changes; use `events` or replay for event envelopes and full-depth reconstruction. Older ranges require an API key. The orderbook route also has server limits of 100,000 raw captures, 1 GiB read, and 30 seconds.
 
 `raw_channel` queries `/raw/{exchange}/{event}` with required inclusive Unix-millisecond bounds and follows all cursor pages. For example, `list(client.raw_channel(exchange="binance", event="trades", start=1704067200000, end=1704067200000))` returns capture metadata and `original_json` as exact text. It does not parse that JSON. The route exposes the latest seven days without a key; older ranges require an API key. The existing source/market `raw` and raw replay methods retain their current interface.
 
@@ -509,7 +508,7 @@ Pass `dataset_root=...` to `PolarisClient(...)` to override the root explicitly.
 
 ## Snapshot-first replay
 
-For standardized snapshot-backed data, `replay(...)`, `events(...)`, `propamm_quote_ladders(...)`, `bbo(...)`, `depth_metrics(...)`, `l2_snapshots(...)`, and `l2_updates(...)` prefer `/snapshots` plus daily bulk `/download?source=...&market=...&date=...&mode=json` manifests, and reuse local snapshot files when they already exist:
+For standardized snapshot-backed data, `replay(...)`, `events(...)`, `propamm_quote_ladders(...)`, `bbo(...)`, and `depth_metrics(...)` prefer `/snapshots` plus daily bulk `/download?source=...&market=...&date=...&mode=json` manifests, and reuse local snapshot files when they already exist:
 
 ```python
 from polaris_data import PolarisClient

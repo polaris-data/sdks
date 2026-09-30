@@ -100,8 +100,8 @@ Use it to inspect available data, query historical market data, and open realtim
 | `intents(opts)` | Array of flat `IntentRow` values | Pair-shaped RFQ and intent observations |
 | `optionTickers(opts)` | Array of flat `OptionTickerRow` values | Read an underlying's whole option chain or one exact contract with `instrument` |
 | `perpetualTickers(opts)` | Array of flat `FundingRateRow` values | Funding-bearing perpetual ticker observations |
-| `l2Snapshots(opts)` | Array of standardised orderbook snapshot rows | Order book reconstruction and microstructure analysis |
-| `l2Updates(opts)` | Array of raw orderbook snapshots and deltas | High-throughput application-managed books |
+| `l2Snapshots({ source, market, start, end, instrument? })` | Array of flat `OrderbookL2Row` values | Reconstructed, sorted top-25 book after each L2 event |
+| `l2Updates(opts)` | Array of flat `OrderbookL2Row` values | Stateless source snapshots and sparse deltas |
 | `fundingRates(opts)` | Array of flat `FundingRateRow` values | Partial funding observations |
 | `ohlcvRows(opts)` | Array of flat `OhlcvRow` values | Every venue-published candle update |
 | `intentRows(opts)` | Array of flat `IntentRow` values | Pair-shaped intent observations |
@@ -187,9 +187,8 @@ deltas are suppressed until a new snapshot arrives. Authentication and protocol
 errors are terminal.
 
 Standardized orderbooks are materialized by default for `stream`, `replay`,
-`events`, and `l2Snapshots`. Snapshots replace the book, deltas update listed
-prices, and zero quantities delete prices. Use `l2Updates` to receive raw
-snapshots and deltas. `OrderbookBuilder` exposes the same state machine for
+and `events`. Snapshots replace the book, deltas update listed
+prices, and zero quantities delete prices. Use `events({ ...opts, materializeOrderbooks: false })` for raw event envelopes. `OrderbookBuilder` exposes the same state machine for
 application-managed event flows. Its `update` method mutates state without
 constructing a complete book; call `snapshot` only when sorted levels are
 needed. The existing `apply` method retains its combined behavior.
@@ -481,7 +480,9 @@ import type {
 
 `ohlcv`, `ohlcvTradingView`, `volume`, `vwap`, and `volatility` now use `/historical/ohlcv`. Each candle's latest collector revision is selected. OHLCV and volume use the requested exact venue interval and base volume; missing volume or trade count becomes zero. VWAP uses quote volume divided by base volume and falls back to close times base volume when quote volume is absent. Volatility is the sample standard deviation of log returns from the finest available candle closes shorter than the requested interval; buckets with fewer than two returns are omitted. These are candle-derived results, not trade-derived results. `from` and `to` are applied as inclusive candle-open bounds, and the aggregate methods no longer perform snapshot coverage checks.
 
-The remaining standardised historical methods (`events`, `l2Snapshots`, `l2Updates`, `propammQuoteLadders`, `bbo`, `depthMetrics`, and `replay`) use a **snapshot-first** approach:
+`l2Updates` uses `/historical/l2-updates` with optional `source`, `market`, `instrument`, `start`, and `end`; omitted bounds use the API default window. `l2Snapshots` uses `/historical/l2-orderbooks` and requires `source`, `market`, and inclusive Unix-millisecond `start` and `end` within five minutes. Both paginate and return flat rows with 100 nullable fixed level fields. `l2Snapshots` includes a reconstructed book after each source event, including deltas. The route has server limits of 100,000 raw captures, 1 GiB read, and 30 seconds. These methods no longer return event envelopes or accept `from`, `to`, `allowGaps`, or `materializeOrderbooks`; use `events` or `replay` for event-envelope reconstruction. Older ranges require an API key.
+
+The remaining standardised historical methods (`events`, `propammQuoteLadders`, `bbo`, `depthMetrics`, and `replay`) use a **snapshot-first** approach:
 
 1. Hourly `.jsonl.zst` snapshot files are discovered via `GET /snapshots` and downloaded via `GET /download` on first access.
 2. Subsequent calls for the same date range read from the local cache — no network round-trips.
