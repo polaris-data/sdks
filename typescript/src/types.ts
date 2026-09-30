@@ -760,7 +760,7 @@ export interface VolatilityOptions extends HistoricalQueryOptions {
   method?: "log_returns";
 }
 
-export interface DepthMetricsOptions extends HistoricalQueryOptions {
+export interface DepthMetricsOptions extends Omit<L2OrderbooksOptions, "instrument"> {
   depthPct?: number;
   slippageNotional?: number;
 }

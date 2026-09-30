@@ -419,8 +419,8 @@ export class BasePolarisClient {
       throw new PolarisError("source and market are required");
     }
     if (!Number.isSafeInteger(options.start) || !Number.isSafeInteger(options.end) ||
-        options.start < 0 || options.end < options.start || options.end - options.start > 300_000) {
-      throw new PolarisError("l2Snapshots requires an inclusive range of at most five minutes");
+        options.start < 0 || options.end < options.start) {
+      throw new PolarisError("l2Snapshots requires non-negative inclusive bounds with start <= end");
     }
     const instrument = optionalFilter("instrument", options.instrument);
     return this._historicalRows("/historical/l2-orderbooks", { ...options, source, market }, isOrderbookL2Row,
@@ -434,41 +434,13 @@ export class BasePolarisClient {
       instrument ? { instrument } : {});
   }
 
-  /** Read snapshot-backed complete books for calculations that need full depth. */
-  private async _snapshotOrderbooks(
-    options: HistoricalQueryOptions,
-  ): Promise<OrderbookEvent[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: OrderbookEvent[] = [];
-    const events = this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      isOrderbookEvent,
-    );
-    for await (const event of materializeEvents(
-      events,
-      options.materializeOrderbooks ?? true,
-    )) {
-      result.push(event as OrderbookEvent);
-    }
-    return result;
-  }
-
-  /**
-   * Derive best bid / offer quotes from standardised orderbook snapshots.
-   */
-  async bbo(options: HistoricalQueryOptions): Promise<BboQuote[]> {
+  /** Derive best bid and offer quotes from reconstructed top-25 books. */
+  async bbo(options: Omit<L2OrderbooksOptions, "instrument">): Promise<BboQuote[]> {
     const result: BboQuote[] = [];
-    for (const event of await this._snapshotOrderbooks({
-      ...options,
-      materializeOrderbooks: true,
-    })) {
-      const quote = deriveBbo(event);
+    for (const row of await this.l2Snapshots(options)) {
+      const quote = deriveBbo(row);
       if (quote) result.push(quote);
     }
-
     return result;
   }
 
@@ -562,11 +534,8 @@ export class BasePolarisClient {
     }
 
     const result: DepthMetricsRow[] = [];
-    for (const event of await this._snapshotOrderbooks({
-      ...options,
-      materializeOrderbooks: true,
-    })) {
-      const row = deriveDepthMetrics(event, depthPct, slippageNotional);
+    for (const book of await this.l2Snapshots(options)) {
+      const row = deriveDepthMetrics(book, depthPct, slippageNotional);
       if (row) result.push(row);
     }
 
@@ -2190,118 +2159,26 @@ async function* materializeEvents(
   }
 }
 
-function coerceNumeric(value: unknown): number | undefined {
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? value : undefined;
+function l2Levels(row: OrderbookL2Row, side: "bid" | "ask"): Array<[number, number]> {
+  const levels: Array<[number, number]> = [];
+  for (let i = 0; i < 25; i++) {
+    const index = String(i).padStart(2, "0");
+    const price = row[`${side}_px_${index}` as keyof OrderbookL2Row];
+    const quantity = row[`${side}_sz_${index}` as keyof OrderbookL2Row];
+    if (typeof price === "number" && price > 0 &&
+        typeof quantity === "number" && quantity > 0) levels.push([price, quantity]);
   }
-
-  if (typeof value === "string" && value.trim().length > 0) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  }
-
-  return undefined;
+  return levels;
 }
 
-function extractOrderbookSides(
-  row: Json,
-): { bids: unknown[]; asks: unknown[] } | undefined {
-  const candidates: unknown[] = [row];
-  if (isRecord(row.data)) {
-    candidates.push(row.data);
-  }
-
-  for (const candidate of candidates) {
-    if (!isRecord(candidate)) continue;
-
-    const { bids, asks } = candidate;
-    if (Array.isArray(bids) && Array.isArray(asks)) {
-      return { bids, asks };
-    }
-  }
-
-  return undefined;
-}
-
-function parseOrderbookLevel(level: unknown): [number, number] | undefined {
-  let priceRaw: unknown;
-  let quantityRaw: unknown;
-
-  if (isRecord(level)) {
-    priceRaw = level.price;
-    quantityRaw = level.quantity ?? level.size ?? level.amount;
-  } else if (Array.isArray(level) && level.length >= 2) {
-    [priceRaw, quantityRaw] = level;
-  }
-
-  const price = coerceNumeric(priceRaw);
-  const quantity = coerceNumeric(quantityRaw);
-  if (price === undefined || quantity === undefined) {
-    return undefined;
-  }
-
-  return [price, quantity];
-}
-
-function bestOrderbookLevel(
-  levels: unknown[],
-  side: "bid" | "ask",
-): [number, number] | undefined {
-  let bestPrice: number | undefined;
-  let bestQuantity: number | undefined;
-
-  for (const level of levels) {
-    const parsed = parseOrderbookLevel(level);
-    if (!parsed) continue;
-
-    const [price, quantity] = parsed;
-    if (
-      bestPrice === undefined ||
-      (side === "bid" && price > bestPrice) ||
-      (side === "ask" && price < bestPrice)
-    ) {
-      bestPrice = price;
-      bestQuantity = quantity;
-    }
-  }
-
-  if (bestPrice === undefined || bestQuantity === undefined) {
-    return undefined;
-  }
-
-  return [bestPrice, bestQuantity];
-}
-
-function sortedOrderbookLevels(
-  levels: unknown[],
-  side: "bid" | "ask",
-): Array<[number, number]> {
-  const parsed = levels
-    .map((level) => parseOrderbookLevel(level))
-    .filter((level): level is [number, number] => level !== undefined)
-    .filter(([price, quantity]) => price > 0 && quantity > 0);
-
-  parsed.sort((a, b) => (side === "bid" ? b[0] - a[0] : a[0] - b[0]));
-  return parsed;
-}
-
-function deriveBbo(row: Json): BboQuote | undefined {
-  const timestamp = sdkTimestamp(row as StandardEvent);
-  if (timestamp === undefined) return undefined;
-
-  const sides = extractOrderbookSides(row);
-  if (!sides) return undefined;
-
-  const bid = bestOrderbookLevel(sides.bids, "bid");
-  const ask = bestOrderbookLevel(sides.asks, "ask");
+function deriveBbo(row: OrderbookL2Row): BboQuote | undefined {
+  const bid = l2Levels(row, "bid")[0];
+  const ask = l2Levels(row, "ask")[0];
   if (!bid || !ask) return undefined;
-
   return {
-    timestamp,
-    bid_price: bid[0],
-    bid_quantity: bid[1],
-    ask_price: ask[0],
-    ask_quantity: ask[1],
+    timestamp: row.collector_timestamp,
+    bid_price: bid[0], bid_quantity: bid[1],
+    ask_price: ask[0], ask_quantity: ask[1],
   };
 }
 
@@ -2348,18 +2225,13 @@ function quoteTotalForBaseQuantity(
 }
 
 function deriveDepthMetrics(
-  row: Json,
+  row: OrderbookL2Row,
   depthPct: number,
   slippageNotional: number,
 ): DepthMetricsRow | undefined {
-  const timestamp = sdkTimestamp(row as StandardEvent);
-  if (timestamp === undefined) return undefined;
-
-  const sides = extractOrderbookSides(row);
-  if (!sides) return undefined;
-
-  const bids = sortedOrderbookLevels(sides.bids, "bid");
-  const asks = sortedOrderbookLevels(sides.asks, "ask");
+  const timestamp = row.collector_timestamp;
+  const bids = l2Levels(row, "bid");
+  const asks = l2Levels(row, "ask");
   if (bids.length === 0 || asks.length === 0) {
     return undefined;
   }

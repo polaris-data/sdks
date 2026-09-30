@@ -4,7 +4,7 @@ use futures_util::StreamExt;
 use log::Level;
 use logtest::Logger;
 use polaris_data::{
-    AmountKind, CatalogQuery, HistoricalQuery, HistoricalRowsQuery, HistoricalStream,
+    AmountKind, BboQuery, CatalogQuery, HistoricalQuery, HistoricalRowsQuery, HistoricalStream,
     IntentRowsQuery, IntentStatus, L2OrderbooksQuery, L2UpdatesQuery, OhlcvFormat, OhlcvInterval,
     OhlcvOutput, OhlcvQuery, OhlcvRowsQuery, OptionTickerRowsQuery, PolarisClient, PolarisError,
     QuoteRowsQuery, RawChannelQuery, ReplayQuery, blocking,
@@ -1172,7 +1172,7 @@ fn l2_row(snapshot: bool) -> serde_json::Value {
 }
 
 #[tokio::test]
-async fn l2_direct_rows_page_and_validate_bounded_books() {
+async fn l2_direct_rows_page_and_accept_variable_ranges() {
     let server = MockServer::start().await;
     let root = TempDir::new().expect("tempdir");
     let client = build_client(&server, &root);
@@ -1229,20 +1229,23 @@ async fn l2_direct_rows_page_and_validate_bounded_books() {
     .expect("rows");
     assert_eq!(books.len(), 1);
     assert!(!books[0].source_event_is_snapshot);
-    assert!(
+    let long = collect_stream(
         client
             .l2_snapshots(L2OrderbooksQuery {
                 source: "hyperliquid".to_owned(),
                 market: "0G".to_owned(),
                 instrument: None,
                 start: 10,
-                end: 300_011,
+                end: 600_010,
             })
             .await
-            .is_err()
-    );
+            .expect("long books"),
+    )
+    .await
+    .expect("long rows");
+    assert_eq!(long.len(), 1);
     let requests = server.received_requests().await.expect("requests");
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 4);
     assert!(
         requests[0]
             .url
@@ -1255,6 +1258,77 @@ async fn l2_direct_rows_page_and_validate_bounded_books() {
             .query_pairs()
             .any(|(key, value)| key == "end" && value == "300010")
     );
+    assert!(
+        requests[3]
+            .url
+            .query_pairs()
+            .any(|(key, value)| key == "end" && value == "600010")
+    );
+}
+
+#[tokio::test]
+async fn bbo_and_depth_use_reconstructed_orderbook_rows() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().expect("tempdir");
+    let client = build_client(&server, &root);
+    let mut first = l2_row(true);
+    let start = 1_704_067_200_000_i64;
+    first["collector_timestamp"] = json!(start);
+    first["bid_px_01"] = json!(99.5);
+    first["bid_sz_01"] = json!(3.0);
+    first["ask_px_00"] = json!(100.5);
+    first["ask_sz_00"] = json!(1.0);
+    first["ask_px_01"] = json!(101.0);
+    first["ask_sz_01"] = json!(2.0);
+    Mock::given(method("GET"))
+        .and(path("/historical/l2-orderbooks"))
+        .and(query_param("start", "1704067200000"))
+        .and(query_param("end", "1704070800000"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [first], "has_more": false, "next_cursor": null
+        })))
+        .mount(&server)
+        .await;
+    let bbo = collect_stream(
+        client
+            .bbo(BboQuery {
+                source: "hyperliquid".to_owned(),
+                market: "0G".to_owned(),
+                start,
+                end: start + 3_600_000,
+                interval: None,
+            })
+            .await
+            .expect("bbo"),
+    )
+    .await
+    .expect("quotes");
+    assert_eq!(bbo.len(), 1);
+    assert_eq!(bbo[0].bid_price, 100.0);
+    assert_eq!(bbo[0].ask_price, 100.5);
+    let depth = collect_stream(
+        client
+            .depth_metrics(
+                L2OrderbooksQuery {
+                    source: "hyperliquid".to_owned(),
+                    market: "0G".to_owned(),
+                    instrument: None,
+                    start,
+                    end: start + 3_600_000,
+                },
+                Some(0.01),
+                Some(100.25),
+            )
+            .await
+            .expect("depth"),
+    )
+    .await
+    .expect("metrics");
+    assert_eq!(depth.len(), 1);
+    assert_eq!(depth[0].bid_depth_notional, 498.5);
+    assert_eq!(depth[0].ask_depth_notional, 302.5);
+    assert_eq!(depth[0].buy_average_price, Some(100.5));
+    assert_eq!(server.received_requests().await.expect("requests").len(), 2);
 }
 
 #[tokio::test]

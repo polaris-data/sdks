@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use ordered_float::OrderedFloat;
 use serde_json::{Map, Value, json};
 
-use crate::{BboQuote, OrderbookData, OrderbookLevel, PolarisError, StandardEvent};
+use crate::{OrderbookData, OrderbookLevel, PolarisError, StandardEvent};
 
 const SNAPSHOT_TYPES: [&str; 3] = ["orderbook", "orderbook_snapshot", "l2_snapshot"];
 const DELTA_TYPE: &str = "orderbook_delta";
@@ -19,27 +19,6 @@ pub(crate) enum BookUpdate {
     Ignored,
     Suppressed,
     Applied,
-}
-
-pub(crate) struct BookView<'a> {
-    state: &'a BookState,
-}
-
-impl BookView<'_> {
-    pub(crate) fn bids(&self) -> impl Iterator<Item = (f64, f64)> + '_ {
-        self.state
-            .bids
-            .iter()
-            .rev()
-            .map(|(price, quantity)| (price.0, *quantity))
-    }
-
-    pub(crate) fn asks(&self) -> impl Iterator<Item = (f64, f64)> + '_ {
-        self.state
-            .asks
-            .iter()
-            .map(|(price, quantity)| (price.0, *quantity))
-    }
 }
 
 /// Reconstruct complete order books from standardized snapshot and delta events.
@@ -184,31 +163,6 @@ impl OrderbookBuilder {
         }
 
         Ok(BookUpdate::Applied)
-    }
-
-    pub(crate) fn best_bid_offer(
-        &self,
-        source: &str,
-        market: &str,
-        timestamp: i64,
-    ) -> Option<BboQuote> {
-        let state = self.books.get(source)?.get(market)?;
-        let (bid_price, bid_quantity) = state.bids.last_key_value()?;
-        let (ask_price, ask_quantity) = state.asks.first_key_value()?;
-        Some(BboQuote {
-            timestamp,
-            bid_price: bid_price.0,
-            bid_quantity: *bid_quantity,
-            ask_price: ask_price.0,
-            ask_quantity: *ask_quantity,
-        })
-    }
-
-    pub(crate) fn view(&self, source: &str, market: &str) -> Option<BookView<'_>> {
-        self.books
-            .get(source)?
-            .get(market)
-            .map(|state| BookView { state })
     }
 }
 

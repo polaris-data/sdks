@@ -179,6 +179,14 @@ class PolarisClient:
     def _time(value: TimeInput | None) -> str | None:
         return None if value is None else to_iso8601(value)
 
+    @staticmethod
+    def _validate_l2_bounds(start: int, end: int) -> None:
+        for name, value in (("start", start), ("end", end)):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise TypeError(f"{name} must be an integer Unix millisecond timestamp")
+        if start < 0 or end < start:
+            raise ValueError("start and end must be non-negative inclusive milliseconds with start <= end")
+
     def _emit_diagnostics(self) -> None:
         for message in self._native.take_diagnostics():
             warnings.warn(message, UserWarning, stacklevel=3)
@@ -845,12 +853,8 @@ class PolarisClient:
         end: int,
         instrument: str | None = None,
     ) -> Iterator[OrderbookL2Row]:
-        """Read reconstructed top-25 books after each L2 event in a window of at most five minutes."""
-        for name, value in (("start", start), ("end", end)):
-            if not isinstance(value, int) or isinstance(value, bool):
-                raise TypeError(f"{name} must be an integer Unix millisecond timestamp")
-        if start < 0 or end < start or end - start > 300_000:
-            raise ValueError("l2_snapshots requires a non-negative inclusive range of at most five minutes")
+        """Read reconstructed top-25 books after each L2 event."""
+        self._validate_l2_bounds(start, end)
         iterator = self._call("l2_snapshots", source, market, start, end, instrument)
         return self._iterate(iterator, "l2_snapshots")
 
@@ -1043,10 +1047,9 @@ class PolarisClient:
         *,
         source: str,
         market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
+        start: int,
+        end: int,
         interval: str | None = None,
-        allow_gaps: bool = False,
         changes_only: bool = False,
         output: Literal["iterator"] = "iterator",
         batch_size: int = DEFAULT_BATCH_SIZE,
@@ -1058,10 +1061,9 @@ class PolarisClient:
         *,
         source: str,
         market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
+        start: int,
+        end: int,
         interval: str | None = None,
-        allow_gaps: bool = False,
         changes_only: bool = False,
         output: Literal["batches"],
         batch_size: int = DEFAULT_BATCH_SIZE,
@@ -1073,10 +1075,9 @@ class PolarisClient:
         *,
         source: str,
         market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
+        start: int,
+        end: int,
         interval: str | None = None,
-        allow_gaps: bool = False,
         changes_only: bool = False,
         output: Literal["dataframe"],
         batch_size: int = DEFAULT_BATCH_SIZE,
@@ -1087,14 +1088,14 @@ class PolarisClient:
         *,
         source: str,
         market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
+        start: int,
+        end: int,
         interval: str | None = None,
-        allow_gaps: bool = False,
         changes_only: bool = False,
         output: OutputFormat = "iterator",
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
+        self._validate_l2_bounds(start, end)
         self._validate_columnar_output(output, batch_size)
         if output != "iterator":
             extra = "dataframe" if output == "dataframe" else "arrow"
@@ -1102,27 +1103,11 @@ class PolarisClient:
             if output == "dataframe":
                 self._require_optional_module("pandas", "dataframe")
             iterator = self._call(
-                "bbo_columnar",
-                source,
-                market,
-                self._time(from_),
-                self._time(to),
-                interval,
-                allow_gaps,
-                changes_only,
-                batch_size,
+                "bbo_columnar", source, market, start, end,
+                interval, changes_only, batch_size,
             )
             return self._columnar_result(iterator, "bbo", output, pyarrow_module)
-        iterator = self._call(
-            "bbo",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            interval,
-            allow_gaps,
-            changes_only,
-        )
+        iterator = self._call("bbo", source, market, start, end, interval, changes_only)
         return self._iterate(iterator, "bbo")
 
     def _historical(
@@ -1425,11 +1410,10 @@ class PolarisClient:
         *,
         source: str,
         market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
+        start: int,
+        end: int,
         depth_pct: float = 0.01,
         slippage_notional: float = 10_000.0,
-        allow_gaps: bool = False,
         output: Literal["iterator"] = "iterator",
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> Iterator[JSONDict]: ...
@@ -1440,11 +1424,10 @@ class PolarisClient:
         *,
         source: str,
         market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
+        start: int,
+        end: int,
         depth_pct: float = 0.01,
         slippage_notional: float = 10_000.0,
-        allow_gaps: bool = False,
         output: Literal["batches"],
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> Iterator[pyarrow.RecordBatch]: ...
@@ -1455,11 +1438,10 @@ class PolarisClient:
         *,
         source: str,
         market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
+        start: int,
+        end: int,
         depth_pct: float = 0.01,
         slippage_notional: float = 10_000.0,
-        allow_gaps: bool = False,
         output: Literal["dataframe"],
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> pandas.DataFrame: ...
@@ -1469,14 +1451,14 @@ class PolarisClient:
         *,
         source: str,
         market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
+        start: int,
+        end: int,
         depth_pct: float = 0.01,
         slippage_notional: float = 10_000.0,
-        allow_gaps: bool = False,
         output: OutputFormat = "iterator",
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
+        self._validate_l2_bounds(start, end)
         if depth_pct <= 0:
             raise ValueError("depth_pct must be greater than 0")
         if slippage_notional <= 0:
@@ -1488,30 +1470,11 @@ class PolarisClient:
             if output == "dataframe":
                 self._require_optional_module("pandas", "dataframe")
             iterator = self._call(
-                "depth_metrics_columnar",
-                source,
-                market,
-                self._time(from_),
-                self._time(to),
-                depth_pct,
-                slippage_notional,
-                allow_gaps,
-                batch_size,
+                "depth_metrics_columnar", source, market, start, end,
+                depth_pct, slippage_notional, batch_size,
             )
-            return self._columnar_result(
-                iterator,
-                "depth_metrics",
-                output,
-                pyarrow_module,
-            )
+            return self._columnar_result(iterator, "depth_metrics", output, pyarrow_module)
         iterator = self._call(
-            "depth_metrics",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            depth_pct,
-            slippage_notional,
-            allow_gaps,
+            "depth_metrics", source, market, start, end, depth_pct, slippage_notional,
         )
         return self._iterate(iterator, "depth_metrics")

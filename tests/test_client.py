@@ -1695,19 +1695,20 @@ def test_l2_direct_routes_paginate_and_keep_nullable_levels(tmp_path) -> None:
     try:
         updates = list(client.l2_updates(source="hyperliquid", market="0G", instrument="0G", start=10, end=10))
         books = list(client.l2_snapshots(source="hyperliquid", market="0G", start=10, end=300010))
-        with pytest.raises((ValueError, PolarisError)):
-            list(client.l2_snapshots(source="hyperliquid", market="0G", start=10, end=300011))
+        long_books = list(client.l2_snapshots(source="hyperliquid", market="0G", start=10, end=600010))
     finally:
         client.close()
 
     assert updates == [snapshot, delta]
     assert books == [delta]
+    assert long_books == [delta]
     assert calls[0].url.params["instrument"] == "0G"
     assert calls[0].url.params["start"] == "10"
     assert calls[0].url.params["end"] == "10"
     assert calls[1].url.params["cursor"] == "next"
     assert calls[2].url.params["end"] == "300010"
-    assert len(calls) == 3
+    assert calls[3].url.params["end"] == "600010"
+    assert len(calls) == 4
 
 
 def test_direct_historical_rows_paginate_filter_and_keep_nullable_fields(tmp_path) -> None:
@@ -1933,427 +1934,99 @@ def test_python_rejects_malformed_perpetual_tickers(tmp_path, bad_data) -> None:
         client.close()
 
 
-def test_bbo_derives_best_prices_and_quantities_from_l2_snapshots(tmp_path) -> None:
-    snapshot_rows = [
-        {
-            "timestamp": _ts("2024-01-01T00:00:00Z"),
-            "type": "l2_snapshot",
-            "data": {
-                "bids": [[99.0, 2.0], [100.0, 1.25], ["98.5", "5.0"]],
-                "asks": [[101.0, 3.0], [100.5, 0.75]],
-            },
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:00:01Z"),
-            "type": "l2_snapshot",
-            "data": {
-                "bids": [{"price": "100.1", "size": "1.5"}],
-                "asks": [{"price": 100.4, "quantity": 0.25}],
-            },
-        },
+def _book_row(timestamp: int, bids: list[tuple[float, float]], asks: list[tuple[float, float]]) -> dict:
+    row = _l2_row(True)
+    row.update(source="binance", market="BTC-USDT", collector_timestamp=timestamp)
+    for index in range(25):
+        for side in ("bid", "ask"):
+            row[f"{side}_px_{index:02}"] = None
+            row[f"{side}_sz_{index:02}"] = None
+    for side, levels in (("bid", bids), ("ask", asks)):
+        for index, (price, size) in enumerate(levels):
+            row[f"{side}_px_{index:02}"] = price
+            row[f"{side}_sz_{index:02}"] = size
+    return row
+
+
+def test_bbo_uses_reconstructed_books_for_long_range_changes_and_intervals(tmp_path) -> None:
+    start = _ts("2024-01-01T00:00:00Z")
+    books = [
+        _book_row(start + 100, [(100.0, 2.0), (99.0, 4.0)], [(101.0, 3.0)]),
+        _book_row(start + 800, [(100.0, 2.0), (99.5, 4.0)], [(101.0, 3.0)]),
+        _book_row(start + 1200, [(100.0, 2.0)], [(100.5, 1.5)]),
+        _book_row(start + 3100, [(100.25, 1.0)], [(100.5, 1.5)]),
     ]
+    calls: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/snapshots":
-            return httpx.Response(
-                200,
-                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
-            )
-        if request.url.path == "/download":
-            return httpx.Response(
-                200,
-                json=_bulk_download_manifest(
-                    source="binance",
-                    market="BTC-USDT",
-                    day="2024-01-01",
-                    keys=[SNAPSHOT_KEY_DAY_1],
-                ),
-            )
-        if _is_download_request(request):
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(snapshot_rows),
-                headers={"content-type": "application/zstd"},
-            )
-        raise AssertionError(f"unexpected request: {request.url}")
+        calls.append(request)
+        assert request.url.path == "/historical/l2-orderbooks"
+        return httpx.Response(200, json={"items": books, "has_more": False, "next_cursor": None})
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        assert list(
-            client.bbo(
-                source="binance",
-                market="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-            )
-        ) == [
-            {
-                "timestamp": _ts("2024-01-01T00:00:00Z"),
-                "bid_price": 100.0,
-                "bid_quantity": 1.25,
-                "ask_price": 100.5,
-                "ask_quantity": 0.75,
-            },
-            {
-                "timestamp": _ts("2024-01-01T00:00:01Z"),
-                "bid_price": 100.1,
-                "bid_quantity": 1.5,
-                "ask_price": 100.4,
-                "ask_quantity": 0.25,
-            },
-        ]
+        options = dict(source="binance", market="BTC-USDT",
+                       start=start, end=start + 3_600_000)
+        all_quotes = list(client.bbo(**options))
+        changed = list(client.bbo(**options, changes_only=True))
+        interval = list(client.bbo(**options, interval="1s"))
     finally:
         client.close()
 
-
-def test_bbo_changes_only_suppresses_deep_and_no_op_updates(tmp_path) -> None:
-    rows = [
-        {
-            "timestamp": _ts("2024-01-01T00:00:00Z"),
-            "type": "orderbook",
-            "data": {"bids": [[100, 1], [99, 2]], "asks": [[101, 1]]},
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:00:01Z"),
-            "type": "orderbook_delta",
-            "data": {"bids": [[99, 3]]},
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:00:02Z"),
-            "type": "orderbook_delta",
-            "data": {"bids": [[100, 4]]},
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:00:03Z"),
-            "type": "orderbook_delta",
-            "data": {"bids": [[100, 4]]},
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:00:04Z"),
-            "type": "orderbook_delta",
-            "data": {"asks": [[101, 0], [100.5, 2]]},
-        },
-    ]
-    path = tmp_path / "daily" / "binance" / "BTC-USDT" / "2024-01-01.jsonl.zst"
-    path.parent.mkdir(parents=True)
-    path.write_bytes(_zstd_ndjson(rows))
-
-    with PolarisClient(dataset_root=tmp_path) as client:
-        all_quotes = list(
-            client.bbo(
-                source="binance",
-                market="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T00:00:05Z",
-            )
-        )
-        changed_quotes = list(
-            client.bbo(
-                source="binance",
-                market="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T00:00:05Z",
-                changes_only=True,
-            )
-        )
-
-    assert len(all_quotes) == 5
-    assert [quote["timestamp"] for quote in changed_quotes] == [
-        _ts("2024-01-01T00:00:00Z"),
-        _ts("2024-01-01T00:00:02Z"),
-        _ts("2024-01-01T00:00:04Z"),
-    ]
+    assert [row["timestamp"] for row in all_quotes] == [start + 100, start + 800, start + 1200, start + 3100]
+    assert [row["timestamp"] for row in changed] == [start + 100, start + 1200, start + 3100]
+    assert [row["timestamp"] for row in interval] == [start, start + 1000, start + 3000]
+    assert interval[0]["bid_quantity"] == 2.0
+    assert interval[1]["ask_price"] == 100.5
+    assert all(call.url.params["start"] == str(start) for call in calls)
+    assert all(call.url.params["end"] == str(start + 3_600_000) for call in calls)
+    assert len(calls) == 3
 
 
-def test_depth_metrics_derive_depth_spread_and_slippage_from_l2_snapshots(
-    tmp_path,
-) -> None:
-    snapshot_rows = [
-        {
-            "timestamp": _ts("2024-01-01T00:00:00Z"),
-            "type": "l2_snapshot",
-            "data": {
-                "bids": [[100.0, 2.0], [99.5, 3.0], [98.0, 4.0]],
-                "asks": [[100.5, 1.0], [101.0, 2.0], [102.0, 4.0]],
-            },
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:00:01Z"),
-            "type": "l2_snapshot",
-            "data": {
-                "bids": [{"price": "100.1", "size": "0.4"}],
-                "asks": [{"price": 100.4, "quantity": 0.3}],
-            },
-        },
+def test_depth_metrics_uses_top_25_reconstructed_book_levels(tmp_path) -> None:
+    start = _ts("2024-01-01T00:00:00Z")
+    books = [
+        _book_row(start, [(100.0, 2.0), (99.5, 3.0), (98.0, 4.0)],
+                  [(100.5, 1.0), (101.0, 2.0), (102.0, 4.0)]),
+        _book_row(start + 1000, [(100.1, 0.4)], [(100.4, 0.3)]),
     ]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/snapshots":
-            return httpx.Response(
-                200,
-                json={"snapshots": [{"key": SNAPSHOT_KEY_DAY_1, "date": "2024-01-01"}]},
-            )
-        if request.url.path == "/download":
-            return httpx.Response(
-                200,
-                json=_bulk_download_manifest(
-                    source="binance",
-                    market="BTC-USDT",
-                    day="2024-01-01",
-                    keys=[SNAPSHOT_KEY_DAY_1],
-                ),
-            )
-        if _is_download_request(request):
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(snapshot_rows),
-                headers={"content-type": "application/zstd"},
-            )
-        raise AssertionError(f"unexpected request: {request.url}")
+        assert request.url.path == "/historical/l2-orderbooks"
+        return httpx.Response(200, json={"items": books, "has_more": False, "next_cursor": None})
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        rows = list(
-            client.depth_metrics(
-                source="binance",
-                market="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T01:00:00Z",
-                depth_pct=0.01,
-                slippage_notional=100.25,
-            )
-        )
+        rows = list(client.depth_metrics(
+            source="binance", market="BTC-USDT",
+            start=start, end=start + 3_600_000,
+            depth_pct=0.01, slippage_notional=100.25,
+        ))
     finally:
         client.close()
 
     assert len(rows) == 2
-
-    assert rows[0] == pytest.approx(
-        {
-            "timestamp": _ts("2024-01-01T00:00:00Z"),
-            "bid_price": 100.0,
-            "ask_price": 100.5,
-            "mid_price": 100.25,
-            "bid_ask_spread": 0.5,
-            "bid_ask_spread_bps": 49.87531172069825,
-            "depth_pct": 0.01,
-            "bid_depth_notional": 498.5,
-            "ask_depth_notional": 302.5,
-            "depth_imbalance": 0.24469413233458176,
-            "slippage_notional": 100.25,
-            "target_base_quantity": 1.0,
-            "buy_average_price": 100.5,
-            "sell_average_price": 100.0,
-            "buy_slippage": 0.25,
-            "sell_slippage": 0.25,
-            "buy_slippage_bps": 24.937655860349125,
-            "sell_slippage_bps": 24.937655860349125,
-        }
-    )
-    assert rows[1] == pytest.approx(
-        {
-            "timestamp": _ts("2024-01-01T00:00:01Z"),
-            "bid_price": 100.1,
-            "ask_price": 100.4,
-            "mid_price": 100.25,
-            "bid_ask_spread": 0.30000000000001137,
-            "bid_ask_spread_bps": 29.92518703241909,
-            "depth_pct": 0.01,
-            "bid_depth_notional": 40.04,
-            "ask_depth_notional": 30.119999999999997,
-            "depth_imbalance": 0.14139110604332952,
-            "slippage_notional": 100.25,
-            "target_base_quantity": 1.0,
-            "buy_average_price": None,
-            "sell_average_price": None,
-            "buy_slippage": None,
-            "sell_slippage": None,
-            "buy_slippage_bps": None,
-            "sell_slippage_bps": None,
-        }
-    )
-
-
-def test_bbo_interval_emits_last_quote_in_non_empty_aligned_buckets(tmp_path) -> None:
-    snapshot_rows = [
-        {
-            "timestamp": _ts("2024-01-01T00:00:00.100Z"),
-            "type": "orderbook",
-            "source": "lighter",
-            "market": "BTC-USD",
-            "data": {"bids": [[100.0, 2.0]], "asks": [[101.0, 3.0]]},
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:00:00.800Z"),
-            "type": "orderbook_delta",
-            "source": "lighter",
-            "market": "BTC-USD",
-            "data": {"bids": [[99.0, 4.0]]},
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:00:01.200Z"),
-            "type": "orderbook_delta",
-            "source": "lighter",
-            "market": "BTC-USD",
-            "data": {"asks": [[101.0, 0.0], [100.5, 1.5]]},
-        },
-        {
-            "timestamp": _ts("2024-01-01T00:00:03.100Z"),
-            "type": "orderbook_delta",
-            "source": "lighter",
-            "market": "BTC-USD",
-            "data": {"bids": [[100.0, 0.0], [100.25, 1.0]]},
-        },
-    ]
-    snapshot_key = "standard-lighter-BTC-USD-2024-01-01"
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/snapshots":
-            return httpx.Response(
-                200,
-                json={"snapshots": [{"key": snapshot_key, "date": "2024-01-01"}]},
-            )
-        if request.url.path == "/download":
-            return httpx.Response(
-                200,
-                json=_bulk_download_manifest(
-                    source="lighter",
-                    market="BTC-USD",
-                    day="2024-01-01",
-                    keys=[snapshot_key],
-                ),
-            )
-        if _is_download_request(request):
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(snapshot_rows),
-                headers={"content-type": "application/zstd"},
-            )
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        rows = list(
-            client.bbo(
-                source="lighter",
-                market="BTC-USD",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T00:00:04Z",
-                interval="1s",
-            )
-        )
-    finally:
-        client.close()
-
-    assert [row["timestamp"] for row in rows] == [
-        _ts("2024-01-01T00:00:00Z"),
-        _ts("2024-01-01T00:00:01Z"),
-        _ts("2024-01-01T00:00:03Z"),
-    ]
-    assert rows[0]["bid_price"] == 100.0
-    assert rows[0]["bid_quantity"] == 2.0
-    assert rows[1]["ask_price"] == 100.5
-    assert rows[2]["bid_price"] == 100.25
-
-    for interval in ["100ms", "10s", "1m", "5m", "15m", "1h"]:
-        with PolarisClient(dataset_root=tmp_path) as cached_client:
-            assert list(
-                cached_client.bbo(
-                    source="lighter",
-                    market="BTC-USD",
-                    from_="2024-01-01T00:00:00Z",
-                    to="2024-01-01T00:00:04Z",
-                    interval=interval,
-                )
-            )
-
-
-def test_bbo_clears_state_across_allowed_coverage_gaps(tmp_path) -> None:
-    keys = {
-        _hourly_snapshot_key("lighter", "BTC-USD", "2024-01-01", 0): [
-            {
-                "timestamp": _ts("2024-01-01T00:00:01Z"),
-                "type": "orderbook",
-                "source": "lighter",
-                "market": "BTC-USD",
-                "data": {"bids": [[100.0, 1.0]], "asks": [[101.0, 1.0]]},
-            }
-        ],
-        _hourly_snapshot_key("lighter", "BTC-USD", "2024-01-01", 2): [
-            {
-                "timestamp": _ts("2024-01-01T02:00:05Z"),
-                "type": "orderbook_delta",
-                "source": "lighter",
-                "market": "BTC-USD",
-                "data": {"bids": [[100.5, 2.0]]},
-            },
-            {
-                "timestamp": _ts("2024-01-01T02:00:10Z"),
-                "type": "orderbook",
-                "source": "lighter",
-                "market": "BTC-USD",
-                "data": {"bids": [[90.0, 3.0]], "asks": [[91.0, 4.0]]},
-            },
-        ],
-    }
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/snapshots":
-            return httpx.Response(
-                200,
-                json={
-                    "snapshots": [
-                        {"key": key, "date": "2024-01-01", "hour": hour}
-                        for hour, key in [(0, next(iter(keys))), (2, list(keys)[1])]
-                    ]
-                },
-            )
-        if request.url.path == "/download":
-            return httpx.Response(
-                200,
-                json=_bulk_download_manifest(
-                    source="lighter",
-                    market="BTC-USD",
-                    day="2024-01-01",
-                    keys=list(keys),
-                ),
-            )
-        if _is_download_request(request):
-            key = request.url.path.removeprefix("/").removesuffix(".jsonl.zst")
-            return httpx.Response(
-                200,
-                content=_zstd_ndjson(keys[key]),
-                headers={"content-type": "application/zstd"},
-            )
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        with pytest.warns(UserWarning, match="skipped missing intervals"):
-            rows = list(
-                client.bbo(
-                    source="lighter",
-                    market="BTC-USD",
-                    from_="2024-01-01T00:00:00Z",
-                    to="2024-01-01T03:00:00Z",
-                    allow_gaps=True,
-                )
-            )
-    finally:
-        client.close()
-
-    assert [row["timestamp"] for row in rows] == [
-        _ts("2024-01-01T00:00:01Z"),
-        _ts("2024-01-01T02:00:10Z"),
-    ]
-    assert rows[-1]["bid_price"] == 90.0
+    assert rows[0] == pytest.approx({
+        "timestamp": start, "bid_price": 100.0, "ask_price": 100.5,
+        "mid_price": 100.25, "bid_ask_spread": 0.5,
+        "bid_ask_spread_bps": 49.87531172069825, "depth_pct": 0.01,
+        "bid_depth_notional": 498.5, "ask_depth_notional": 302.5,
+        "depth_imbalance": 0.24469413233458176,
+        "slippage_notional": 100.25, "target_base_quantity": 1.0,
+        "buy_average_price": 100.5, "sell_average_price": 100.0,
+        "buy_slippage": 0.25, "sell_slippage": 0.25,
+        "buy_slippage_bps": 24.937655860349125,
+        "sell_slippage_bps": 24.937655860349125,
+    })
+    assert rows[1]["buy_average_price"] is None
+    assert rows[1]["sell_average_price"] is None
 
 
 def test_bbo_rejects_unknown_interval() -> None:
     client = make_client(lambda request: httpx.Response(500))
     try:
         with pytest.raises(ValueError, match="interval must be one of"):
-            client.bbo(source="lighter", market="BTC-USD", interval="2s")
+            client.bbo(source="lighter", market="BTC-USD", start=0, end=1, interval="2s")
     finally:
         client.close()
 
@@ -2364,7 +2037,7 @@ def test_depth_metrics_validate_positive_inputs() -> None:
         with pytest.raises(ValueError, match="depth_pct must be greater than 0"):
             client.depth_metrics(
                 source="binance",
-                market="BTC-USDT",
+                market="BTC-USDT", start=0, end=1,
                 depth_pct=0,
             )
         with pytest.raises(
@@ -2372,7 +2045,7 @@ def test_depth_metrics_validate_positive_inputs() -> None:
         ):
             client.depth_metrics(
                 source="binance",
-                market="BTC-USDT",
+                market="BTC-USDT", start=0, end=1,
                 slippage_notional=0,
             )
     finally:

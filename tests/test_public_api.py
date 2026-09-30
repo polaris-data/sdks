@@ -271,10 +271,9 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("self", positional, required),
         ("source", keyword_only, required),
         ("market", keyword_only, required),
-        ("from_", keyword_only, None),
-        ("to", keyword_only, None),
+        ("start", keyword_only, required),
+        ("end", keyword_only, required),
         ("interval", keyword_only, None),
-        ("allow_gaps", keyword_only, False),
         ("changes_only", keyword_only, False),
         ("output", keyword_only, "iterator"),
         ("batch_size", keyword_only, 65_536),
@@ -348,15 +347,13 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("self", positional, required),
         ("source", keyword_only, required),
         ("market", keyword_only, required),
-        ("from_", keyword_only, None),
-        ("to", keyword_only, None),
+        ("start", keyword_only, required),
+        ("end", keyword_only, required),
         ("depth_pct", keyword_only, 0.01),
         ("slippage_notional", keyword_only, 10_000.0),
-        ("allow_gaps", keyword_only, False),
         ("output", keyword_only, "iterator"),
         ("batch_size", keyword_only, 65_536),
     ]
-
 
 def test_documented_result_annotations_and_models_are_stable() -> None:
     assert (

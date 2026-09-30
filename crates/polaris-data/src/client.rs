@@ -12,7 +12,6 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::{
-    OrderbookBuilder,
     builder::PolarisClientBuilder,
     errors::PolarisError,
     http::{AuthMode, HttpClient},
@@ -31,9 +30,7 @@ use crate::{
         ReplayStream, SnapshotEntry, StandardEvent, StreamQuery, TradeDataV2, TradeEvent,
         TradeEventV2, TradeRow, VolatilityBar, VolumeBar, VwapBar,
     },
-    ohlcv,
-    orderbook::{BookUpdate, BookView},
-    realtime, replay,
+    ohlcv, realtime, replay,
     storage::{
         LocalSnapshotFile, SnapshotCoverage, StorageLayout, acquire_sync_lock, data_file_path,
         list_local_snapshot_entries, parse_snapshot_key, temp_file_path, write_coverage_sidecar,
@@ -1272,7 +1269,6 @@ impl PolarisClient {
     // -----------------------------------------------------------------------
 
     /// Return one reconstructed, sorted top-25 book after each source L2 event.
-    /// The inclusive range must be at most five minutes.
     pub async fn l2_snapshots(
         &self,
         query: L2OrderbooksQuery,
@@ -1282,10 +1278,9 @@ impl PolarisClient {
                 "source and market are required for l2_snapshots".to_owned(),
             ));
         }
-        if query.start < 0 || query.end < query.start || query.end - query.start > 300_000 {
+        if query.start < 0 || query.end < query.start {
             return Err(PolarisError::InvalidResponse(
-                "l2_snapshots requires a non-negative inclusive range of at most five minutes"
-                    .to_owned(),
+                "l2_snapshots requires non-negative inclusive bounds with start <= end".to_owned(),
             ));
         }
         let mut params = vec![
@@ -1344,38 +1339,25 @@ impl PolarisClient {
         changes_only: bool,
     ) -> Result<HistoricalStream<BboQuote>, PolarisError> {
         let interval_ms = query.interval.map(ohlcv::interval_to_millis);
-        let mut records = self
-            .replay_records(ReplayQuery {
+        let mut rows = self
+            .l2_snapshots(L2OrderbooksQuery {
                 source: query.source,
                 market: query.market,
-                from: query.from,
-                to: query.to,
-                allow_gaps: query.allow_gaps,
-                materialize_orderbooks: false,
+                instrument: None,
+                start: query.start,
+                end: query.end,
             })
             .await?;
         Ok(Box::pin(try_stream! {
-            let mut orderbooks = OrderbookBuilder::new();
-            let mut buckets = std::collections::BTreeMap::<i64, BboQuote>::new();
+            let mut buckets = BTreeMap::<i64, BboQuote>::new();
             let mut last_quote: Option<BboQuote> = None;
-            while let Some(record) = records.next().await {
-                let event = match record? {
-                    replay::ReplayRecord::Reset => {
-                        orderbooks.clear();
-                        last_quote = None;
-                        continue;
-                    }
-                    replay::ReplayRecord::Event(event) => event,
-                };
-                if orderbooks.update_state(&event)? != BookUpdate::Applied {
-                    continue;
-                }
-                let Some(mut quote) = orderbooks.best_bid_offer(
-                    event.source(),
-                    event.market(),
-                    event.timestamp(),
-                ) else {
-                    continue;
+            while let Some(row) = rows.next().await {
+                let row = row?;
+                let (Some((bid_price, bid_quantity)), Some((ask_price, ask_quantity))) =
+                    (row.bids().next(), row.asks().next()) else { continue };
+                let mut quote = BboQuote {
+                    timestamp: row.collector_timestamp,
+                    bid_price, bid_quantity, ask_price, ask_quantity,
                 };
                 if changes_only {
                     let unchanged = last_quote.as_ref().is_some_and(|previous| {
@@ -1384,9 +1366,7 @@ impl PolarisClient {
                             && previous.ask_price == quote.ask_price
                             && previous.ask_quantity == quote.ask_quantity
                     });
-                    if unchanged {
-                        continue;
-                    }
+                    if unchanged { continue; }
                     last_quote = Some(quote.clone());
                 }
                 let Some(width) = interval_ms else {
@@ -1397,9 +1377,7 @@ impl PolarisClient {
                 quote.timestamp = bucket;
                 buckets.insert(bucket, quote);
             }
-            for quote in buckets.into_values() {
-                yield quote;
-            }
+            for quote in buckets.into_values() { yield quote; }
         }))
     }
 
@@ -1509,7 +1487,7 @@ impl PolarisClient {
     /// Derive spread, depth, imbalance, and slippage metrics from orderbooks.
     pub async fn depth_metrics(
         &self,
-        query: HistoricalQuery,
+        query: L2OrderbooksQuery,
         depth_pct: Option<f64>,
         slippage_notional: Option<f64>,
     ) -> Result<HistoricalStream<DepthMetricsRow>, PolarisError> {
@@ -1527,39 +1505,16 @@ impl PolarisClient {
             ));
         }
 
-        let mut records = self
-            .replay_records(ReplayQuery {
-                source: query.source,
-                market: query.market,
-                from: query.from,
-                to: query.to,
-                allow_gaps: query.allow_gaps,
-                materialize_orderbooks: false,
-            })
-            .await?;
+        let mut rows = self.l2_snapshots(query).await?;
         Ok(Box::pin(try_stream! {
-            let mut orderbooks = OrderbookBuilder::new();
-            while let Some(record) = records.next().await {
-                let event = match record? {
-                    replay::ReplayRecord::Reset => {
-                        orderbooks.clear();
-                        continue;
-                    }
-                    replay::ReplayRecord::Event(event) => event,
-                };
-                if orderbooks.update_state(&event)? != BookUpdate::Applied {
-                    continue;
-                }
-                if let Some(view) = orderbooks.view(event.source(), event.market()) {
-                    if let Some(metrics) = Self::derive_depth_metrics(
-                        event.timestamp(),
-                        view,
-                        depth_pct,
-                        slippage_notional,
-                    ) {
-                        yield metrics;
-                    }
-                }
+            while let Some(row) = rows.next().await {
+                let row = row?;
+                let bids: Vec<_> = row.bids().collect();
+                let asks: Vec<_> = row.asks().collect();
+                if let Some(metrics) = Self::derive_depth_metrics(
+                    row.collector_timestamp, &bids, &asks,
+                    depth_pct, slippage_notional,
+                ) { yield metrics; }
             }
         }))
     }
@@ -1776,12 +1731,13 @@ impl PolarisClient {
 
     fn derive_depth_metrics(
         timestamp: i64,
-        orderbook: BookView<'_>,
+        bids: &[(f64, f64)],
+        asks: &[(f64, f64)],
         depth_pct: f64,
         slippage_notional: f64,
     ) -> Option<DepthMetricsRow> {
-        let (bid_price, _bid_quantity) = orderbook.bids().next()?;
-        let (ask_price, _ask_quantity) = orderbook.asks().next()?;
+        let (bid_price, _bid_quantity) = *bids.first()?;
+        let (ask_price, _ask_quantity) = *asks.first()?;
 
         if ask_price < bid_price {
             return None;
@@ -1796,9 +1752,9 @@ impl PolarisClient {
         };
 
         let bid_depth_notional =
-            Self::depth_notional_within_pct(orderbook.bids(), true, mid_price, depth_pct);
+            Self::depth_notional_within_pct(bids.iter().copied(), true, mid_price, depth_pct);
         let ask_depth_notional =
-            Self::depth_notional_within_pct(orderbook.asks(), false, mid_price, depth_pct);
+            Self::depth_notional_within_pct(asks.iter().copied(), false, mid_price, depth_pct);
         let total_depth_notional = bid_depth_notional + ask_depth_notional;
         let depth_imbalance = if total_depth_notional > 0.0 {
             Some((bid_depth_notional - ask_depth_notional) / total_depth_notional)
@@ -1813,13 +1769,13 @@ impl PolarisClient {
         };
 
         let (buy_avg_price, buy_slippage, buy_slippage_bps) = Self::calculate_slippage(
-            orderbook.asks(),
+            asks.iter().copied(),
             target_base_quantity?,
             slippage_notional,
             mid_price,
         );
         let (sell_avg_price, sell_slippage, sell_slippage_bps) = Self::calculate_slippage(
-            orderbook.bids(),
+            bids.iter().copied(),
             target_base_quantity?,
             slippage_notional,
             mid_price,

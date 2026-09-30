@@ -433,7 +433,7 @@ impl PolarisClient {
 
     pub fn depth_metrics(
         &self,
-        query: HistoricalQuery,
+        query: L2OrderbooksQuery,
         depth_pct: Option<f64>,
         slippage_notional: Option<f64>,
     ) -> Result<HistoricalIterator<DepthMetricsRow>, PolarisError> {

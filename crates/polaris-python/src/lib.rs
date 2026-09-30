@@ -895,16 +895,15 @@ impl NativeClient {
         )))
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, interval=None, allow_gaps=false, changes_only=false))]
+    #[pyo3(signature = (source, market, start, end, interval=None, changes_only=false))]
     fn bbo<'py>(
         &self,
         py: Python<'py>,
         source: String,
         market: String,
-        from_: Option<String>,
-        to: Option<String>,
+        start: i64,
+        end: i64,
         interval: Option<&str>,
-        allow_gaps: bool,
         changes_only: bool,
     ) -> PyResult<NativeHistorical> {
         let interval = interval.map(parse_interval).transpose()?;
@@ -913,9 +912,8 @@ impl NativeClient {
                 let query = BboQuery {
                     source,
                     market,
-                    from: time_input(from_),
-                    to: time_input(to),
-                    allow_gaps,
+                    start,
+                    end,
                     interval,
                 };
                 if changes_only {
@@ -930,16 +928,15 @@ impl NativeClient {
         )))
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, interval=None, allow_gaps=false, changes_only=false, batch_size=65_536))]
+    #[pyo3(signature = (source, market, start, end, interval=None, changes_only=false, batch_size=65_536))]
     fn bbo_columnar(
         &self,
         py: Python<'_>,
         source: String,
         market: String,
-        from_: Option<String>,
-        to: Option<String>,
+        start: i64,
+        end: i64,
         interval: Option<&str>,
-        allow_gaps: bool,
         changes_only: bool,
         batch_size: usize,
     ) -> PyResult<NativeColumnar> {
@@ -952,9 +949,8 @@ impl NativeClient {
                 let query = BboQuery {
                     source,
                     market,
-                    from: time_input(from_),
-                    to: time_input(to),
-                    allow_gaps,
+                    start,
+                    end,
                     interval: parsed_interval,
                 };
                 if changes_only {
@@ -1169,19 +1165,24 @@ impl NativeClient {
         to_python(py, &result)
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, depth_pct=0.01, slippage_notional=10_000.0, allow_gaps=false))]
+    #[pyo3(signature = (source, market, start, end, depth_pct=0.01, slippage_notional=10_000.0))]
     fn depth_metrics<'py>(
         &self,
         py: Python<'py>,
         source: String,
         market: String,
-        from_: Option<String>,
-        to: Option<String>,
+        start: i64,
+        end: i64,
         depth_pct: f64,
         slippage_notional: f64,
-        allow_gaps: bool,
     ) -> PyResult<NativeHistorical> {
-        let query = historical_query(source, market, from_, to, allow_gaps);
+        let query = L2OrderbooksQuery {
+            source,
+            market,
+            instrument: None,
+            start,
+            end,
+        };
         let iterator = py
             .detach(|| {
                 self.inner
@@ -1193,29 +1194,32 @@ impl NativeClient {
         )))
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, depth_pct=0.01, slippage_notional=10_000.0, allow_gaps=false, batch_size=65_536))]
+    #[pyo3(signature = (source, market, start, end, depth_pct=0.01, slippage_notional=10_000.0, batch_size=65_536))]
     fn depth_metrics_columnar(
         &self,
         py: Python<'_>,
         source: String,
         market: String,
-        from_: Option<String>,
-        to: Option<String>,
+        start: i64,
+        end: i64,
         depth_pct: f64,
         slippage_notional: f64,
-        allow_gaps: bool,
         batch_size: usize,
     ) -> PyResult<NativeColumnar> {
         validate_batch_size(batch_size)?;
         let identity_source = source.clone();
         let identity_market = market.clone();
+        let query = L2OrderbooksQuery {
+            source,
+            market,
+            instrument: None,
+            start,
+            end,
+        };
         let iterator = py
             .detach(|| {
-                self.inner.depth_metrics(
-                    historical_query(source, market, from_, to, allow_gaps),
-                    Some(depth_pct),
-                    Some(slippage_notional),
-                )
+                self.inner
+                    .depth_metrics(query, Some(depth_pct), Some(slippage_notional))
             })
             .map_err(native_error)?;
         Ok(NativeColumnar::depth(

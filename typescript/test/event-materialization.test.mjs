@@ -46,7 +46,7 @@ test("event APIs materialize orderbooks by default and expose raw L2 updates", a
   client.close();
 });
 
-test("direct L2 routes paginate and validate their bounded range", async () => {
+test("direct L2 routes paginate and accept variable ranges", async () => {
   const { PolarisClient } = await import("../dist/node/index.js");
   const row = (snapshot) => {
     const value = {
@@ -61,6 +61,8 @@ test("direct L2 routes paginate and validate their bounded range", async () => {
     }
     value.bid_px_00 = 100;
     value.bid_sz_00 = 2;
+    value.ask_px_00 = 101;
+    value.ask_sz_00 = 1;
     return value;
   };
   const calls = [];
@@ -75,11 +77,18 @@ test("direct L2 routes paginate and validate their bounded range", async () => {
   } });
   assert.deepEqual(await client.l2Updates({ source: "hyperliquid", market: "0G", instrument: "0G", start: 10, end: 10 }), [row(true), row(false)]);
   assert.deepEqual(await client.l2Snapshots({ source: "hyperliquid", market: "0G", start: 10, end: 300010 }), [row(false)]);
-  await assert.rejects(client.l2Snapshots({ source: "hyperliquid", market: "0G", start: 10, end: 300011 }));
-  assert.equal(calls.length, 3);
+  assert.deepEqual(await client.l2Snapshots({ source: "hyperliquid", market: "0G", start: 10, end: 600010 }), [row(false)]);
+  const bbo = await client.bbo({ source: "hyperliquid", market: "0G", start: 10, end: 600010 });
+  assert.equal(bbo[0].bid_price, 100);
+  assert.equal(bbo[0].ask_price, 101);
+  const depth = await client.depthMetrics({ source: "hyperliquid", market: "0G", start: 10, end: 600010 });
+  assert.equal(depth[0].bid_depth_notional, 200);
+  assert.equal(depth[0].ask_depth_notional, 101);
+  assert.equal(calls.length, 6);
   assert.equal(calls[0].url.searchParams.get("instrument"), "0G");
   assert.equal(calls[1].url.searchParams.get("cursor"), "next");
   assert.equal(calls[2].url.searchParams.get("end"), "300010");
+  assert.equal(calls[4].url.searchParams.get("end"), "600010");
   assert.equal(calls[0].headers.Authorization, "Bearer secret");
   client.close();
 });
@@ -323,18 +332,6 @@ test("v2 decoder consumes metadata and materializes unified books without changi
   assert.deepEqual(materialized[1].data.bids, [{ price: 100, quantity: 4 }]);
   assert.deepEqual(materialized[1].data.asks, [{ price: 102, quantity: 5 }]);
 
-  const bbo = await client.bbo({ source: "lighter", market: "BTC-USD" });
-  assert.deepEqual(bbo.map(({ timestamp }) => timestamp), [
-    1704067200100,
-    1704067200300,
-    1704067200550,
-  ]);
-  const depth = await client.depthMetrics({ source: "lighter", market: "BTC-USD" });
-  assert.deepEqual(depth.map(({ timestamp }) => timestamp), [
-    1704067200100,
-    1704067200300,
-    1704067200550,
-  ]);
   const unsupported = [...lines];
   unsupported[0] = unsupported[0].replace('"v2"', '"v3"');
   assert.throws(

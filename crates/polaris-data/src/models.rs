@@ -80,9 +80,8 @@ pub struct HistoricalQuery {
 pub struct BboQuery {
     pub source: String,
     pub market: String,
-    pub from: Option<TimeInput>,
-    pub to: Option<TimeInput>,
-    pub allow_gaps: bool,
+    pub start: i64,
+    pub end: i64,
     pub interval: Option<OhlcvInterval>,
 }
 
@@ -157,7 +156,7 @@ pub struct L2UpdatesQuery {
     pub end: Option<i64>,
 }
 
-/// Required five-minute-or-shorter window for `/historical/l2-orderbooks`.
+/// Required inclusive millisecond window for `/historical/l2-orderbooks`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct L2OrderbooksQuery {
     pub source: String,
@@ -279,6 +278,80 @@ pub struct OrderbookL2Row {
     pub bid_sz_24: Option<f64>,
     pub ask_px_24: Option<f64>,
     pub ask_sz_24: Option<f64>,
+}
+
+impl OrderbookL2Row {
+    /// Return the reconstructed top-25 bid levels in API order.
+    pub fn bids(&self) -> impl Iterator<Item = (f64, f64)> + '_ {
+        [
+            (self.bid_px_00, self.bid_sz_00),
+            (self.bid_px_01, self.bid_sz_01),
+            (self.bid_px_02, self.bid_sz_02),
+            (self.bid_px_03, self.bid_sz_03),
+            (self.bid_px_04, self.bid_sz_04),
+            (self.bid_px_05, self.bid_sz_05),
+            (self.bid_px_06, self.bid_sz_06),
+            (self.bid_px_07, self.bid_sz_07),
+            (self.bid_px_08, self.bid_sz_08),
+            (self.bid_px_09, self.bid_sz_09),
+            (self.bid_px_10, self.bid_sz_10),
+            (self.bid_px_11, self.bid_sz_11),
+            (self.bid_px_12, self.bid_sz_12),
+            (self.bid_px_13, self.bid_sz_13),
+            (self.bid_px_14, self.bid_sz_14),
+            (self.bid_px_15, self.bid_sz_15),
+            (self.bid_px_16, self.bid_sz_16),
+            (self.bid_px_17, self.bid_sz_17),
+            (self.bid_px_18, self.bid_sz_18),
+            (self.bid_px_19, self.bid_sz_19),
+            (self.bid_px_20, self.bid_sz_20),
+            (self.bid_px_21, self.bid_sz_21),
+            (self.bid_px_22, self.bid_sz_22),
+            (self.bid_px_23, self.bid_sz_23),
+            (self.bid_px_24, self.bid_sz_24),
+        ]
+        .into_iter()
+        .filter_map(|(price, quantity)| price.zip(quantity))
+        .filter(|(price, quantity)| {
+            price.is_finite() && *price > 0.0 && quantity.is_finite() && *quantity > 0.0
+        })
+    }
+
+    /// Return the reconstructed top-25 ask levels in API order.
+    pub fn asks(&self) -> impl Iterator<Item = (f64, f64)> + '_ {
+        [
+            (self.ask_px_00, self.ask_sz_00),
+            (self.ask_px_01, self.ask_sz_01),
+            (self.ask_px_02, self.ask_sz_02),
+            (self.ask_px_03, self.ask_sz_03),
+            (self.ask_px_04, self.ask_sz_04),
+            (self.ask_px_05, self.ask_sz_05),
+            (self.ask_px_06, self.ask_sz_06),
+            (self.ask_px_07, self.ask_sz_07),
+            (self.ask_px_08, self.ask_sz_08),
+            (self.ask_px_09, self.ask_sz_09),
+            (self.ask_px_10, self.ask_sz_10),
+            (self.ask_px_11, self.ask_sz_11),
+            (self.ask_px_12, self.ask_sz_12),
+            (self.ask_px_13, self.ask_sz_13),
+            (self.ask_px_14, self.ask_sz_14),
+            (self.ask_px_15, self.ask_sz_15),
+            (self.ask_px_16, self.ask_sz_16),
+            (self.ask_px_17, self.ask_sz_17),
+            (self.ask_px_18, self.ask_sz_18),
+            (self.ask_px_19, self.ask_sz_19),
+            (self.ask_px_20, self.ask_sz_20),
+            (self.ask_px_21, self.ask_sz_21),
+            (self.ask_px_22, self.ask_sz_22),
+            (self.ask_px_23, self.ask_sz_23),
+            (self.ask_px_24, self.ask_sz_24),
+        ]
+        .into_iter()
+        .filter_map(|(price, quantity)| price.zip(quantity))
+        .filter(|(price, quantity)| {
+            price.is_finite() && *price > 0.0 && quantity.is_finite() && *quantity > 0.0
+        })
+    }
 }
 
 /// One venue-published candle update from `/historical/ohlcv`.
