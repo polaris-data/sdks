@@ -66,6 +66,7 @@ export type {
   IntentRow,
   QuoteRow,
   RawCaptureRow,
+  RawQueryOptions,
   RawChannelOptions,
   MarkPriceData,
   MarkPriceEvent,

@@ -17,6 +17,7 @@ import type {
   IntentRowsOptions,
   OhlcvRow,
   RawCaptureRow,
+  RawQueryOptions,
   RawChannelOptions,
   HistoricalRowsOptions,
   L2UpdatesOptions,
@@ -286,12 +287,16 @@ export class BasePolarisClient {
     return this._pagedRows("/events", params, isMixedEventRow, "items", "required");
   }
 
-  /** Return exact raw captures from one venue-native channel via `/raw`. */
-  async rawChannel(options: RawChannelOptions): Promise<RawCaptureRow[]> {
-    if (!options.exchange.trim() || !options.event.trim() ||
-      options.exchange === "." || options.exchange === ".." ||
-      options.event === "." || options.event === "..") {
-      throw new PolarisError("exchange and event must be non-empty channel identifiers");
+  /** Return exact raw captures with optional market and channel filters. */
+  async raw(options: RawQueryOptions): Promise<RawCaptureRow[]> {
+    const source = optionalFilter("source", options.source);
+    if (!source || source === "." || source === "..") {
+      throw new PolarisError("source must be a non-empty raw source identifier");
+    }
+    const market = optionalFilter("market", options.market);
+    const channel = optionalFilter("channel", options.channel);
+    if (channel === "." || channel === "..") {
+      throw new PolarisError("channel must be a native raw channel identifier");
     }
     if (!Number.isSafeInteger(options.start) || options.start < 0 ||
       !Number.isSafeInteger(options.end) || options.end < options.start) {
@@ -302,13 +307,29 @@ export class BasePolarisClient {
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
       throw new PolarisError("start and end must be representable ISO timestamps");
     }
+    const limit = options.limit ?? 1000;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) {
+      throw new PolarisError("limit must be an integer from 1 to 1000");
+    }
     return this._pagedRows("/raw", {
-      source: options.exchange,
-      channel: options.event,
+      source,
+      ...(market !== undefined && { market }),
+      ...(channel !== undefined && { channel }),
       start: start.toISOString(),
       end: end.toISOString(),
-      limit: "1000",
+      limit: String(limit),
     }, isRawCaptureRow, "data");
+  }
+
+  /** Return exact captures from one venue-native channel. */
+  async rawChannel(options: RawChannelOptions): Promise<RawCaptureRow[]> {
+    if (!options.exchange.trim() || !options.event.trim() ||
+      options.exchange === "." || options.exchange === ".." ||
+      options.event === "." || options.event === "..") {
+      throw new PolarisError("exchange and event must be non-empty channel identifiers");
+    }
+    return this.raw({ source: options.exchange, channel: options.event, market: options.market,
+      start: options.start, end: options.end });
   }
 
   /** Return pair-shaped flat intent observations. */

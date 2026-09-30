@@ -457,9 +457,23 @@ export interface RawCaptureRow {
   original_json: string;
 }
 
+/** Filters for exact raw captures from GET /raw. */
+export interface RawQueryOptions {
+  source: string;
+  /** Exact recorded routing market; omit to include all source markets. */
+  market?: string;
+  /** Exact native raw channel; omit to include all channels. */
+  channel?: string;
+  /** Inclusive collector times in Unix milliseconds. */
+  start: number;
+  end: number;
+  limit?: number;
+}
+
 export interface RawChannelOptions {
   exchange: string;
   event: string;
+  market?: string;
   start: number;
   end: number;
 }
