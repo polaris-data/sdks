@@ -7,7 +7,6 @@ import json
 import os
 import warnings
 from itertools import islice
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator, Literal, Sequence, overload
 
@@ -34,10 +33,8 @@ from .models import (
     OhlcvRow,
     OrderbookL2Row,
     PerpetualTickerEvent,
-    PropammQuoteLadderEvent,
     QuoteRow,
     RawCaptureRow,
-    SnapshotEntry,
     TradeRow,
 )
 from .utils import TimeInput, to_iso8601
@@ -139,8 +136,6 @@ class PolarisClient:
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = DEFAULT_TIMEOUT,
         dataset_root: str | os.PathLike[str] | None = None,
-        replay_cache_enabled: bool = True,
-        replay_cache_dir: str | os.PathLike[str] | None = None,
         stream_url: str | None = None,
     ) -> None:
         self.api_key = api_key or os.getenv("POLARIS_API_KEY")
@@ -154,12 +149,6 @@ class PolarisClient:
             stream_url,
         )
         self.dataset_root = Path(self._native.dataset_root)
-        self.replay_cache_enabled = replay_cache_enabled
-        self.replay_cache_dir = (
-            Path(replay_cache_dir).expanduser()
-            if replay_cache_dir is not None
-            else Path(self._native.replay_cache_dir)
-        )
         self._closed = False
         self._streams: set[RealtimeStream] = set()
 
@@ -455,243 +444,6 @@ class PolarisClient:
 
     def count(self) -> CatalogCount:
         return self._call("count")
-
-    def list_snapshots(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput,
-        to: TimeInput,
-        limit: int = 1000,
-    ) -> list[SnapshotEntry]:
-        if limit <= 0:
-            raise ValueError("limit must be > 0")
-        rows = self._call(
-            "list_snapshots",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            limit,
-        )
-        return [
-            SnapshotEntry(
-                key=row["key"],
-                source=row.get("source"),
-                market=row.get("market"),
-                date=row.get("date"),
-                start=(
-                    datetime.fromisoformat(row["start"].replace("Z", "+00:00"))
-                    if row.get("start")
-                    else None
-                ),
-                end=(
-                    datetime.fromisoformat(row["end"].replace("Z", "+00:00"))
-                    if row.get("end")
-                    else None
-                ),
-                hour=row.get("hour"),
-            )
-            for row in rows
-        ]
-
-    @overload
-    def replay(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        standard: bool = True,
-        allow_gaps: bool = False,
-        parallel: bool | int = False,
-        materialize_orderbooks: bool = True,
-        output: Literal["iterator"] = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict]: ...
-
-    @overload
-    def replay(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        standard: Literal[True] = True,
-        allow_gaps: bool = False,
-        parallel: bool | int = False,
-        materialize_orderbooks: bool = True,
-        output: Literal["batches"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[pyarrow.RecordBatch]: ...
-
-    @overload
-    def replay(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        standard: Literal[True] = True,
-        allow_gaps: bool = False,
-        parallel: bool | int = False,
-        materialize_orderbooks: bool = True,
-        output: Literal["dataframe"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> pandas.DataFrame: ...
-
-    def replay(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        standard: bool = True,
-        allow_gaps: bool = False,
-        parallel: bool | int = False,
-        materialize_orderbooks: bool = True,
-        output: OutputFormat = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        self._validate_columnar_output(output, batch_size)
-        from_text = self._time(from_)
-        to_text = self._time(to)
-        if parallel and (from_text is None or to_text is None):
-            raise ValueError("from_ and to are required when parallel=True")
-
-        if output != "iterator":
-            if not standard:
-                raise ValueError("columnar output is only available for standardized replay")
-            extra = "dataframe" if output == "dataframe" else "arrow"
-            pyarrow_module = self._require_optional_module("pyarrow", extra)
-            if output == "dataframe":
-                self._require_optional_module("pandas", "dataframe")
-            iterator = self._call(
-                "events_columnar",
-                source,
-                market,
-                from_text,
-                to_text,
-                allow_gaps,
-                materialize_orderbooks,
-                batch_size,
-            )
-            return self._columnar_result(iterator, "replay", output, pyarrow_module)
-
-        if standard:
-            iterator = self._call(
-                "replay",
-                source,
-                market,
-                from_text,
-                to_text,
-                allow_gaps,
-                materialize_orderbooks,
-            )
-        elif from_text is not None and to_text is not None:
-            method = "raw_replay_chunked" if parallel else "raw_replay_cached"
-            iterator = self._call(
-                method,
-                source,
-                market,
-                from_text,
-                to_text,
-                1000,
-                self.replay_cache_enabled,
-                self.replay_cache_dir,
-            )
-        else:
-            iterator = self._call(
-                "raw_replay", source, market, from_text, to_text, 1000
-            )
-        return self._iterate(iterator, "replay")
-
-    @overload
-    def events(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        materialize_orderbooks: bool = True,
-        output: Literal["iterator"] = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict]: ...
-
-    @overload
-    def events(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        materialize_orderbooks: bool = True,
-        output: Literal["batches"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[pyarrow.RecordBatch]: ...
-
-    @overload
-    def events(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        materialize_orderbooks: bool = True,
-        output: Literal["dataframe"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> pandas.DataFrame: ...
-
-    def events(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        materialize_orderbooks: bool = True,
-        output: OutputFormat = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        self._validate_columnar_output(output, batch_size)
-        if output != "iterator":
-            extra = "dataframe" if output == "dataframe" else "arrow"
-            pyarrow_module = self._require_optional_module("pyarrow", extra)
-            if output == "dataframe":
-                self._require_optional_module("pandas", "dataframe")
-            iterator = self._call(
-                "events_columnar",
-                source,
-                market,
-                self._time(from_),
-                self._time(to),
-                allow_gaps,
-                materialize_orderbooks,
-                batch_size,
-            )
-            return self._columnar_result(iterator, "events", output, pyarrow_module)
-        iterator = self._call(
-            "events",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            allow_gaps,
-            materialize_orderbooks,
-        )
-        return self._iterate(iterator, "events")
 
     @overload
     def trades(
@@ -991,71 +743,6 @@ class PolarisClient:
         )
 
     @overload
-    def propamm_quote_ladders(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        output: Literal["iterator"] = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[PropammQuoteLadderEvent]: ...
-
-    @overload
-    def propamm_quote_ladders(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        output: Literal["batches"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[pyarrow.RecordBatch]: ...
-
-    @overload
-    def propamm_quote_ladders(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        output: Literal["dataframe"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> pandas.DataFrame: ...
-
-    def propamm_quote_ladders(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        output: OutputFormat = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> (
-        Iterator[PropammQuoteLadderEvent]
-        | Iterator[pyarrow.RecordBatch]
-        | pandas.DataFrame
-    ):
-        return self._typed_historical(
-            "propamm_quote_ladders",
-            source,
-            market,
-            from_,
-            to,
-            allow_gaps,
-            output,
-            batch_size,
-        )
-
-    @overload
     def bbo(
         self,
         *,
@@ -1123,54 +810,6 @@ class PolarisClient:
             return self._columnar_result(iterator, "bbo", output, pyarrow_module)
         iterator = self._call("bbo", source, market, start, end, interval, changes_only)
         return self._iterate(iterator, "bbo")
-
-    def _historical(
-        self,
-        method: str,
-        source: str,
-        market: str,
-        from_: TimeInput | None,
-        to: TimeInput | None,
-        allow_gaps: bool,
-    ) -> Iterator[JSONDict]:
-        iterator = self._call(
-            method,
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            allow_gaps,
-        )
-        return self._iterate(iterator, method)
-
-    def _typed_historical(
-        self,
-        method: Literal["funding_rates", "mark_prices", "propamm_quote_ladders"],
-        source: str,
-        market: str,
-        from_: TimeInput | None,
-        to: TimeInput | None,
-        allow_gaps: bool,
-        output: OutputFormat,
-        batch_size: int,
-    ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        self._validate_columnar_output(output, batch_size)
-        if output == "iterator":
-            return self._historical(method, source, market, from_, to, allow_gaps)
-        extra = "dataframe" if output == "dataframe" else "arrow"
-        pyarrow_module = self._require_optional_module("pyarrow", extra)
-        if output == "dataframe":
-            self._require_optional_module("pandas", "dataframe")
-        iterator = self._call(
-            f"{method}_columnar",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            allow_gaps,
-            batch_size,
-        )
-        return self._columnar_result(iterator, method, output, pyarrow_module)
 
     @overload
     def ohlcv(

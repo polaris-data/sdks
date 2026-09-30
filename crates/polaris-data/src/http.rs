@@ -54,20 +54,6 @@ impl HttpClient {
         })
     }
 
-    pub(crate) async fn download_absolute_bytes(&self, url: &str) -> Result<Vec<u8>, PolarisError> {
-        let url = Url::parse(url).map_err(|err| {
-            PolarisError::InvalidResponse(format!("invalid download url '{url}': {err}"))
-        })?;
-        let response = self.client.get(url).send().await?;
-        let status = response.status();
-        let body = response.bytes().await?;
-        if !status.is_success() {
-            let text = String::from_utf8_lossy(&body).to_string();
-            return Err(self.map_error(status, text));
-        }
-        Ok(body.to_vec())
-    }
-
     pub(crate) async fn get_bytes(
         &self,
         path: &str,

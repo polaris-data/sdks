@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, Literal, Optional, TypedDict, Union
 
 JSONDict = dict[str, Any]
@@ -98,17 +96,6 @@ class CatalogCount(TypedDict):
     by_source: dict[str, int]
 
 
-@dataclass(frozen=True)
-class SnapshotEntry:
-    """Remote standardized snapshot metadata."""
-
-    key: str
-    source: str | None = None
-    market: str | None = None
-    date: str | None = None
-    start: datetime | None = None
-    end: datetime | None = None
-    hour: int | None = None
 class PropammQuote(TypedDict):
     amount_in: str
     amount_out: str

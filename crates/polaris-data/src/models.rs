@@ -69,25 +69,6 @@ pub struct InstrumentsQuery {
     pub q: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ListSnapshotsQuery {
-    pub source: String,
-    pub market: String,
-    pub from: Option<TimeInput>,
-    pub to: Option<TimeInput>,
-    pub limit: Option<usize>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HistoricalQuery {
-    pub source: String,
-    pub market: String,
-    pub from: Option<TimeInput>,
-    pub to: Option<TimeInput>,
-    pub allow_gaps: bool,
-    pub materialize_orderbooks: bool,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BboQuery {
     pub source: String,
@@ -95,19 +76,6 @@ pub struct BboQuery {
     pub start: i64,
     pub end: i64,
     pub interval: Option<OhlcvInterval>,
-}
-
-impl Default for HistoricalQuery {
-    fn default() -> Self {
-        Self {
-            source: String::new(),
-            market: String::new(),
-            from: None,
-            to: None,
-            allow_gaps: false,
-            materialize_orderbooks: true,
-        }
-    }
 }
 
 /// Filters for the direct historical row endpoints. Times are inclusive Unix milliseconds.
@@ -598,29 +566,6 @@ pub struct FundingRateRow {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReplayQuery {
-    pub source: String,
-    pub market: String,
-    pub from: Option<TimeInput>,
-    pub to: Option<TimeInput>,
-    pub allow_gaps: bool,
-    pub materialize_orderbooks: bool,
-}
-
-impl Default for ReplayQuery {
-    fn default() -> Self {
-        Self {
-            source: String::new(),
-            market: String::new(),
-            from: None,
-            to: None,
-            allow_gaps: false,
-            materialize_orderbooks: true,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamQuery {
     pub source: String,
     pub markets: Vec<String>,
@@ -673,15 +618,6 @@ pub struct RawCaptureRow {
     pub additional_context: Value,
     /// Exact upstream JSON text; intentionally left unparsed.
     pub original_json: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RawReplayQuery {
-    pub source: String,
-    pub market: String,
-    pub from: Option<TimeInput>,
-    pub to: Option<TimeInput>,
-    pub limit: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -834,45 +770,6 @@ pub struct CatalogMarket {
     pub instrument: CatalogInstrument,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct SnapshotEntry {
-    pub key: String,
-    pub source: Option<String>,
-    pub market: Option<String>,
-    pub date: Option<String>,
-    pub start: Option<String>,
-    pub end: Option<String>,
-    pub timestamp: Option<String>,
-    pub hour: Option<u8>,
-    pub filename: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DownloadManifestQuery {
-    pub source: String,
-    pub market: String,
-    pub date: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DownloadManifestResponse {
-    pub source: String,
-    pub market: String,
-    pub date: String,
-    pub total: usize,
-    pub total_bytes: u64,
-    pub snapshots: Vec<DownloadManifestEntry>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct DownloadManifestEntry {
-    pub date: String,
-    pub timestamp: String,
-    pub key: String,
-    pub url: String,
-    pub expires_in_seconds: u64,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LegacyStandardEvent {
     pub timestamp: i64,
@@ -996,12 +893,6 @@ impl StandardEvent {
         match self {
             Self::Legacy(event) => &mut event.extra,
             Self::V2(event) => &mut event.extra,
-        }
-    }
-
-    pub(crate) fn set_legacy_timestamp(&mut self, timestamp: i64) {
-        if let Self::Legacy(event) = self {
-            event.timestamp = timestamp;
         }
     }
 }
@@ -1584,8 +1475,6 @@ pub enum OhlcvOutput {
 }
 
 pub type HistoricalStream<T> = Pin<Box<dyn Stream<Item = Result<T, PolarisError>> + Send>>;
-pub type ReplayStream = HistoricalStream<StandardEvent>;
-pub type RawReplayStream = Pin<Box<dyn Stream<Item = Result<Value, PolarisError>> + Send>>;
 pub type RealtimeStream = Pin<Box<dyn Stream<Item = Result<StandardEvent, PolarisError>> + Send>>;
 
 // PropAMM quote-ladder types

@@ -5,40 +5,18 @@ import json
 import threading
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
 import pytest
-import zstandard
 
 import polaris_data.client as client_module
-from polaris_data import PolarisClient, StreamDecodeError
+from polaris_data import PolarisClient
 
 SOURCE = "benchmark"
 MARKET = "BTC-USD"
 DAY = "2024-01-01"
 START_MS = 1_704_067_200_000
-
-
-def _write_fixture(root: Path, rows: list[dict]) -> Path:
-    key = f"standard-{SOURCE}-{MARKET}-{DAY}-000000"
-    path = root / "data" / "standard" / SOURCE / MARKET / DAY / f"{key}.jsonl.zst"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with zstandard.open(path, "wt", encoding="utf-8") as output:
-        for row in rows:
-            output.write(json.dumps(row, separators=(",", ":")) + "\n")
-    path.with_name(path.name + ".coverage.json").write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "key": key,
-                "start_us": START_MS * 1_000,
-                "end_us": (START_MS + 10) * 1_000,
-            }
-        )
-    )
-    return path
 
 
 def _query(client: PolarisClient, method: str, **kwargs):
@@ -81,327 +59,6 @@ def test_direct_trade_and_funding_batches_have_flat_schemas(tmp_path) -> None:
     assert "data" not in table.schema.names
     assert funding_batches[0].column("funding_rate").to_pylist() == [None]
     assert funding_batches[0].column("mark_price").to_pylist() == ["100"]
-
-
-def test_exact_event_batches_preserve_precision_order_and_unknown_payloads(tmp_path) -> None:
-    exact_timestamp = START_MS * 1_000 + 123
-    rows = [
-        {
-            "timestamp": exact_timestamp,
-            "type": "trade",
-            "sequence": "7",
-            "sequence_scope": "book-channel-1",
-            "receive_timestamp_us": exact_timestamp + 10,
-            "data": {"price": 100, "quantity": 2, "side": "buy"},
-        },
-        {
-            "timestamp": exact_timestamp,
-            "type": "orderbook_delta",
-            "data": {"bids": [[99.5, 3]], "asks": []},
-        },
-        {
-            "timestamp": exact_timestamp + 1,
-            "type": "venue_specific",
-            "data": {"nested": {"untouched": [1, 2, 3]}},
-            "opaque": {"also": "preserved"},
-        },
-    ]
-    _write_fixture(tmp_path, rows)
-
-    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
-        event_batches = list(
-            _query(
-                client,
-                "events",
-                output="batches",
-                batch_size=2,
-                materialize_orderbooks=False,
-            )
-        )
-        replay_batches = list(
-            client.replay(
-                source=SOURCE,
-                market=MARKET,
-                from_=START_MS * 1_000,
-                to=(START_MS + 10) * 1_000,
-                output="batches",
-                batch_size=1,
-                materialize_orderbooks=False,
-            )
-        )
-
-    assert [batch.num_rows for batch in event_batches] == [2, 1]
-    table = pa.Table.from_batches(event_batches)
-    replay_table = pa.Table.from_batches(replay_batches)
-    assert table.combine_chunks().equals(replay_table.combine_chunks())
-    assert table.schema.field("timestamp").type == pa.timestamp("us", tz="UTC")
-    assert table.column("timestamp").cast(pa.int64()).to_pylist() == [
-        exact_timestamp,
-        exact_timestamp,
-        exact_timestamp + 1,
-    ]
-    assert table.column("collector_timestamp").cast(pa.int64()).to_pylist() == [None] * 3
-    assert table.column("collector_sequence").to_pylist() == [None] * 3
-    assert table.column("exchange_timestamp").cast(pa.int64()).to_pylist() == [None] * 3
-    assert table.column("exchange_sequence").to_pylist() == [None] * 3
-    assert table.column("replay_ordinal").to_pylist() == [0, 1, 2]
-    assert table.column("source_file_ordinal").to_pylist() == [0, 0, 0]
-    assert table.column("source_row_ordinal").to_pylist() == [0, 1, 2]
-    assert table.column("trade_price").to_pylist() == [100.0, None, None]
-    assert table.column("order_id").to_pylist() == [None, None, None]
-    assert table.column("side").to_pylist() == ["buy", None, None]
-    assert table.column("is_snapshot").to_pylist() == [None, None, None]
-    assert table.column("bids").to_pylist() == [
-        None,
-        [{"price": 99.5, "quantity": 3.0}],
-        None,
-    ]
-    assert [json.loads(value) for value in table.column("event_json").to_pylist()] == rows
-
-
-def test_v2_exact_batches_use_mixed_envelope_schema_and_metadata_ordinal(tmp_path) -> None:
-    fixture = Path(__file__).parent / "fixtures" / "events" / "schema-v2.jsonl"
-    rows = [json.loads(line) for line in fixture.read_text().splitlines()]
-    key = f"standard-lighter-BTC-USD-{DAY}-000000"
-    path = tmp_path / "data" / "standard" / "lighter" / "BTC-USD" / DAY / f"{key}.jsonl.zst"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with zstandard.open(path, "wt", encoding="utf-8") as output:
-        output.write(fixture.read_text())
-    path.with_name(path.name + ".coverage.json").write_text(
-        json.dumps({
-            "version": 1,
-            "key": key,
-            "start_us": START_MS * 1_000,
-            "end_us": (START_MS + 120_000) * 1_000,
-        })
-    )
-
-    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
-        table = pa.Table.from_batches(list(client.events(
-            source="lighter",
-            market="BTC-USD",
-            from_=START_MS * 1_000,
-            to=(START_MS + 1_000) * 1_000,
-            output="batches",
-            materialize_orderbooks=False,
-        )))
-        filtered = list(client.events(
-            source="lighter",
-            market="BTC-USD",
-            from_=(START_MS + 150) * 1_000,
-            to=(START_MS + 250) * 1_000,
-            materialize_orderbooks=False,
-        ))
-
-
-    selected_rows = rows[1:7] + [rows[8]]
-    assert table.num_rows == 7
-    assert table.column("timestamp").cast(pa.int64()).to_pylist() == [None] * 7
-    assert table.column("collector_timestamp").cast(pa.int64()).to_pylist() == [
-        (START_MS + 100) * 1_000,
-        (START_MS + 300) * 1_000,
-        (START_MS + 200) * 1_000,
-        (START_MS + 400) * 1_000,
-        (START_MS + 500) * 1_000,
-        (START_MS + 450) * 1_000,
-        (START_MS + 550) * 1_000,
-    ]
-    assert table.column("collector_sequence").to_pylist() == [7, 9, 15, 21, 22, 25, 31]
-    assert table.column("exchange_timestamp").cast(pa.int64()).to_pylist() == [
-        (START_MS - 1_000) * 1_000,
-        None,
-        (START_MS - 2_000) * 1_000,
-        None,
-        (START_MS - 3_000) * 1_000,
-        (START_MS - 4_000) * 1_000,
-        (START_MS - 5_000) * 1_000,
-    ]
-    assert table.column("exchange_sequence").to_pylist() == [
-        "book-1", None, "trade-1", None, "trade-2", "trade-3", "book-3",
-    ]
-    assert table.column("source_row_ordinal").to_pylist() == [1, 2, 3, 4, 5, 6, 8]
-    assert table.column("order_id").to_pylist() == [None, None, None, None, "order-2", None, None]
-    assert table.column("side").to_pylist() == [None, None, None, None, "buy", "sell", None]
-    assert table.column("is_snapshot").to_pylist() == [True, False, None, None, None, None, False]
-    assert [json.loads(value) for value in table.column("event_json").to_pylist()] == selected_rows
-    assert [row["type"] for row in filtered] == ["trade"]
-    assert "timestamp" not in filtered[0]
-    assert filtered[0]["collector_timestamp"] == START_MS + 200
-
-
-def test_propamm_quote_ladder_exact_batches_and_dataframe_are_filtered(tmp_path) -> None:
-    fixture = (
-        Path(__file__).parent
-        / "fixtures"
-        / "events"
-        / "propamm-fermiswap-v2.jsonl"
-    )
-    source = "fermiswap"
-    market = "ethereum"
-    key = f"standard-{source}-{market}-{DAY}-000000"
-    path = (
-        tmp_path
-        / "data"
-        / "standard"
-        / source
-        / market
-        / DAY
-        / f"{key}.jsonl.zst"
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with zstandard.open(path, "wt", encoding="utf-8") as output:
-        output.write(fixture.read_text())
-    path.with_name(path.name + ".coverage.json").write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "key": key,
-                "start_us": START_MS * 1_000,
-                "end_us": (START_MS + 3_600_000) * 1_000,
-            }
-        )
-    )
-    kwargs = {
-        "source": source,
-        "market": market,
-        "from_": START_MS * 1_000,
-        "to": (START_MS + 3_600_000) * 1_000,
-    }
-
-    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
-        batches = list(
-            client.propamm_quote_ladders(
-                **kwargs,
-                output="batches",
-                batch_size=1,
-            )
-        )
-        dataframe = client.propamm_quote_ladders(**kwargs, output="dataframe")
-
-    assert [batch.num_rows for batch in batches] == [1]
-    table = pa.Table.from_batches(batches)
-    assert table.column("market").to_pylist() == ["ethereum"]
-    assert table.column("type").to_pylist() == ["record"]
-    raw_event = json.loads(table.column("event_json")[0].as_py())
-    assert "market" not in raw_event
-    assert raw_event["data"]["values"]["quotes"][0]["amount_in"] == str(
-        2**256 - 1
-    )
-    assert len(dataframe) == 1
-    assert dataframe.iloc[0]["market"] == "ethereum"
-
-
-def test_shared_headerless_legacy_fixture_preserves_native_rows(tmp_path) -> None:
-    fixture = Path(__file__).parent / "fixtures" / "events" / "legacy-v1.jsonl"
-    rows = [json.loads(line) for line in fixture.read_text().splitlines()]
-    key = f"standard-lighter-BTC-USD-{DAY}-000000"
-    path = tmp_path / "data" / "standard" / "lighter" / "BTC-USD" / DAY / f"{key}.jsonl.zst"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with zstandard.open(path, "wt", encoding="utf-8") as output:
-        output.write(fixture.read_text())
-    path.with_name(path.name + ".coverage.json").write_text(json.dumps({
-        "version": 1,
-        "key": key,
-        "start_us": START_MS * 1_000,
-        "end_us": (START_MS + 1_000) * 1_000,
-    }))
-
-    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
-        decoded = list(client.events(
-            source="lighter",
-            market="BTC-USD",
-            from_=START_MS * 1_000,
-            to=(START_MS + 1_000) * 1_000,
-            materialize_orderbooks=False,
-        ))
-
-    assert decoded == rows
-
-
-def test_raw_replay_rejects_columnar_output() -> None:
-    with PolarisClient(base_url="http://127.0.0.1:1") as client:
-        with pytest.raises(ValueError, match="standardized replay"):
-            client.replay(
-                source=SOURCE,
-                market=MARKET,
-                standard=False,
-                output="batches",
-            )
-
-
-def test_event_batch_boundaries_do_not_reset_materialized_books(tmp_path) -> None:
-    _write_fixture(
-        tmp_path,
-        [
-            {
-                "timestamp": START_MS * 1_000,
-                "type": "orderbook",
-                "data": {"bids": [[100, 1]], "asks": [[101, 2]]},
-            },
-            {
-                "timestamp": START_MS * 1_000 + 1,
-                "type": "orderbook_delta",
-                "data": {"bids": [[100, 3]]},
-            },
-            {
-                "timestamp": START_MS * 1_000 + 2,
-                "type": "orderbook_delta",
-                "data": {"asks": [[101, 0], [100.5, 4]]},
-            },
-        ],
-    )
-
-    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
-        batches = list(
-            _query(
-                client,
-                "events",
-                output="batches",
-                batch_size=1,
-                materialize_orderbooks=True,
-            )
-        )
-
-    assert [batch.num_rows for batch in batches] == [1, 1, 1]
-    table = pa.Table.from_batches(batches)
-    assert table.column("replay_ordinal").to_pylist() == [0, 1, 2]
-    assert table.column("bids").to_pylist()[-1] == [
-        {"price": 100.0, "quantity": 3.0}
-    ]
-    assert table.column("asks").to_pylist()[-1] == [
-        {"price": 100.5, "quantity": 4.0}
-    ]
-    last_event = json.loads(table.column("event_json")[-1].as_py())
-    assert last_event["timestamp"] == START_MS * 1_000 + 2
-    assert last_event["type"] == "orderbook"
-
-
-def test_exact_event_dataframe_keeps_microsecond_timestamp(tmp_path) -> None:
-    exact_timestamp = START_MS * 1_000 + 321
-    _write_fixture(
-        tmp_path,
-        [
-            {
-                "timestamp": exact_timestamp,
-                "type": "venue_specific",
-                "data": {"value": "preserved"},
-            }
-        ],
-    )
-
-    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
-        frame = _query(
-            client,
-            "events",
-            output="dataframe",
-            materialize_orderbooks=False,
-        )
-
-    assert str(frame.dtypes["timestamp"]) == "datetime64[us, UTC]"
-    assert int(frame.iloc[0]["timestamp"].value // 1_000) == exact_timestamp
-    assert json.loads(frame.iloc[0]["event_json"])["data"] == {
-        "value": "preserved"
-    }
 
 
 def test_trade_dataframe_uses_flat_api_fields(tmp_path) -> None:
@@ -500,26 +157,6 @@ def test_empty_dataframe_preserves_schema_and_dtypes(tmp_path) -> None:
 
 
 def test_aggregate_dataframes_have_stable_notebook_ready_schemas(tmp_path) -> None:
-    _write_fixture(
-        tmp_path,
-        [
-            {
-                "timestamp": START_MS,
-                "type": "trade",
-                "data": {"price": 100.0, "quantity": 1.0},
-            },
-            {
-                "timestamp": START_MS + 1,
-                "type": "trade",
-                "data": {"price": 101.0, "quantity": 2.0},
-            },
-            {
-                "timestamp": START_MS + 2,
-                "type": "trade",
-                "data": {"price": 99.0, "quantity": 3.0},
-            },
-        ],
-    )
 
     with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
         client._call = lambda method, *args: [{
@@ -583,10 +220,6 @@ def test_empty_aggregate_dataframes_preserve_schema_and_dtypes(
     method,
     columns,
 ) -> None:
-    _write_fixture(
-        tmp_path,
-        [{"timestamp": START_MS, "type": "point", "data": {"value": 1}}],
-    )
 
     with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
         client._call = lambda method, *args: []
@@ -632,7 +265,6 @@ def test_ohlcv_dataframe_rejects_tradingview_format() -> None:
         "trades",
         "funding_rates",
         "mark_prices",
-        "propamm_quote_ladders",
         "bbo",
         "depth_metrics",
     ],

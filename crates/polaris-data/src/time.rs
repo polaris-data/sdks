@@ -28,10 +28,6 @@ pub(crate) fn to_epoch_micros(value: &TimeInput) -> Result<i64, PolarisError> {
     Ok(to_datetime(value)?.timestamp_micros())
 }
 
-pub(crate) fn to_iso8601(value: &TimeInput) -> Result<String, PolarisError> {
-    Ok(to_datetime(value)?.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-}
-
 pub(crate) fn micros_to_datetime(value: i64) -> Result<DateTime<Utc>, PolarisError> {
     Utc.timestamp_micros(value).single().ok_or_else(|| {
         PolarisError::InvalidResponse(format!("invalid epoch micros value '{value}'"))

@@ -3,13 +3,12 @@ use std::path::PathBuf;
 mod columnar;
 
 use polaris_data::{
-    BboQuery, BboQuote, DepthMetricsRow, FundingRateRow, HistoricalQuery, HistoricalRowsQuery,
-    IntentRow, IntentRowsQuery, L2OrderbooksQuery, L2UpdatesQuery, ListSnapshotsQuery, OhlcvFormat,
-    OhlcvInterval, OhlcvOutput, OhlcvQuery, OhlcvRow, OhlcvRowsQuery, OptionTickerRow,
-    OptionTickerRowsQuery, OrderbookBuilder, OrderbookL2Row, PolarisError, PropammQuoteLadderEvent,
-    QuoteRow, QuoteRowsQuery, RawCaptureRow, RawChannelQuery, RawQuery, RawReplayQuery,
-    ReplayQuery, StandardEvent, StreamQuery, TimeInput, TradeRow,
-    blocking::{self, RawReplayCacheConfig},
+    BboQuery, BboQuote, DepthMetricsRow, FundingRateRow, HistoricalRowsQuery, IntentRow,
+    IntentRowsQuery, L2OrderbooksQuery, L2UpdatesQuery, OhlcvFormat, OhlcvInterval, OhlcvOutput,
+    OhlcvQuery, OhlcvRow, OhlcvRowsQuery, OptionTickerRow, OptionTickerRowsQuery, OrderbookBuilder,
+    OrderbookL2Row, PolarisError, QuoteRow, QuoteRowsQuery, RawCaptureRow, RawChannelQuery,
+    RawQuery, StandardEvent, StreamQuery, TimeInput, TradeRow,
+    blocking::{self},
 };
 use pyo3::{
     create_exception,
@@ -107,23 +106,6 @@ fn time_input(value: Option<String>) -> Option<TimeInput> {
     value.map(TimeInput::Iso8601)
 }
 
-fn historical_query(
-    source: String,
-    market: String,
-    from_: Option<String>,
-    to: Option<String>,
-    allow_gaps: bool,
-) -> HistoricalQuery {
-    HistoricalQuery {
-        source,
-        market,
-        from: time_input(from_),
-        to: time_input(to),
-        allow_gaps,
-        materialize_orderbooks: true,
-    }
-}
-
 fn parse_interval(value: &str) -> PyResult<OhlcvInterval> {
     match value {
         "100ms" => Ok(OhlcvInterval::Ms100),
@@ -183,33 +165,6 @@ fn to_python<'py, T: Serialize>(py: Python<'py>, value: &T) -> PyResult<Bound<'p
     Ok(pythonize::pythonize(py, &value)?)
 }
 
-fn standard_event_to_python<'py>(
-    py: Python<'py>,
-    event: &StandardEvent,
-) -> PyResult<Bound<'py, PyAny>> {
-    let mut value = serde_json::to_value(event)
-        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
-    if let Value::Object(object) = &mut value {
-        for key in ["source", "market"] {
-            if object.get(key).is_some_and(|value| value == "") {
-                object.remove(key);
-            }
-        }
-        if object.get("type").is_some_and(|value| value == "") {
-            object.remove("type");
-        }
-        if object.get("data").is_some_and(Value::is_null) {
-            object.remove("data");
-        }
-        if let Some(Value::Object(data)) = object.get_mut("data") {
-            if data.get("side").is_some_and(|value| value == "") {
-                data.remove("side");
-            }
-        }
-    }
-    Ok(pythonize::pythonize(py, &value)?)
-}
-
 #[pyclass(module = "polaris_data._native")]
 struct NativeClient {
     inner: blocking::PolarisClient,
@@ -252,15 +207,6 @@ impl NativeClient {
     #[getter]
     fn dataset_root(&self) -> String {
         self.inner.dataset_root().to_string_lossy().into_owned()
-    }
-
-    #[getter]
-    fn replay_cache_dir(&self) -> String {
-        self.inner
-            .cache_dir()
-            .join("replay")
-            .to_string_lossy()
-            .into_owned()
     }
 
     fn close(&self) {}
@@ -350,82 +296,6 @@ impl NativeClient {
     fn count<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let result = py.detach(|| self.inner.count()).map_err(native_error)?;
         to_python(py, &result)
-    }
-
-    #[pyo3(signature = (source, market, from_, to, limit=1000))]
-    fn list_snapshots<'py>(
-        &self,
-        py: Python<'py>,
-        source: String,
-        market: String,
-        from_: String,
-        to: String,
-        limit: usize,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let result = py
-            .detach(|| {
-                self.inner.list_snapshots(ListSnapshotsQuery {
-                    source,
-                    market,
-                    from: Some(TimeInput::Iso8601(from_)),
-                    to: Some(TimeInput::Iso8601(to)),
-                    limit: Some(limit),
-                })
-            })
-            .map_err(native_error)?;
-        to_python(py, &result)
-    }
-
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, materialize_orderbooks=true))]
-    fn events<'py>(
-        &self,
-        py: Python<'py>,
-        source: String,
-        market: String,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
-        materialize_orderbooks: bool,
-    ) -> PyResult<NativeHistorical> {
-        let iterator = py
-            .detach(|| {
-                let mut query = historical_query(source, market, from_, to, allow_gaps);
-                query.materialize_orderbooks = materialize_orderbooks;
-                self.inner.events(query)
-            })
-            .map_err(native_error)?;
-        Ok(NativeHistorical::new(NativeHistoricalIterator::Events(
-            iterator,
-        )))
-    }
-
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, materialize_orderbooks=true, batch_size=65_536))]
-    fn events_columnar(
-        &self,
-        py: Python<'_>,
-        source: String,
-        market: String,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
-        materialize_orderbooks: bool,
-        batch_size: usize,
-    ) -> PyResult<NativeColumnar> {
-        validate_batch_size(batch_size)?;
-        let identity_source = source.clone();
-        let identity_market = market.clone();
-        py.detach(|| {
-            let mut query = historical_query(source, market, from_, to, allow_gaps);
-            query.materialize_orderbooks = materialize_orderbooks;
-            let plan = self.inner.prepare_historical(query)?;
-            Ok(NativeColumnar::events(
-                plan,
-                identity_source,
-                identity_market,
-                batch_size,
-            ))
-        })
-        .map_err(native_error)
     }
 
     #[pyo3(signature = (source=None, market=None, start=None, end=None))]
@@ -564,29 +434,6 @@ impl NativeClient {
         )))
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, batch_size=65_536))]
-    fn trades_columnar(
-        &self,
-        py: Python<'_>,
-        source: String,
-        market: String,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
-        batch_size: usize,
-    ) -> PyResult<NativeColumnar> {
-        validate_batch_size(batch_size)?;
-        let identity_source = source.clone();
-        let identity_market = market.clone();
-        py.detach(|| {
-            let mut query = historical_query(source, market, from_, to, allow_gaps);
-            query.materialize_orderbooks = false;
-            let plan = self.inner.prepare_historical(query)?;
-            NativeColumnar::trades(plan, identity_source, identity_market, batch_size)
-        })
-        .map_err(native_error)
-    }
-
     #[pyo3(signature = (source=None, market=None, instrument=None, start=None, end=None))]
     fn option_tickers(
         &self,
@@ -637,62 +484,6 @@ impl NativeClient {
         ))
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, materialize_orderbooks=true))]
-    fn replay(
-        &self,
-        py: Python<'_>,
-        source: String,
-        market: String,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
-        materialize_orderbooks: bool,
-    ) -> PyResult<NativeReplay> {
-        let iterator = py
-            .detach(|| {
-                self.inner.replay(ReplayQuery {
-                    source,
-                    market,
-                    from: time_input(from_),
-                    to: time_input(to),
-                    allow_gaps,
-                    materialize_orderbooks,
-                })
-            })
-            .map_err(native_error)?;
-        Ok(NativeReplay {
-            iterator: Some(NativeReplayIterator::Single(iterator)),
-        })
-    }
-
-    #[pyo3(signature = (source, market, from_, to, allow_gaps=false, materialize_orderbooks=true))]
-    fn replay_chunked(
-        &self,
-        py: Python<'_>,
-        source: String,
-        market: String,
-        from_: String,
-        to: String,
-        allow_gaps: bool,
-        materialize_orderbooks: bool,
-    ) -> PyResult<NativeReplay> {
-        let iterator = py
-            .detach(|| {
-                self.inner.replay_chunked(ReplayQuery {
-                    source,
-                    market,
-                    from: Some(TimeInput::Iso8601(from_)),
-                    to: Some(TimeInput::Iso8601(to)),
-                    allow_gaps,
-                    materialize_orderbooks,
-                })
-            })
-            .map_err(native_error)?;
-        Ok(NativeReplay {
-            iterator: Some(NativeReplayIterator::Chunked(Box::new(iterator))),
-        })
-    }
-
     #[pyo3(signature = (source, market, from_=None, to=None, limit=1000))]
     fn raw<'py>(
         &self,
@@ -739,96 +530,6 @@ impl NativeClient {
         Ok(NativeHistorical::new(
             NativeHistoricalIterator::RawCaptures(iterator),
         ))
-    }
-
-    #[pyo3(signature = (source, market, from_=None, to=None, limit=1000))]
-    fn raw_replay(
-        &self,
-        py: Python<'_>,
-        source: String,
-        market: String,
-        from_: Option<String>,
-        to: Option<String>,
-        limit: usize,
-    ) -> PyResult<NativeRawReplay> {
-        let iterator = py
-            .detach(|| {
-                self.inner.raw_replay(RawReplayQuery {
-                    source,
-                    market,
-                    from: time_input(from_),
-                    to: time_input(to),
-                    limit,
-                })
-            })
-            .map_err(native_error)?;
-        Ok(NativeRawReplay {
-            iterator: Some(NativeRawReplayIterator::Single(iterator)),
-        })
-    }
-
-    #[pyo3(signature = (source, market, from_, to, limit=1000, cache_enabled=true, cache_dir=None))]
-    fn raw_replay_cached(
-        &self,
-        py: Python<'_>,
-        source: String,
-        market: String,
-        from_: String,
-        to: String,
-        limit: usize,
-        cache_enabled: bool,
-        cache_dir: Option<PathBuf>,
-    ) -> PyResult<NativeRawReplay> {
-        let cache = self.raw_replay_cache_config(cache_enabled, cache_dir);
-        let iterator = py
-            .detach(|| {
-                self.inner.raw_replay_cached(
-                    RawReplayQuery {
-                        source,
-                        market,
-                        from: Some(TimeInput::Iso8601(from_)),
-                        to: Some(TimeInput::Iso8601(to)),
-                        limit,
-                    },
-                    cache,
-                )
-            })
-            .map_err(native_error)?;
-        Ok(NativeRawReplay {
-            iterator: Some(NativeRawReplayIterator::Cached(iterator)),
-        })
-    }
-
-    #[pyo3(signature = (source, market, from_, to, limit=1000, cache_enabled=true, cache_dir=None))]
-    fn raw_replay_chunked(
-        &self,
-        py: Python<'_>,
-        source: String,
-        market: String,
-        from_: String,
-        to: String,
-        limit: usize,
-        cache_enabled: bool,
-        cache_dir: Option<PathBuf>,
-    ) -> PyResult<NativeRawReplay> {
-        let cache = self.raw_replay_cache_config(cache_enabled, cache_dir);
-        let iterator = py
-            .detach(|| {
-                self.inner.raw_replay_chunked(
-                    RawReplayQuery {
-                        source,
-                        market,
-                        from: Some(TimeInput::Iso8601(from_)),
-                        to: Some(TimeInput::Iso8601(to)),
-                        limit,
-                    },
-                    cache,
-                )
-            })
-            .map_err(native_error)?;
-        Ok(NativeRawReplay {
-            iterator: Some(NativeRawReplayIterator::Chunked(Box::new(iterator))),
-        })
     }
 
     #[pyo3(signature = (source, market, interval, from_=None, to=None, format=None, allow_gaps=false))]
@@ -1018,30 +719,6 @@ impl NativeClient {
         ))
     }
 
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, batch_size=65_536))]
-    fn funding_rates_columnar(
-        &self,
-        py: Python<'_>,
-        source: String,
-        market: String,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
-        batch_size: usize,
-    ) -> PyResult<NativeColumnar> {
-        self.point_series_columnar(
-            py,
-            source,
-            market,
-            from_,
-            to,
-            allow_gaps,
-            batch_size,
-            "funding_rate",
-            "funding_rate",
-        )
-    }
-
     #[pyo3(signature = (source=None, market=None, start=None, end=None))]
     fn mark_prices<'py>(
         &self,
@@ -1064,79 +741,6 @@ impl NativeClient {
         Ok(NativeHistorical::new(NativeHistoricalIterator::MarkPrices(
             iterator,
         )))
-    }
-
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, batch_size=65_536))]
-    fn mark_prices_columnar(
-        &self,
-        py: Python<'_>,
-        source: String,
-        market: String,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
-        batch_size: usize,
-    ) -> PyResult<NativeColumnar> {
-        self.point_series_columnar(
-            py,
-            source,
-            market,
-            from_,
-            to,
-            allow_gaps,
-            batch_size,
-            "mark_price",
-            "mark_price",
-        )
-    }
-
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false))]
-    fn propamm_quote_ladders<'py>(
-        &self,
-        py: Python<'py>,
-        source: String,
-        market: String,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
-    ) -> PyResult<NativeHistorical> {
-        let iterator = py
-            .detach(|| {
-                self.inner
-                    .propamm_quote_ladders(historical_query(source, market, from_, to, allow_gaps))
-            })
-            .map_err(native_error)?;
-        Ok(NativeHistorical::new(
-            NativeHistoricalIterator::PropammQuoteLadders(iterator),
-        ))
-    }
-
-    #[pyo3(signature = (source, market, from_=None, to=None, allow_gaps=false, batch_size=65_536))]
-    fn propamm_quote_ladders_columnar(
-        &self,
-        py: Python<'_>,
-        source: String,
-        market: String,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
-        batch_size: usize,
-    ) -> PyResult<NativeColumnar> {
-        validate_batch_size(batch_size)?;
-        let identity_source = source.clone();
-        let identity_market = market.clone();
-        py.detach(|| {
-            let mut query = historical_query(source, market, from_, to, allow_gaps);
-            query.materialize_orderbooks = false;
-            let plan = self.inner.prepare_historical(query)?;
-            Ok(NativeColumnar::propamm_quote_ladders(
-                plan,
-                identity_source,
-                identity_market,
-                batch_size,
-            ))
-        })
-        .map_err(native_error)
     }
 
     #[pyo3(signature = (source, market, interval, from_=None, to=None, allow_gaps=false))]
@@ -1257,51 +861,6 @@ impl NativeClient {
     }
 }
 
-impl NativeClient {
-    fn raw_replay_cache_config(
-        &self,
-        enabled: bool,
-        directory: Option<PathBuf>,
-    ) -> RawReplayCacheConfig {
-        RawReplayCacheConfig {
-            enabled,
-            directory: directory.unwrap_or_else(|| self.inner.cache_dir().join("replay")),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn point_series_columnar(
-        &self,
-        py: Python<'_>,
-        source: String,
-        market: String,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
-        batch_size: usize,
-        series_name: &'static str,
-        value_name: &'static str,
-    ) -> PyResult<NativeColumnar> {
-        validate_batch_size(batch_size)?;
-        let identity_source = source.clone();
-        let identity_market = market.clone();
-        py.detach(|| {
-            let mut query = historical_query(source, market, from_, to, allow_gaps);
-            query.materialize_orderbooks = false;
-            let plan = self.inner.prepare_historical(query)?;
-            NativeColumnar::points(
-                plan,
-                identity_source,
-                identity_market,
-                series_name,
-                value_name,
-                batch_size,
-            )
-        })
-        .map_err(native_error)
-    }
-}
-
 fn validate_batch_size(batch_size: usize) -> PyResult<()> {
     if batch_size == 0 {
         return Err(pyo3::exceptions::PyValueError::new_err(
@@ -1336,7 +895,6 @@ struct NativeHistorical {
 }
 
 enum NativeHistoricalIterator {
-    Events(blocking::HistoricalIterator<StandardEvent>),
     L2Rows(blocking::HistoricalIterator<OrderbookL2Row>),
     Trades(blocking::HistoricalIterator<TradeRow>),
     Intents(blocking::HistoricalIterator<IntentRow>),
@@ -1349,7 +907,6 @@ enum NativeHistoricalIterator {
     PerpetualTickers(blocking::HistoricalIterator<FundingRateRow>),
     Bbo(blocking::HistoricalIterator<BboQuote>),
     MarkPrices(blocking::HistoricalIterator<FundingRateRow>),
-    PropammQuoteLadders(blocking::HistoricalIterator<PropammQuoteLadderEvent>),
     Depth(blocking::HistoricalIterator<DepthMetricsRow>),
 }
 
@@ -1372,17 +929,6 @@ fn next_historical<'py, T: Serialize + Send>(
     }
 }
 
-fn next_standard_event<'py>(
-    py: Python<'py>,
-    iterator: &mut blocking::HistoricalIterator<StandardEvent>,
-) -> PyResult<Option<Bound<'py, PyAny>>> {
-    match py.detach(|| iterator.next()) {
-        Some(Ok(value)) => standard_event_to_python(py, &value).map(Some),
-        Some(Err(error)) => Err(native_error(error)),
-        None => Ok(None),
-    }
-}
-
 #[pymethods]
 impl NativeHistorical {
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -1394,7 +940,6 @@ impl NativeHistorical {
             return Ok(None);
         };
         let result = match iterator {
-            NativeHistoricalIterator::Events(iterator) => next_standard_event(py, iterator),
             NativeHistoricalIterator::L2Rows(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Trades(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Intents(iterator) => next_historical(py, iterator),
@@ -1407,9 +952,6 @@ impl NativeHistorical {
             NativeHistoricalIterator::PerpetualTickers(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Bbo(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::MarkPrices(iterator) => next_historical(py, iterator),
-            NativeHistoricalIterator::PropammQuoteLadders(iterator) => {
-                next_historical(py, iterator)
-            }
             NativeHistoricalIterator::Depth(iterator) => next_historical(py, iterator),
         };
         if matches!(result, Ok(None)) {
@@ -1421,11 +963,6 @@ impl NativeHistorical {
     fn close(&mut self) {
         self.iterator = None;
     }
-}
-
-#[pyclass(unsendable, module = "polaris_data._native")]
-struct NativeReplay {
-    iterator: Option<NativeReplayIterator>,
 }
 
 #[pyclass(name = "NativeOrderbookBuilder", module = "polaris_data._native")]
@@ -1518,73 +1055,6 @@ impl NativeRealtimeStream {
     }
 }
 
-enum NativeReplayIterator {
-    Single(blocking::ReplayIterator),
-    Chunked(Box<blocking::ChunkedReplayIterator>),
-}
-
-#[pymethods]
-impl NativeReplay {
-    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
-    }
-
-    fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
-        let Some(iterator) = self.iterator.as_mut() else {
-            return Ok(None);
-        };
-        let next = py.detach(|| match iterator {
-            NativeReplayIterator::Single(iterator) => iterator.next(),
-            NativeReplayIterator::Chunked(iterator) => iterator.next(),
-        });
-        match next {
-            Some(Ok(value)) => standard_event_to_python(py, &value).map(Some),
-            Some(Err(error)) => Err(native_error(error)),
-            None => {
-                self.iterator = None;
-                Ok(None)
-            }
-        }
-    }
-}
-
-#[pyclass(unsendable, module = "polaris_data._native")]
-struct NativeRawReplay {
-    iterator: Option<NativeRawReplayIterator>,
-}
-
-enum NativeRawReplayIterator {
-    Single(blocking::RawReplayIterator),
-    Cached(blocking::CachedRawReplayIterator),
-    Chunked(Box<blocking::ChunkedRawReplayIterator>),
-}
-
-#[pymethods]
-impl NativeRawReplay {
-    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
-    }
-
-    fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
-        let Some(iterator) = self.iterator.as_mut() else {
-            return Ok(None);
-        };
-        let next = py.detach(|| match iterator {
-            NativeRawReplayIterator::Single(iterator) => iterator.next(),
-            NativeRawReplayIterator::Cached(iterator) => iterator.next(),
-            NativeRawReplayIterator::Chunked(iterator) => iterator.next(),
-        });
-        match next {
-            Some(Ok(value)) => to_python(py, &value).map(Some),
-            Some(Err(error)) => Err(native_error(error)),
-            None => {
-                self.iterator = None;
-                Ok(None)
-            }
-        }
-    }
-}
-
 #[pyfunction]
 fn decode_file<'py>(py: Python<'py>, path: PathBuf) -> PyResult<Bound<'py, PyAny>> {
     let rows = py
@@ -1599,9 +1069,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeColumnar>()?;
     module.add_class::<NativeOrderbookBuilder>()?;
     module.add_class::<NativeHistorical>()?;
-    module.add_class::<NativeReplay>()?;
     module.add_class::<NativeRealtimeStream>()?;
-    module.add_class::<NativeRawReplay>()?;
     module.add_function(wrap_pyfunction!(decode_file, module)?)?;
     module.add("NativeError", module.py().get_type::<NativeError>())?;
     module.add("__native__", true)?;
