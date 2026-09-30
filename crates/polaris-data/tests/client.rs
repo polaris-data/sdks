@@ -552,6 +552,7 @@ async fn raw_channel_paginates_exact_text_through_source_channel_filters() {
         .and(path("/raw"))
         .and(query_param("source", "binance"))
         .and(query_param("channel", "trades"))
+        .and(query_param("market", "BTC-USDT"))
         .and(query_param("start", "1970-01-01T00:00:00.010Z"))
         .and(query_param("end", "1970-01-01T00:00:00.010Z"))
         .and(query_param("limit", "1000"))
@@ -581,6 +582,7 @@ async fn raw_channel_paginates_exact_text_through_source_channel_filters() {
     let query = RawChannelQuery {
         exchange: "binance".into(),
         event: "trades".into(),
+        market: Some("BTC-USDT".into()),
         start: 10,
         end: 10,
     };
@@ -619,6 +621,7 @@ async fn raw_queries_source_and_market_as_paged_json_without_api_key() {
         .and(path("/raw"))
         .and(query_param("source", "binance"))
         .and(query_param("market", "BTC-USDT"))
+        .and(query_param("channel", "trades"))
         .and(query_param("start", "2024-01-01T00:00:00Z"))
         .and(query_param("end", "2024-01-01T01:00:00Z"))
         .and(query_param("limit", "1"))
@@ -637,7 +640,8 @@ async fn raw_queries_source_and_market_as_paged_json_without_api_key() {
     let rows = client
         .raw(RawQuery {
             source: "binance".into(),
-            market: "BTC-USDT".into(),
+            market: Some("BTC-USDT".into()),
+            channel: Some("trades".into()),
             from: Some(TimeInput::Iso8601("2024-01-01T00:00:00Z".into())),
             to: Some(TimeInput::Iso8601("2024-01-01T01:00:00Z".into())),
             limit: 1,
@@ -650,6 +654,40 @@ async fn raw_queries_source_and_market_as_paged_json_without_api_key() {
             .collect::<Vec<_>>(),
         ["c1", "c2"]
     );
+}
+
+#[tokio::test]
+async fn raw_omits_optional_market_and_channel_filters() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().expect("tempdir");
+    let client = build_client(&server, &root);
+    Mock::given(method("GET"))
+        .and(path("/raw"))
+        .respond_with(|request: &wiremock::Request| {
+            let keys = request
+                .url
+                .query_pairs()
+                .map(|(key, _)| key.into_owned())
+                .collect::<Vec<_>>();
+            assert!(!keys.contains(&"market".to_owned()));
+            assert!(!keys.contains(&"channel".to_owned()));
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"data": [], "has_more": false, "next_cursor": null}))
+        })
+        .mount(&server)
+        .await;
+    let rows = client
+        .raw(RawQuery {
+            source: "binance".into(),
+            market: None,
+            channel: None,
+            from: Some(TimeInput::Iso8601("2024-01-01T00:00:00Z".into())),
+            to: Some(TimeInput::Iso8601("2024-01-01T01:00:00Z".into())),
+            limit: 1000,
+        })
+        .await
+        .expect("raw rows");
+    assert!(rows.is_empty());
 }
 
 #[tokio::test]

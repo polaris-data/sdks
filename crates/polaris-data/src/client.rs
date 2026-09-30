@@ -265,6 +265,11 @@ impl PolarisClient {
     }
 
     pub async fn raw(&self, query: RawQuery) -> Result<Vec<Value>, PolarisError> {
+        if query.source.trim().is_empty() || matches!(query.source.as_str(), "." | "..") {
+            return Err(PolarisError::InvalidResponse(
+                "source must be a non-empty raw source identifier".to_owned(),
+            ));
+        }
         if query.limit == 0 {
             return Err(PolarisError::InvalidResponse(
                 "limit must be > 0".to_owned(),
@@ -275,13 +280,23 @@ impl PolarisClient {
             query.to.as_ref(),
             self.api_key.is_some(),
         )?;
-        let range_params = vec![
+        let mut range_params = vec![
             ("source".to_owned(), query.source.clone()),
-            ("market".to_owned(), query.market.clone()),
             ("start".to_owned(), micros_to_iso8601(from_us)?),
             ("end".to_owned(), micros_to_iso8601(to_us)?),
             ("limit".to_owned(), query.limit.to_string()),
         ];
+        if let Some(market) = validate_optional_filter("market", query.market)? {
+            range_params.push(("market".to_owned(), market));
+        }
+        if let Some(channel) = validate_optional_filter("channel", query.channel)? {
+            if matches!(channel.as_str(), "." | "..") {
+                return Err(PolarisError::InvalidResponse(
+                    "channel must be a native raw channel identifier".to_owned(),
+                ));
+            }
+            range_params.push(("channel".to_owned(), channel));
+        }
         let mut stream = self.paginated_rows::<Value>(
             "/raw".to_owned(),
             range_params,
@@ -315,13 +330,16 @@ impl PolarisClient {
                     .to_owned(),
             ));
         }
-        let params = vec![
+        let mut params = vec![
             ("source".to_owned(), query.exchange),
             ("channel".to_owned(), query.event),
             ("start".to_owned(), millis_to_iso8601(query.start)?),
             ("end".to_owned(), millis_to_iso8601(query.end)?),
             ("limit".to_owned(), "1000".to_owned()),
         ];
+        if let Some(market) = validate_optional_filter("market", query.market)? {
+            params.push(("market".to_owned(), market));
+        }
         self.paginated_rows("/raw".to_owned(), params, AuthMode::IfAvailable, "data")
     }
 

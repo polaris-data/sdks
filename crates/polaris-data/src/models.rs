@@ -641,7 +641,10 @@ impl Default for StreamQuery {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawQuery {
     pub source: String,
-    pub market: String,
+    /// Exact recorded routing market. `None` includes every source market.
+    pub market: Option<String>,
+    /// Exact native channel. `None` includes every raw channel.
+    pub channel: Option<String>,
     /// Inclusive lower bound. Omitted bounds use a seven-day window.
     pub from: Option<TimeInput>,
     /// Inclusive upper bound. Omitted bounds use a seven-day window.
@@ -655,6 +658,8 @@ pub struct RawQuery {
 pub struct RawChannelQuery {
     pub exchange: String,
     pub event: String,
+    /// Optional exact recorded routing market within the channel.
+    pub market: Option<String>,
     /// Inclusive collector time in Unix milliseconds.
     pub start: i64,
     /// Inclusive collector time in Unix milliseconds.
