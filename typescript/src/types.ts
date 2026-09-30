@@ -627,57 +627,6 @@ export interface TradingViewOhlcvResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Snapshots – GET /snapshots
-// ---------------------------------------------------------------------------
-
-export interface SnapshotEntry {
-  key: string;
-  source?: string;
-  market?: string;
-  date?: string;
-  start?: string;
-  end?: string;
-  hour?: number;
-  filename?: string;
-}
-
-export interface SnapshotsResponse {
-  source: string;
-  market: string;
-  access?: {
-    status: string;
-    public_cutoff_date?: string;
-  };
-  total: number;
-  total_bytes: number;
-  limit: number;
-  has_more: boolean;
-  next_cursor: string | null;
-  snapshots: SnapshotEntry[];
-}
-
-// ---------------------------------------------------------------------------
-// Snapshot download manifest – GET /download
-// ---------------------------------------------------------------------------
-
-export interface SnapshotDownloadEntry {
-  date: string;
-  timestamp: string;
-  key: string;
-  url: string;
-  expires_in_seconds: number;
-}
-
-export interface SnapshotDownloadManifest {
-  source: string;
-  market: string;
-  date: string;
-  total: number;
-  total_bytes: number;
-  snapshots: SnapshotDownloadEntry[];
-}
-
-// ---------------------------------------------------------------------------
 // Client constructor options
 // ---------------------------------------------------------------------------
 
@@ -692,22 +641,6 @@ export interface PolarisClientOptions {
   timeout?: number;
   /** Custom fetch implementation (useful for testing or proxies). */
   fetch?: FetchLike;
-  /**
-   * Override the local dataset root directory.
-   * Defaults to the platform-specific Polaris app-data directory,
-   * overridable globally via `POLARIS_ROOT` env var.
-   */
-  datasetRoot?: string;
-  /**
-   * Maximum number of snapshot artifact downloads to run concurrently.
-   * Defaults to `8`.
-   */
-  snapshotDownloadConcurrency?: number;
-  /**
-   * Custom storage implementation (useful for testing or advanced scenarios).
-   * If not provided, storage is automatically detected based on platform.
-   */
-  storage?: import("./storage/interface").IStorage;
 }
 
 // ---------------------------------------------------------------------------
@@ -792,14 +725,6 @@ export interface BboOptions extends Omit<L2OrderbooksOptions, "instrument"> {
   changesOnly?: boolean;
 }
 
-export interface ListSnapshotsOptions {
-  source: string;
-  market: string;
-  from?: TimeInput;
-  to?: TimeInput;
-  limit?: number;
-}
-
 export interface OhlcvOptions extends HistoricalQueryOptions {
   interval: OhlcvInterval;
 }
@@ -822,17 +747,6 @@ export interface DepthMetricsOptions extends Omit<L2OrderbooksOptions, "instrume
   slippageNotional?: number;
 }
 
-export interface ReplayOptions {
-  source: string;
-  market: string;
-  from?: TimeInput;
-  to?: TimeInput;
-  /** `true` (default) streams standardised events from local snapshots. */
-  standard?: boolean;
-  /** Materialize complete orderbooks from snapshots and deltas. Defaults to `true`. */
-  materializeOrderbooks?: boolean;
-}
-
 export interface StreamOptions {
   source: string;
   markets: string[];
@@ -841,10 +755,4 @@ export interface StreamOptions {
   includeBuffer?: boolean;
   /** Materialize complete orderbooks from snapshots and deltas. Defaults to `true`. */
   materializeOrderbooks?: boolean;
-}
-
-export interface SnapshotDownloadManifestOptions {
-  source: string;
-  market: string;
-  date: string;
 }

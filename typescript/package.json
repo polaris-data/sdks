@@ -68,7 +68,6 @@
     "client-side"
   ],
   "dependencies": {
-    "fzstd": "^0.1.1",
     "ws": "^8.18.3"
   }
 }
