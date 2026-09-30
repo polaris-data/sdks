@@ -437,44 +437,8 @@ def test_rate_limited_error_maps_reset_at(tmp_path) -> None:
         client.close()
 
 
-def test_vwap_validates_interval() -> None:
-    client = make_client(lambda request: httpx.Response(500))
-    try:
-        with pytest.raises(
-            ValueError,
-            match="interval must be one of:",
-        ):
-            client.vwap(
-                source="binance",
-                market="BTC-USDT",
-                interval="2m",
-            )
-    finally:
-        client.close()
 
 
-def test_volatility_validates_interval_and_method() -> None:
-    client = make_client(lambda request: httpx.Response(500))
-    try:
-        with pytest.raises(
-            ValueError,
-            match="interval must be one of:",
-        ):
-            client.volatility(
-                source="binance",
-                market="BTC-USDT",
-                interval="2m",
-            )
-
-        with pytest.raises(ValueError, match="method must be 'log_returns'"):
-            client.volatility(
-                source="binance",
-                market="BTC-USDT",
-                interval="1m",
-                method="simple_returns",
-            )
-    finally:
-        client.close()
 
 
 def test_ohlcv_rejects_stale_parquet_format() -> None:
@@ -595,7 +559,6 @@ def test_direct_historical_rows_paginate_filter_and_keep_nullable_fields(tmp_pat
         assert len(funding_rows) == 2
         assert all(funding_rows[0][key] == value for key, value in funding.items())
         assert list(client.perpetual_tickers()) == funding_rows
-        assert list(client.mark_prices()) == funding_rows[:1]
         assert "start" not in calls[3].url.params
         assert "end" not in calls[3].url.params
         with pytest.raises(ValueError, match="instrument must be non-empty"):
@@ -654,47 +617,26 @@ def test_raw_channel_pages_exact_captures(tmp_path) -> None:
         client.close()
 
 
-def test_direct_ohlcv_intent_and_quote_rows_keep_flat_observations(tmp_path) -> None:
+def test_intents_queries_direct_route_with_exact_filter(tmp_path) -> None:
     calls: list[httpx.Request] = []
-    identity = {"source_capture_id": "capture", "collector_timestamp": 10, "schema_version": 1}
-    candle = {**identity, "event_id": "c1", "source": "binance", "market": "BTC-USDT",
-              "interval": "1m", "open_timestamp": 10, "open": 100.0, "high": 102.0,
-              "low": 99.0, "close": 100.0, "is_closed": False}
-    intent = {**identity, "event_id": "i1", "source": "uniswapx", "market": "intents",
-              "intent_id": "intent-1", "input_asset_id": None}
-    quote = {**identity, "event_id": "q1", "source": "propamm", "market": "ethereum",
-             "instrument": "pool-1", "observation_id": "obs-1", "input_asset_id": "ETH",
-             "input_chain_id": "1", "input_amount": "1000000000000000000", "input_decimals": 18,
-             "output_asset_id": "USDC", "output_chain_id": "1", "output_amount": "2000000",
-             "output_decimals": 6, "amount_kind": "exact_input", "block_number": 100,
-             "block_hash": "0xblock", "transaction_hash": "0xtx", "transaction_index": 0,
-             "router": "0xrouter", "pool": None}
+    intent = {"event_id": "i1", "source": "uniswapx", "market": "intents",
+              "source_capture_id": "capture", "collector_timestamp": 10,
+              "schema_version": 1, "intent_id": "intent-1", "input_asset_id": None}
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
-        if request.url.path == "/historical/ohlcv":
-            second = request.url.params.get("cursor") == "next"
-            return httpx.Response(200, json={"items": [{**candle, "event_id": "c2" if second else "c1"}],
-                                             "has_more": not second, "next_cursor": None if second else "next"})
-        rows = {"/historical/intents": [intent], "/historical/quotes": [quote]}
-        return httpx.Response(200, json={"items": rows[request.url.path], "has_more": False, "next_cursor": None})
+        assert request.url.path == "/historical/intents"
+        return httpx.Response(200, json={"items": [intent], "has_more": False, "next_cursor": None})
 
     client = make_client(handler, dataset_root=tmp_path)
     try:
-        candles = list(client.ohlcv_rows(interval="1m", start=10, end=10))
-        assert [row["event_id"] for row in candles] == ["c1", "c2"]
-        assert candles[0]["open_timestamp"] == candles[1]["open_timestamp"]
-        assert calls[0].url.params["interval"] == "1m"
-        assert calls[1].url.params["cursor"] == "next"
-        intents = list(client.intent_rows(intent_id="intent-1"))
-        assert intents[0]["input_asset_id"] is None
-        assert list(client.intents(intent_id="intent-1")) == intents
-        assert calls[2].url.params["intent_id"] == "intent-1"
-        quotes = list(client.quote_rows(observation_id="obs-1", instrument="pool-1"))
-        assert quotes[0]["input_amount"] == "1000000000000000000"
-        assert calls[4].url.params["observation_id"] == "obs-1"
-        assert calls[4].url.params["instrument"] == "pool-1"
-        assert all(request.headers["authorization"] == "Bearer polaris_key_test" for request in calls)
+        rows = list(client.intents(intent_id="intent-1"))
+        assert len(rows) == 1
+        assert all(rows[0][key] == value for key, value in intent.items())
+        assert calls[0].url.params["intent_id"] == "intent-1"
+        assert calls[0].headers["authorization"] == "Bearer polaris_key_test"
+        with pytest.raises(PolarisError, match="intent_id must be non-empty"):
+            list(client.intents(intent_id=" "))
     finally:
         client.close()
 
@@ -735,135 +677,19 @@ def test_venue_candle_aggregates_use_latest_revision_and_reported_volumes(tmp_pa
         assert client.ohlcv(**options) == [{"timestamp": start, "open": 100.0,
                                             "high": 103.0, "low": 99.0, "close": 102.0,
                                             "volume": 2.0, "trades": 5}]
-        assert client.volume(**options) == [{"timestamp": start, "volume": 2.0}]
-        assert client.vwap(**options) == [{"timestamp": start, "vwap": 102.0,
-                                           "volume": 2.0, "quote_volume": 204.0, "trades": 5}]
         assert client.ohlcv(**options, format="tradingview")["candles"][0]["close"] == 102.0
-        volatility = client.volatility(**options)
-        assert len(volatility) == 1
-        assert volatility[0]["timestamp"] == start
-        assert volatility[0]["returns"] == 3
-        assert volatility[0]["volatility"] > 0
     finally:
         client.close()
 
 
-def _book_row(timestamp: int, bids: list[tuple[float, float]], asks: list[tuple[float, float]]) -> dict:
-    row = _l2_row(True)
-    row.update(source="binance", market="BTC-USDT", collector_timestamp=timestamp)
-    for index in range(25):
-        for side in ("bid", "ask"):
-            row[f"{side}_px_{index:02}"] = None
-            row[f"{side}_sz_{index:02}"] = None
-    for side, levels in (("bid", bids), ("ask", asks)):
-        for index, (price, size) in enumerate(levels):
-            row[f"{side}_px_{index:02}"] = price
-            row[f"{side}_sz_{index:02}"] = size
-    return row
 
 
-def test_bbo_uses_reconstructed_books_for_long_range_changes_and_intervals(tmp_path) -> None:
-    start = _ts("2024-01-01T00:00:00Z")
-    books = [
-        _book_row(start + 100, [(100.0, 2.0), (99.0, 4.0)], [(101.0, 3.0)]),
-        _book_row(start + 800, [(100.0, 2.0), (99.5, 4.0)], [(101.0, 3.0)]),
-        _book_row(start + 1200, [(100.0, 2.0)], [(100.5, 1.5)]),
-        _book_row(start + 3100, [(100.25, 1.0)], [(100.5, 1.5)]),
-    ]
-    calls: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(request)
-        assert request.url.path == "/historical/l2-orderbooks"
-        return httpx.Response(200, json={"items": books, "has_more": False, "next_cursor": None})
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        options = dict(source="binance", market="BTC-USDT",
-                       start=start, end=start + 3_600_000)
-        all_quotes = list(client.bbo(**options))
-        changed = list(client.bbo(**options, changes_only=True))
-        interval = list(client.bbo(**options, interval="1s"))
-    finally:
-        client.close()
-
-    assert [row["timestamp"] for row in all_quotes] == [start + 100, start + 800, start + 1200, start + 3100]
-    assert [row["timestamp"] for row in changed] == [start + 100, start + 1200, start + 3100]
-    assert [row["timestamp"] for row in interval] == [start, start + 1000, start + 3000]
-    assert interval[0]["bid_quantity"] == 2.0
-    assert interval[1]["ask_price"] == 100.5
-    assert all(call.url.params["start"] == str(start) for call in calls)
-    assert all(call.url.params["end"] == str(start + 3_600_000) for call in calls)
-    assert len(calls) == 3
 
 
-def test_depth_metrics_uses_top_25_reconstructed_book_levels(tmp_path) -> None:
-    start = _ts("2024-01-01T00:00:00Z")
-    books = [
-        _book_row(start, [(100.0, 2.0), (99.5, 3.0), (98.0, 4.0)],
-                  [(100.5, 1.0), (101.0, 2.0), (102.0, 4.0)]),
-        _book_row(start + 1000, [(100.1, 0.4)], [(100.4, 0.3)]),
-    ]
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/historical/l2-orderbooks"
-        return httpx.Response(200, json={"items": books, "has_more": False, "next_cursor": None})
-
-    client = make_client(handler, dataset_root=tmp_path)
-    try:
-        rows = list(client.depth_metrics(
-            source="binance", market="BTC-USDT",
-            start=start, end=start + 3_600_000,
-            depth_pct=0.01, slippage_notional=100.25,
-        ))
-    finally:
-        client.close()
-
-    assert len(rows) == 2
-    assert rows[0] == pytest.approx({
-        "timestamp": start, "bid_price": 100.0, "ask_price": 100.5,
-        "mid_price": 100.25, "bid_ask_spread": 0.5,
-        "bid_ask_spread_bps": 49.87531172069825, "depth_pct": 0.01,
-        "bid_depth_notional": 498.5, "ask_depth_notional": 302.5,
-        "depth_imbalance": 0.24469413233458176,
-        "slippage_notional": 100.25, "target_base_quantity": 1.0,
-        "buy_average_price": 100.5, "sell_average_price": 100.0,
-        "buy_slippage": 0.25, "sell_slippage": 0.25,
-        "buy_slippage_bps": 24.937655860349125,
-        "sell_slippage_bps": 24.937655860349125,
-    })
-    assert rows[1]["buy_average_price"] is None
-    assert rows[1]["sell_average_price"] is None
 
 
-def test_bbo_rejects_unknown_interval() -> None:
-    client = make_client(lambda request: httpx.Response(500))
-    try:
-        with pytest.raises(ValueError, match="interval must be one of"):
-            client.bbo(source="lighter", market="BTC-USD", start=0, end=1, interval="2s")
-    finally:
-        client.close()
 
 
-def test_depth_metrics_validate_positive_inputs() -> None:
-    client = make_client(lambda request: httpx.Response(500))
-    try:
-        with pytest.raises(ValueError, match="depth_pct must be greater than 0"):
-            client.depth_metrics(
-                source="binance",
-                market="BTC-USDT", start=0, end=1,
-                depth_pct=0,
-            )
-        with pytest.raises(
-            ValueError, match="slippage_notional must be greater than 0"
-        ):
-            client.depth_metrics(
-                source="binance",
-                market="BTC-USDT", start=0, end=1,
-                slippage_notional=0,
-            )
-    finally:
-        client.close()
 
 
 def test_raw_paginates() -> None:

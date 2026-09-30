@@ -147,8 +147,12 @@ def test_client_constructor_signature_and_defaults_are_stable() -> None:
     ]
 
 
-def test_snapshot_and_replay_methods_are_removed() -> None:
-    for method in ("events", "replay", "list_snapshots", "propamm_quote_ladders", "raw_replay"):
+def test_removed_client_methods_are_absent() -> None:
+    for method in (
+        "events", "replay", "list_snapshots", "propamm_quote_ladders", "raw_replay",
+        "bbo_changes", "bbo", "depth_metrics", "intent_rows", "ohlcv_rows",
+        "quote_rows", "volume", "vwap", "volatility", "mark_prices",
+    ):
         assert not hasattr(PolarisClient, method)
 
 
@@ -218,7 +222,7 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("end", keyword_only, None),
     ]
 
-    direct_methods = [PolarisClient.trades, PolarisClient.funding_rates, PolarisClient.mark_prices]
+    direct_methods = [PolarisClient.trades, PolarisClient.funding_rates]
     for method in direct_methods:
         assert _parameters(method) == [
             ("self", positional, required),
@@ -229,18 +233,6 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
             ("output", keyword_only, "iterator"),
             ("batch_size", keyword_only, 65_536),
         ]
-
-    assert _parameters(PolarisClient.bbo) == [
-        ("self", positional, required),
-        ("source", keyword_only, required),
-        ("market", keyword_only, required),
-        ("start", keyword_only, required),
-        ("end", keyword_only, required),
-        ("interval", keyword_only, None),
-        ("changes_only", keyword_only, False),
-        ("output", keyword_only, "iterator"),
-        ("batch_size", keyword_only, 65_536),
-    ]
 
     assert _parameters(PolarisClient.raw) == [
         ("self", positional, required),
@@ -257,20 +249,6 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("start", keyword_only, required),
         ("end", keyword_only, required),
     ]
-    for method, extra in [
-        (PolarisClient.intent_rows, "intent_id"),
-        (PolarisClient.ohlcv_rows, "interval"),
-        (PolarisClient.quote_rows, "observation_id"),
-    ]:
-        assert _parameters(method) == [
-            ("self", positional, required),
-            ("source", keyword_only, None),
-            ("market", keyword_only, None),
-            ("instrument", keyword_only, None),
-            (extra, keyword_only, None),
-            ("start", keyword_only, None),
-            ("end", keyword_only, None),
-        ]
     assert _parameters(PolarisClient.ohlcv) == [
         ("self", positional, required),
         ("source", keyword_only, required),
@@ -283,40 +261,6 @@ def test_documented_client_method_signatures_and_defaults_are_stable() -> None:
         ("output", keyword_only, "records"),
     ]
 
-    for method in [PolarisClient.volume, PolarisClient.vwap]:
-        assert _parameters(method) == [
-            ("self", positional, required),
-            ("source", keyword_only, required),
-            ("market", keyword_only, required),
-            ("from_", keyword_only, None),
-            ("to", keyword_only, None),
-            ("interval", keyword_only, required),
-            ("allow_gaps", keyword_only, False),
-            ("output", keyword_only, "records"),
-        ]
-
-    assert _parameters(PolarisClient.volatility) == [
-        ("self", positional, required),
-        ("source", keyword_only, required),
-        ("market", keyword_only, required),
-        ("from_", keyword_only, None),
-        ("to", keyword_only, None),
-        ("interval", keyword_only, required),
-        ("method", keyword_only, "log_returns"),
-        ("allow_gaps", keyword_only, False),
-        ("output", keyword_only, "records"),
-    ]
-    assert _parameters(PolarisClient.depth_metrics) == [
-        ("self", positional, required),
-        ("source", keyword_only, required),
-        ("market", keyword_only, required),
-        ("start", keyword_only, required),
-        ("end", keyword_only, required),
-        ("depth_pct", keyword_only, 0.01),
-        ("slippage_notional", keyword_only, 10_000.0),
-        ("output", keyword_only, "iterator"),
-        ("batch_size", keyword_only, 65_536),
-    ]
 
 def test_documented_result_annotations_and_models_are_stable() -> None:
     assert (
@@ -342,40 +286,19 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
         PolarisClient.l2_updates,
     ]:
         assert inspect.signature(method).return_annotation == "Iterator[OrderbookL2Row]"
-    for method in [
-        PolarisClient.bbo,
-        PolarisClient.depth_metrics,
-    ]:
-        assert inspect.signature(method).return_annotation == (
-            "Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
-        )
     assert inspect.signature(PolarisClient.trades).return_annotation == (
         "Iterator[TradeRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
     )
     assert inspect.signature(PolarisClient.funding_rates).return_annotation == (
         "Iterator[FundingRateRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
     )
-    assert inspect.signature(PolarisClient.mark_prices).return_annotation == (
-        "Iterator[FundingRateRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame"
-    )
     assert inspect.signature(PolarisClient.option_tickers).return_annotation == "Iterator[OptionTickerRow]"
     assert inspect.signature(PolarisClient.raw_channel).return_annotation == "Iterator[RawCaptureRow]"
-    assert inspect.signature(PolarisClient.ohlcv_rows).return_annotation == "Iterator[OhlcvRow]"
-    assert inspect.signature(PolarisClient.intent_rows).return_annotation == "Iterator[IntentRow]"
-    assert inspect.signature(PolarisClient.quote_rows).return_annotation == "Iterator[QuoteRow]"
     assert inspect.signature(PolarisClient.stream).return_annotation == "RealtimeStream"
     assert (
         inspect.signature(PolarisClient.ohlcv).return_annotation
         == "list[JSONDict] | JSONDict | pandas.DataFrame"
     )
-    for method in [
-        PolarisClient.volume,
-        PolarisClient.vwap,
-        PolarisClient.volatility,
-    ]:
-        assert inspect.signature(method).return_annotation == (
-            "list[JSONDict] | pandas.DataFrame"
-        )
 
     assert get_type_hints(CatalogResponse) == {
         "markets": list[CatalogMarketEntry],
@@ -515,36 +438,6 @@ def test_historical_generator_closes_its_native_iterator() -> None:
     assert owner.diagnostics == 1
 
 
-def test_record_batch_generator_closes_its_native_iterator() -> None:
-    class NativeIterator:
-        def __init__(self) -> None:
-            self.closed = False
-            self.rows = iter([object(), object()])
-
-        def __next__(self):
-            return next(self.rows)
-
-        def close(self) -> None:
-            self.closed = True
-
-    class Owner:
-        def __init__(self) -> None:
-            self.diagnostics = 0
-
-        def _emit_diagnostics(self) -> None:
-            self.diagnostics += 1
-
-    owner = Owner()
-    native = NativeIterator()
-    batches = PolarisClient._iterate_batches(  # type: ignore[arg-type]
-        owner,
-        native,
-        "trades",
-    )
-    next(batches)
-    batches.close()
-    assert native.closed
-    assert owner.diagnostics == 1
 
 
 def test_realtime_native_errors_are_translated() -> None:

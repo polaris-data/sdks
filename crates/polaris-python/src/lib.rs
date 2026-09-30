@@ -1,13 +1,10 @@
 use std::path::PathBuf;
 
-mod columnar;
-
 use polaris_data::{
-    BboQuery, BboQuote, DepthMetricsRow, FundingRateRow, HistoricalRowsQuery, IntentRow,
-    IntentRowsQuery, L2OrderbooksQuery, L2UpdatesQuery, OhlcvFormat, OhlcvInterval, OhlcvOutput,
-    OhlcvQuery, OhlcvRow, OhlcvRowsQuery, OptionTickerRow, OptionTickerRowsQuery, OrderbookBuilder,
-    OrderbookL2Row, PolarisError, QuoteRow, QuoteRowsQuery, RawCaptureRow, RawChannelQuery,
-    RawQuery, StandardEvent, StreamQuery, TimeInput, TradeRow,
+    FundingRateRow, HistoricalRowsQuery, IntentRow, IntentRowsQuery, L2OrderbooksQuery,
+    L2UpdatesQuery, OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery, OptionTickerRow,
+    OptionTickerRowsQuery, OrderbookBuilder, OrderbookL2Row, PolarisError, RawCaptureRow,
+    RawChannelQuery, RawQuery, StandardEvent, StreamQuery, TimeInput, TradeRow,
     blocking::{self},
 };
 use pyo3::{
@@ -18,8 +15,6 @@ use pyo3::{
 };
 use serde::Serialize;
 use serde_json::{Value, json};
-
-use crate::columnar::NativeColumnar;
 
 create_exception!(_native, NativeError, PyException);
 
@@ -350,90 +345,6 @@ impl NativeClient {
         )))
     }
 
-    #[pyo3(signature = (source=None, market=None, instrument=None, intent_id=None, start=None, end=None))]
-    fn intent_rows(
-        &self,
-        py: Python<'_>,
-        source: Option<String>,
-        market: Option<String>,
-        instrument: Option<String>,
-        intent_id: Option<String>,
-        start: Option<i64>,
-        end: Option<i64>,
-    ) -> PyResult<NativeHistorical> {
-        let iterator = py
-            .detach(|| {
-                self.inner.intent_rows(IntentRowsQuery {
-                    source,
-                    market,
-                    instrument,
-                    intent_id,
-                    start,
-                    end,
-                })
-            })
-            .map_err(native_error)?;
-        Ok(NativeHistorical::new(NativeHistoricalIterator::IntentRows(
-            iterator,
-        )))
-    }
-
-    #[pyo3(signature = (source=None, market=None, instrument=None, interval=None, start=None, end=None))]
-    fn ohlcv_rows(
-        &self,
-        py: Python<'_>,
-        source: Option<String>,
-        market: Option<String>,
-        instrument: Option<String>,
-        interval: Option<String>,
-        start: Option<i64>,
-        end: Option<i64>,
-    ) -> PyResult<NativeHistorical> {
-        let iterator = py
-            .detach(|| {
-                self.inner.ohlcv_rows(OhlcvRowsQuery {
-                    source,
-                    market,
-                    instrument,
-                    interval,
-                    start,
-                    end,
-                })
-            })
-            .map_err(native_error)?;
-        Ok(NativeHistorical::new(NativeHistoricalIterator::OhlcvRows(
-            iterator,
-        )))
-    }
-
-    #[pyo3(signature = (source=None, market=None, instrument=None, observation_id=None, start=None, end=None))]
-    fn quote_rows(
-        &self,
-        py: Python<'_>,
-        source: Option<String>,
-        market: Option<String>,
-        instrument: Option<String>,
-        observation_id: Option<String>,
-        start: Option<i64>,
-        end: Option<i64>,
-    ) -> PyResult<NativeHistorical> {
-        let iterator = py
-            .detach(|| {
-                self.inner.quote_rows(QuoteRowsQuery {
-                    source,
-                    market,
-                    instrument,
-                    observation_id,
-                    start,
-                    end,
-                })
-            })
-            .map_err(native_error)?;
-        Ok(NativeHistorical::new(NativeHistoricalIterator::QuoteRows(
-            iterator,
-        )))
-    }
-
     #[pyo3(signature = (source=None, market=None, instrument=None, start=None, end=None))]
     fn option_tickers(
         &self,
@@ -622,79 +533,6 @@ impl NativeClient {
         )))
     }
 
-    #[pyo3(signature = (source, market, start, end, interval=None, changes_only=false))]
-    fn bbo<'py>(
-        &self,
-        py: Python<'py>,
-        source: String,
-        market: String,
-        start: i64,
-        end: i64,
-        interval: Option<&str>,
-        changes_only: bool,
-    ) -> PyResult<NativeHistorical> {
-        let interval = interval.map(parse_interval).transpose()?;
-        let iterator = py
-            .detach(|| {
-                let query = BboQuery {
-                    source,
-                    market,
-                    start,
-                    end,
-                    interval,
-                };
-                if changes_only {
-                    self.inner.bbo_changes(query)
-                } else {
-                    self.inner.bbo(query)
-                }
-            })
-            .map_err(native_error)?;
-        Ok(NativeHistorical::new(NativeHistoricalIterator::Bbo(
-            iterator,
-        )))
-    }
-
-    #[pyo3(signature = (source, market, start, end, interval=None, changes_only=false, batch_size=65_536))]
-    fn bbo_columnar(
-        &self,
-        py: Python<'_>,
-        source: String,
-        market: String,
-        start: i64,
-        end: i64,
-        interval: Option<&str>,
-        changes_only: bool,
-        batch_size: usize,
-    ) -> PyResult<NativeColumnar> {
-        validate_batch_size(batch_size)?;
-        let parsed_interval = interval.map(parse_interval).transpose()?;
-        let identity_source = source.clone();
-        let identity_market = market.clone();
-        let iterator = py
-            .detach(|| {
-                let query = BboQuery {
-                    source,
-                    market,
-                    start,
-                    end,
-                    interval: parsed_interval,
-                };
-                if changes_only {
-                    self.inner.bbo_changes(query)
-                } else {
-                    self.inner.bbo(query)
-                }
-            })
-            .map_err(native_error)?;
-        Ok(NativeColumnar::bbo(
-            iterator,
-            identity_source,
-            identity_market,
-            batch_size,
-        ))
-    }
-
     #[pyo3(signature = (source=None, market=None, start=None, end=None))]
     fn funding_rates<'py>(
         &self,
@@ -718,175 +556,6 @@ impl NativeClient {
             NativeHistoricalIterator::FundingRates(iterator),
         ))
     }
-
-    #[pyo3(signature = (source=None, market=None, start=None, end=None))]
-    fn mark_prices<'py>(
-        &self,
-        py: Python<'py>,
-        source: Option<String>,
-        market: Option<String>,
-        start: Option<i64>,
-        end: Option<i64>,
-    ) -> PyResult<NativeHistorical> {
-        let iterator = py
-            .detach(|| {
-                self.inner.mark_prices(HistoricalRowsQuery {
-                    source,
-                    market,
-                    start,
-                    end,
-                })
-            })
-            .map_err(native_error)?;
-        Ok(NativeHistorical::new(NativeHistoricalIterator::MarkPrices(
-            iterator,
-        )))
-    }
-
-    #[pyo3(signature = (source, market, interval, from_=None, to=None, allow_gaps=false))]
-    fn volume<'py>(
-        &self,
-        py: Python<'py>,
-        source: String,
-        market: String,
-        interval: &str,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let query = aggregate_query(source, market, interval, from_, to, allow_gaps)?;
-        let result = py
-            .detach(|| self.inner.volume(query))
-            .map_err(native_error)?;
-        to_python(py, &result)
-    }
-
-    #[pyo3(signature = (source, market, interval, from_=None, to=None, allow_gaps=false))]
-    fn vwap<'py>(
-        &self,
-        py: Python<'py>,
-        source: String,
-        market: String,
-        interval: &str,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let query = aggregate_query(source, market, interval, from_, to, allow_gaps)?;
-        let result = py.detach(|| self.inner.vwap(query)).map_err(native_error)?;
-        to_python(py, &result)
-    }
-
-    #[pyo3(signature = (source, market, interval, from_=None, to=None, allow_gaps=false))]
-    fn volatility<'py>(
-        &self,
-        py: Python<'py>,
-        source: String,
-        market: String,
-        interval: &str,
-        from_: Option<String>,
-        to: Option<String>,
-        allow_gaps: bool,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let query = aggregate_query(source, market, interval, from_, to, allow_gaps)?;
-        let result = py
-            .detach(|| self.inner.volatility(query))
-            .map_err(native_error)?;
-        to_python(py, &result)
-    }
-
-    #[pyo3(signature = (source, market, start, end, depth_pct=0.01, slippage_notional=10_000.0))]
-    fn depth_metrics<'py>(
-        &self,
-        py: Python<'py>,
-        source: String,
-        market: String,
-        start: i64,
-        end: i64,
-        depth_pct: f64,
-        slippage_notional: f64,
-    ) -> PyResult<NativeHistorical> {
-        let query = L2OrderbooksQuery {
-            source,
-            market,
-            instrument: None,
-            start,
-            end,
-        };
-        let iterator = py
-            .detach(|| {
-                self.inner
-                    .depth_metrics(query, Some(depth_pct), Some(slippage_notional))
-            })
-            .map_err(native_error)?;
-        Ok(NativeHistorical::new(NativeHistoricalIterator::Depth(
-            iterator,
-        )))
-    }
-
-    #[pyo3(signature = (source, market, start, end, depth_pct=0.01, slippage_notional=10_000.0, batch_size=65_536))]
-    fn depth_metrics_columnar(
-        &self,
-        py: Python<'_>,
-        source: String,
-        market: String,
-        start: i64,
-        end: i64,
-        depth_pct: f64,
-        slippage_notional: f64,
-        batch_size: usize,
-    ) -> PyResult<NativeColumnar> {
-        validate_batch_size(batch_size)?;
-        let identity_source = source.clone();
-        let identity_market = market.clone();
-        let query = L2OrderbooksQuery {
-            source,
-            market,
-            instrument: None,
-            start,
-            end,
-        };
-        let iterator = py
-            .detach(|| {
-                self.inner
-                    .depth_metrics(query, Some(depth_pct), Some(slippage_notional))
-            })
-            .map_err(native_error)?;
-        Ok(NativeColumnar::depth(
-            iterator,
-            identity_source,
-            identity_market,
-            batch_size,
-        ))
-    }
-}
-
-fn validate_batch_size(batch_size: usize) -> PyResult<()> {
-    if batch_size == 0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "batch_size must be greater than 0",
-        ));
-    }
-    Ok(())
-}
-
-fn aggregate_query(
-    source: String,
-    market: String,
-    interval_value: &str,
-    from_: Option<String>,
-    to: Option<String>,
-    allow_gaps: bool,
-) -> PyResult<OhlcvQuery> {
-    Ok(OhlcvQuery {
-        source,
-        market,
-        from: time_input(from_),
-        to: time_input(to),
-        interval: parse_interval(interval_value)?,
-        format: OhlcvFormat::Bars,
-        allow_gaps,
-    })
 }
 
 #[pyclass(unsendable, module = "polaris_data._native")]
@@ -898,16 +567,10 @@ enum NativeHistoricalIterator {
     L2Rows(blocking::HistoricalIterator<OrderbookL2Row>),
     Trades(blocking::HistoricalIterator<TradeRow>),
     Intents(blocking::HistoricalIterator<IntentRow>),
-    IntentRows(blocking::HistoricalIterator<IntentRow>),
-    OhlcvRows(blocking::HistoricalIterator<OhlcvRow>),
-    QuoteRows(blocking::HistoricalIterator<QuoteRow>),
     OptionTickers(blocking::HistoricalIterator<OptionTickerRow>),
     FundingRates(blocking::HistoricalIterator<FundingRateRow>),
     RawCaptures(blocking::HistoricalIterator<RawCaptureRow>),
     PerpetualTickers(blocking::HistoricalIterator<FundingRateRow>),
-    Bbo(blocking::HistoricalIterator<BboQuote>),
-    MarkPrices(blocking::HistoricalIterator<FundingRateRow>),
-    Depth(blocking::HistoricalIterator<DepthMetricsRow>),
 }
 
 impl NativeHistorical {
@@ -943,16 +606,10 @@ impl NativeHistorical {
             NativeHistoricalIterator::L2Rows(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Trades(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Intents(iterator) => next_historical(py, iterator),
-            NativeHistoricalIterator::IntentRows(iterator) => next_historical(py, iterator),
-            NativeHistoricalIterator::OhlcvRows(iterator) => next_historical(py, iterator),
-            NativeHistoricalIterator::QuoteRows(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::OptionTickers(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::FundingRates(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::RawCaptures(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::PerpetualTickers(iterator) => next_historical(py, iterator),
-            NativeHistoricalIterator::Bbo(iterator) => next_historical(py, iterator),
-            NativeHistoricalIterator::MarkPrices(iterator) => next_historical(py, iterator),
-            NativeHistoricalIterator::Depth(iterator) => next_historical(py, iterator),
         };
         if matches!(result, Ok(None)) {
             self.iterator = None;
@@ -1066,7 +723,6 @@ fn decode_file<'py>(py: Python<'py>, path: PathBuf) -> PyResult<Bound<'py, PyAny
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeClient>()?;
-    module.add_class::<NativeColumnar>()?;
     module.add_class::<NativeOrderbookBuilder>()?;
     module.add_class::<NativeHistorical>()?;
     module.add_class::<NativeRealtimeStream>()?;

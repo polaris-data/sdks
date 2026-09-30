@@ -22,7 +22,6 @@ from .errors import (
     UnauthorizedError,
 )
 from .models import (
-    IntentEvent,
     CatalogCount,
     CatalogResponse,
     InstrumentsResponse,
@@ -30,10 +29,7 @@ from .models import (
     IntentRow,
     JSONDict,
     OptionTickerRow,
-    OhlcvRow,
     OrderbookL2Row,
-    PerpetualTickerEvent,
-    QuoteRow,
     RawCaptureRow,
     TradeRow,
 )
@@ -51,11 +47,8 @@ AggregateOutputFormat = Literal["records", "dataframe"]
 
 AGGREGATE_COLUMNS: dict[str, tuple[str, ...]] = {
     "ohlcv": ("timestamp", "open", "high", "low", "close", "volume", "trades"),
-    "volume": ("timestamp", "volume"),
-    "vwap": ("timestamp", "vwap", "volume", "quote_volume", "trades"),
-    "volatility": ("timestamp", "volatility", "returns"),
 }
-AGGREGATE_COUNT_COLUMNS = frozenset({"trades", "returns"})
+AGGREGATE_COUNT_COLUMNS = frozenset({"trades"})
 
 
 class OrderbookBuilder:
@@ -268,25 +261,6 @@ class PolarisClient:
                 close()
             self._emit_diagnostics()
 
-    def _iterate_batches(
-        self,
-        iterator: Iterator[Any],
-        operation: str,
-    ) -> Iterator[pyarrow.RecordBatch]:
-        try:
-            while True:
-                try:
-                    yield next(iterator)
-                except StopIteration:
-                    return
-                except _native.NativeError as error:
-                    raise self._translate_native_error(error, operation) from None
-        finally:
-            close = getattr(iterator, "close", None)
-            if close is not None:
-                close()
-            self._emit_diagnostics()
-
     @staticmethod
     def _validate_columnar_output(output: str, batch_size: int) -> None:
         if output not in {"iterator", "batches", "dataframe"}:
@@ -307,24 +281,6 @@ class PolarisClient:
                 f"{name} is required for this output; install "
                 f"polaris-data[{extra}]"
             ) from None
-
-    def _columnar_result(
-        self,
-        iterator: Any,
-        operation: str,
-        output: Literal["batches", "dataframe"],
-        pyarrow_module: Any,
-    ) -> Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        batches = self._iterate_batches(iterator, operation)
-        if output == "batches":
-            return batches
-
-        self._require_optional_module("pandas", "dataframe")
-        schema = iterator.schema
-        materialized = list(batches)
-        table = pyarrow_module.Table.from_batches(materialized, schema=schema)
-        materialized.clear()
-        return table.to_pandas(split_blocks=True, self_destruct=True)
 
     @staticmethod
     def _direct_row_schema(method: str, pa: Any) -> Any:
@@ -361,7 +317,7 @@ class PolarisClient:
 
     def _direct_row_output(
         self,
-        method: Literal["trades", "funding_rates", "mark_prices"],
+        method: Literal["trades", "funding_rates"],
         source: str | None,
         market: str | None,
         start: int | None,
@@ -509,33 +465,6 @@ class PolarisClient:
         """Iterate pair-shaped intent observations from the direct API."""
         iterator = self._call("intents", source, market, instrument, intent_id, start, end)
         return self._iterate(iterator, "intents")
-
-    def intent_rows(
-        self, *, source: str | None = None, market: str | None = None,
-        instrument: str | None = None, intent_id: str | None = None,
-        start: int | None = None, end: int | None = None,
-    ) -> Iterator[IntentRow]:
-        """Read flat pair-shaped intent observations from the direct API."""
-        iterator = self._call("intent_rows", source, market, instrument, intent_id, start, end)
-        return self._iterate(iterator, "intent_rows")
-
-    def ohlcv_rows(
-        self, *, source: str | None = None, market: str | None = None,
-        instrument: str | None = None, interval: str | None = None,
-        start: int | None = None, end: int | None = None,
-    ) -> Iterator[OhlcvRow]:
-        """Read every venue-published candle update from the direct API."""
-        iterator = self._call("ohlcv_rows", source, market, instrument, interval, start, end)
-        return self._iterate(iterator, "ohlcv_rows")
-
-    def quote_rows(
-        self, *, source: str | None = None, market: str | None = None,
-        instrument: str | None = None, observation_id: str | None = None,
-        start: int | None = None, end: int | None = None,
-    ) -> Iterator[QuoteRow]:
-        """Read individual flat PropAMM quote points from the direct API."""
-        iterator = self._call("quote_rows", source, market, instrument, observation_id, start, end)
-        return self._iterate(iterator, "quote_rows")
 
     def option_tickers(
         self,
@@ -692,126 +621,6 @@ class PolarisClient:
         )
 
     @overload
-    def mark_prices(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        output: Literal["iterator"] = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[FundingRateRow]: ...
-
-    @overload
-    def mark_prices(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        output: Literal["batches"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[pyarrow.RecordBatch]: ...
-
-    @overload
-    def mark_prices(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        output: Literal["dataframe"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> pandas.DataFrame: ...
-
-    def mark_prices(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        output: OutputFormat = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[FundingRateRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        """Read funding observations carrying a mark price."""
-        return self._direct_row_output(
-            "mark_prices", source, market, start, end, output, batch_size
-        )
-
-    @overload
-    def bbo(
-        self,
-        *,
-        source: str,
-        market: str,
-        start: int,
-        end: int,
-        interval: str | None = None,
-        changes_only: bool = False,
-        output: Literal["iterator"] = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict]: ...
-
-    @overload
-    def bbo(
-        self,
-        *,
-        source: str,
-        market: str,
-        start: int,
-        end: int,
-        interval: str | None = None,
-        changes_only: bool = False,
-        output: Literal["batches"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[pyarrow.RecordBatch]: ...
-
-    @overload
-    def bbo(
-        self,
-        *,
-        source: str,
-        market: str,
-        start: int,
-        end: int,
-        interval: str | None = None,
-        changes_only: bool = False,
-        output: Literal["dataframe"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> pandas.DataFrame: ...
-
-    def bbo(
-        self,
-        *,
-        source: str,
-        market: str,
-        start: int,
-        end: int,
-        interval: str | None = None,
-        changes_only: bool = False,
-        output: OutputFormat = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        self._validate_l2_bounds(start, end)
-        self._validate_columnar_output(output, batch_size)
-        if output != "iterator":
-            extra = "dataframe" if output == "dataframe" else "arrow"
-            pyarrow_module = self._require_optional_module("pyarrow", extra)
-            if output == "dataframe":
-                self._require_optional_module("pandas", "dataframe")
-            iterator = self._call(
-                "bbo_columnar", source, market, start, end,
-                interval, changes_only, batch_size,
-            )
-            return self._columnar_result(iterator, "bbo", output, pyarrow_module)
-        iterator = self._call("bbo", source, market, start, end, interval, changes_only)
-        return self._iterate(iterator, "bbo")
-
-    @overload
     def ohlcv(
         self,
         *,
@@ -874,134 +683,6 @@ class PolarisClient:
             pandas_module,
         )
 
-    @overload
-    def volume(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        allow_gaps: bool = False,
-        output: Literal["records"] = "records",
-    ) -> list[JSONDict]: ...
-
-    @overload
-    def volume(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        allow_gaps: bool = False,
-        output: Literal["dataframe"],
-    ) -> pandas.DataFrame: ...
-
-    def volume(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        allow_gaps: bool = False,
-        output: AggregateOutputFormat = "records",
-    ) -> list[JSONDict] | pandas.DataFrame:
-        return self._aggregate(
-            "volume", source, market, from_, to, interval, allow_gaps, output
-        )
-
-    @overload
-    def vwap(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        allow_gaps: bool = False,
-        output: Literal["records"] = "records",
-    ) -> list[JSONDict]: ...
-
-    @overload
-    def vwap(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        allow_gaps: bool = False,
-        output: Literal["dataframe"],
-    ) -> pandas.DataFrame: ...
-
-    def vwap(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        allow_gaps: bool = False,
-        output: AggregateOutputFormat = "records",
-    ) -> list[JSONDict] | pandas.DataFrame:
-        return self._aggregate(
-            "vwap", source, market, from_, to, interval, allow_gaps, output
-        )
-
-    @overload
-    def volatility(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        method: str = "log_returns",
-        allow_gaps: bool = False,
-        output: Literal["records"] = "records",
-    ) -> list[JSONDict]: ...
-
-    @overload
-    def volatility(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        method: str = "log_returns",
-        allow_gaps: bool = False,
-        output: Literal["dataframe"],
-    ) -> pandas.DataFrame: ...
-
-    def volatility(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        method: str = "log_returns",
-        allow_gaps: bool = False,
-        output: AggregateOutputFormat = "records",
-    ) -> list[JSONDict] | pandas.DataFrame:
-        if method != "log_returns":
-            raise ValueError("method must be 'log_returns'")
-        return self._aggregate(
-            "volatility", source, market, from_, to, interval, allow_gaps, output
-        )
-
     def _prepare_aggregate_output(
         self,
         output: str,
@@ -1027,107 +708,3 @@ class PolarisClient:
             dtype = "uint64" if column in AGGREGATE_COUNT_COLUMNS else "float64"
             frame[column] = frame[column].astype(dtype)
         return frame
-
-    def _aggregate(
-        self,
-        method: str,
-        source: str,
-        market: str,
-        from_: TimeInput | None,
-        to: TimeInput | None,
-        interval: str,
-        allow_gaps: bool,
-        output: AggregateOutputFormat,
-    ) -> list[JSONDict] | pandas.DataFrame:
-        pandas_module = self._prepare_aggregate_output(output)
-        rows = self._call(
-            method,
-            source,
-            market,
-            interval,
-            self._time(from_),
-            self._time(to),
-            allow_gaps,
-        )
-        if output == "records":
-            return rows
-        return self._aggregate_dataframe(
-            rows,
-            AGGREGATE_COLUMNS[method],
-            pandas_module,
-        )
-
-    @overload
-    def depth_metrics(
-        self,
-        *,
-        source: str,
-        market: str,
-        start: int,
-        end: int,
-        depth_pct: float = 0.01,
-        slippage_notional: float = 10_000.0,
-        output: Literal["iterator"] = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict]: ...
-
-    @overload
-    def depth_metrics(
-        self,
-        *,
-        source: str,
-        market: str,
-        start: int,
-        end: int,
-        depth_pct: float = 0.01,
-        slippage_notional: float = 10_000.0,
-        output: Literal["batches"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[pyarrow.RecordBatch]: ...
-
-    @overload
-    def depth_metrics(
-        self,
-        *,
-        source: str,
-        market: str,
-        start: int,
-        end: int,
-        depth_pct: float = 0.01,
-        slippage_notional: float = 10_000.0,
-        output: Literal["dataframe"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> pandas.DataFrame: ...
-
-    def depth_metrics(
-        self,
-        *,
-        source: str,
-        market: str,
-        start: int,
-        end: int,
-        depth_pct: float = 0.01,
-        slippage_notional: float = 10_000.0,
-        output: OutputFormat = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        self._validate_l2_bounds(start, end)
-        if depth_pct <= 0:
-            raise ValueError("depth_pct must be greater than 0")
-        if slippage_notional <= 0:
-            raise ValueError("slippage_notional must be greater than 0")
-        self._validate_columnar_output(output, batch_size)
-        if output != "iterator":
-            extra = "dataframe" if output == "dataframe" else "arrow"
-            pyarrow_module = self._require_optional_module("pyarrow", extra)
-            if output == "dataframe":
-                self._require_optional_module("pandas", "dataframe")
-            iterator = self._call(
-                "depth_metrics_columnar", source, market, start, end,
-                depth_pct, slippage_notional, batch_size,
-            )
-            return self._columnar_result(iterator, "depth_metrics", output, pyarrow_module)
-        iterator = self._call(
-            "depth_metrics", source, market, start, end, depth_pct, slippage_notional,
-        )
-        return self._iterate(iterator, "depth_metrics")
