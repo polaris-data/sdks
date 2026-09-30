@@ -117,7 +117,7 @@ Use it to inspect available data, query historical market data, and open realtim
 | `bbo(opts)` | Best bid/offer quote series | Spread tracking, quote analytics, and top-of-book monitoring |
 | `depthMetrics(opts)` | Derived depth, spread, imbalance, and slippage metrics | Liquidity analysis and market impact estimation |
 
-Snapshot-based methods accept `from` and `to` as ISO 8601 strings, `Date`, or epoch milliseconds. If one or both bounds are omitted, the client infers a bounded range from catalog metadata.
+Snapshot-backed `events`, `replay`, and `propammQuoteLadders` accept `from` and `to` as ISO 8601 strings, `Date`, or epoch milliseconds. If one or both bounds are omitted, the client infers a bounded range from catalog metadata.
 `replay({ standard: false })` is not supported in the TypeScript SDK.
 
 `intents()` returns pair-shaped flat observations from `/historical/intents`:
@@ -236,16 +236,16 @@ console.log(trades[0]?.price);
 const quotes = await client.bbo({
   source: "binance",
   market: "BTC-USDT",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-01T01:00:00Z",
+  start: Date.parse("2024-01-01T00:00:00Z"),
+  end: Date.parse("2024-01-01T01:00:00Z"),
 });
 console.log(quotes[0]);
 
 const depth = await client.depthMetrics({
   source: "binance",
   market: "BTC-USDT",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-01T01:00:00Z",
+  start: Date.parse("2024-01-01T00:00:00Z"),
+  end: Date.parse("2024-01-01T01:00:00Z"),
 });
 console.log(depth[0]);
 ```
@@ -480,9 +480,11 @@ import type {
 
 `ohlcv`, `ohlcvTradingView`, `volume`, `vwap`, and `volatility` now use `/historical/ohlcv`. Each candle's latest collector revision is selected. OHLCV and volume use the requested exact venue interval and base volume; missing volume or trade count becomes zero. VWAP uses quote volume divided by base volume and falls back to close times base volume when quote volume is absent. Volatility is the sample standard deviation of log returns from the finest available candle closes shorter than the requested interval; buckets with fewer than two returns are omitted. These are candle-derived results, not trade-derived results. `from` and `to` are applied as inclusive candle-open bounds, and the aggregate methods no longer perform snapshot coverage checks.
 
-`l2Updates` uses `/historical/l2-updates` with optional `source`, `market`, `instrument`, `start`, and `end`; omitted bounds use the API default window. `l2Snapshots` uses `/historical/l2-orderbooks` and requires `source`, `market`, and inclusive Unix-millisecond `start` and `end` within five minutes. Both paginate and return flat rows with 100 nullable fixed level fields. `l2Snapshots` includes a reconstructed book after each source event, including deltas. The route has server limits of 100,000 raw captures, 1 GiB read, and 30 seconds. These methods no longer return event envelopes or accept `from`, `to`, `allowGaps`, or `materializeOrderbooks`; use `events` or `replay` for event-envelope reconstruction. Older ranges require an API key.
+`l2Updates` uses `/historical/l2-updates` with optional `source`, `market`, `instrument`, `start`, and `end`; omitted bounds use the API default window. `l2Snapshots` uses `/historical/l2-orderbooks` and requires `source`, `market`, and inclusive Unix-millisecond `start` and `end`. Both paginate and return flat rows with 100 nullable fixed level fields. `l2Snapshots` includes a reconstructed book after each source event, including deltas. The route has server limits of 100,000 raw captures, 1 GiB read, and 30 seconds. These methods no longer return event envelopes or accept `from`, `to`, `allowGaps`, or `materializeOrderbooks`; use `events` or `replay` for event-envelope reconstruction. Older ranges require an API key.
 
-The remaining standardised historical methods (`events`, `propammQuoteLadders`, `bbo`, `depthMetrics`, and `replay`) use a **snapshot-first** approach:
+`bbo` and `depthMetrics` now derive from `/historical/l2-orderbooks` with required inclusive Unix-millisecond `start` and `end`. Their previous `from` and `to` inputs have been removed. BBO uses the best level, while depth, imbalance, and slippage use only the visible top 25 levels per side. Depth can be understated when the percentage reaches beyond level 25; slippage fields are null when those levels cannot fill the target. They no longer use snapshot coverage or local book caches. Large requests remain subject to the route's capture, read-byte, and time budgets.
+
+The remaining standardised historical methods (`events`, `propammQuoteLadders`, and `replay`) use a **snapshot-first** approach:
 
 1. Hourly `.jsonl.zst` snapshot files are discovered via `GET /snapshots` and downloaded via `GET /download` on first access.
 2. Subsequent calls for the same date range read from the local cache — no network round-trips.

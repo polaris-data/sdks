@@ -66,7 +66,11 @@ console.log(`Fetched ${trades.length} trades`);
 // Market data queries
 const events = await client.events({ /* ... */ });
 const l2Snapshots = await client.l2Snapshots({ /* ... */ });
-const bbo = await client.bbo({ /* ... */ });
+const bbo = await client.bbo({
+  source: "binance", market: "BTC-USDT",
+  start: Date.parse("2024-01-01T00:00:00Z"),
+  end: Date.parse("2024-01-01T01:00:00Z"),
+});
 const fundingRates = await client.fundingRates({ /* ... */ });
 
 // Aggregated data

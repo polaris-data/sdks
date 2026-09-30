@@ -90,14 +90,6 @@ def run_worker(root: Path, mode: str, deltas: int) -> None:
                     to=to_us,
                     materialize_orderbooks=False,
                 )
-            elif mode in {"bbo", "bbo_changes"}:
-                rows = client.bbo(
-                    source=SOURCE,
-                    market=MARKET,
-                    from_=from_us,
-                    to=to_us,
-                    changes_only=mode == "bbo_changes",
-                )
             elif mode == "l2_updates":
                 rows = (row for row in client.events(
                     source=SOURCE, market=MARKET, from_=from_us, to=to_us,
@@ -178,7 +170,7 @@ def parse_minimum_throughput(values: list[str]) -> dict[str, float]:
             raise argparse.ArgumentTypeError(
                 f"expected MODE=ROWS_PER_SECOND, got {value!r}"
             ) from error
-        if mode not in {"events", "bbo", "bbo_changes", "l2_updates", "l2_builder", "l2"}:
+        if mode not in {"events", "l2_updates", "l2_builder", "l2"}:
             raise argparse.ArgumentTypeError(f"unknown benchmark mode {mode!r}")
         if rate <= 0:
             raise argparse.ArgumentTypeError("minimum throughput must be positive")
@@ -213,14 +205,14 @@ def main() -> int:
     parser.add_argument(
         "--modes",
         nargs="+",
-        choices=["events", "bbo", "bbo_changes", "l2_updates", "l2_builder", "l2"],
-        default=["events", "bbo", "bbo_changes", "l2_updates", "l2_builder"],
+        choices=["events", "l2_updates", "l2_builder", "l2"],
+        default=["events", "l2_updates", "l2_builder"],
     )
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--root", type=Path, help=argparse.SUPPRESS)
     parser.add_argument(
         "--mode",
-        choices=["events", "bbo", "bbo_changes", "l2_updates", "l2_builder", "l2"],
+        choices=["events", "l2_updates", "l2_builder", "l2"],
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--deltas", type=int, help=argparse.SUPPRESS)

@@ -227,14 +227,16 @@ Use it to inspect available data, query historical market data, and open realtim
 | `volume(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False, output="records")` | Bucketed volume records or Pandas DataFrame | Volume profiling and participation analysis |
 | `vwap(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False, output="records")` | Bucketed VWAP records or Pandas DataFrame | Execution benchmarking and price smoothing |
 | `volatility(source=..., market=..., from_=None, to=None, interval=..., method="log_returns", allow_gaps=False, output="records")` | Bucketed volatility records or Pandas DataFrame | Risk modeling and intraperiod volatility analysis |
-| `bbo(source=..., market=..., from_=None, to=None, interval=None, allow_gaps=False, changes_only=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Spread tracking, quote analytics, and top-of-book monitoring |
-| `depth_metrics(source=..., market=..., from_=None, to=None, depth_pct=0.01, slippage_notional=10000.0, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Liquidity analysis and market impact estimation |
+| `bbo(source=..., market=..., start=..., end=..., interval=None, changes_only=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Spread tracking, quote analytics, and top-of-book monitoring |
+| `depth_metrics(source=..., market=..., start=..., end=..., depth_pct=0.01, slippage_notional=10000.0, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Liquidity analysis and market impact estimation |
 
 Historical row methods are single-pass iterators. Iterate them directly for bounded memory, or call `list(...)` when you intentionally want an eager result. Direct endpoint request and decode errors can occur while iterating. If you stop early, call the generator's `close()` method to promptly release its native reader. `bbo(interval="1s")` emits the last quote from each non-empty, UTC-aligned interval.
 
 `trades`, `option_tickers`, and `funding_rates` query `/historical/trades`, `/historical/options-ticker`, and `/historical/funding-rates` respectively. Their `start` and `end` bounds are inclusive Unix milliseconds, and omitted bounds use the API defaults. They follow all cursor pages and return flat rows; fields such as `price`, `funding_rate`, and option Greeks are at the top level rather than under `data`. These methods no longer accept `from_`, `to`, or `allow_gaps`. Older direct history requires an API key and these methods do not provide snapshot coverage checks or local caching.
 
-`l2_updates` queries `/historical/l2-updates` with optional filters and inclusive Unix-millisecond bounds; omitted bounds use the API default window. `l2_snapshots` queries `/historical/l2-orderbooks` with required `source`, `market`, `start`, and `end`, plus optional `instrument`. Its inclusive window must be at most five minutes. Both follow cursor pages and return fixed top-25 nullable price and size fields. The `source_event_is_snapshot` flag identifies the original event: `l2_snapshots` includes books reconstructed after deltas too. These are breaking return-type and query changes; use `events` or replay for event envelopes and full-depth reconstruction. Older ranges require an API key. The orderbook route also has server limits of 100,000 raw captures, 1 GiB read, and 30 seconds.
+`l2_updates` queries `/historical/l2-updates` with optional filters and inclusive Unix-millisecond bounds; omitted bounds use the API default window. `l2_snapshots` queries `/historical/l2-orderbooks` with required `source`, `market`, `start`, and `end`, plus optional `instrument`. Both follow cursor pages and return fixed top-25 nullable price and size fields. The `source_event_is_snapshot` flag identifies the original event: `l2_snapshots` includes books reconstructed after deltas too. These are breaking return-type and query changes; use `events` or replay for event envelopes and full-depth reconstruction. Older ranges require an API key. The orderbook route also has server limits of 100,000 raw captures, 1 GiB read, and 30 seconds.
+
+`bbo` and `depth_metrics` derive their results from `/historical/l2-orderbooks` using required inclusive Unix-millisecond `start` and `end` bounds. Rust `bbo_changes` and Python `bbo(changes_only=True)` use the same route. These methods no longer accept `from_`, `to`, or `allow_gaps`, and no longer use snapshot coverage or local book caches. BBO uses the best visible prices and sizes. Depth, imbalance, and slippage use at most 25 levels per side; depth can be understated when the requested percentage reaches beyond level 25, and slippage fields are null if the visible levels cannot fill the target. Large queries remain subject to the route's capture, read-byte, and time budgets.
 
 `raw_channel` queries `/raw/{exchange}/{event}` with required inclusive Unix-millisecond bounds and follows all cursor pages. For example, `list(client.raw_channel(exchange="binance", event="trades", start=1704067200000, end=1704067200000))` returns capture metadata and `original_json` as exact text. It does not parse that JSON. The route exposes the latest seven days without a key; older ranges require an API key. The existing source/market `raw` and raw replay methods retain their current interface.
 
@@ -352,13 +354,13 @@ Run the opt-in end-to-end benchmark after building the Python extension:
 uv run python benchmarks/streaming_memory.py
 ```
 
-It generates a 3,000-level local book with one million deltas, consumes raw standardized events, direct BBO, raw L2 updates, and lazy application-managed books in isolated processes, and reports end-to-end wall time, rows per second, and peak RSS. The command fails when peak RSS from 100,000 to one million deltas grows by more than the larger of 20% or 64 MiB, or when long-run throughput falls below 75% of short-run throughput.
+It generates a 3,000-level local book with one million deltas, consumes raw standardized events, snapshot event L2 updates, and lazy application-managed books in isolated processes, and reports end-to-end wall time, rows per second, and peak RSS. The command fails when peak RSS from 100,000 to one million deltas grows by more than the larger of 20% or 64 MiB, or when long-run throughput falls below 75% of short-run throughput.
 
 Optionally set machine-specific throughput floors:
 
 ```bash
 uv run python benchmarks/streaming_memory.py \
-  --min-rps events=50000 --min-rps bbo=100000 \
+  --min-rps events=50000 \
   --min-rps l2_updates=500000 --min-rps l2_builder=250000
 ```
 
@@ -508,7 +510,7 @@ Pass `dataset_root=...` to `PolarisClient(...)` to override the root explicitly.
 
 ## Snapshot-first replay
 
-For standardized snapshot-backed data, `replay(...)`, `events(...)`, `propamm_quote_ladders(...)`, `bbo(...)`, and `depth_metrics(...)` prefer `/snapshots` plus daily bulk `/download?source=...&market=...&date=...&mode=json` manifests, and reuse local snapshot files when they already exist:
+For standardized snapshot-backed data, `replay(...)`, `events(...)`, and `propamm_quote_ladders(...)` prefer `/snapshots` plus daily bulk `/download?source=...&market=...&date=...&mode=json` manifests, and reuse local snapshot files when they already exist:
 
 ```python
 from polaris_data import PolarisClient
