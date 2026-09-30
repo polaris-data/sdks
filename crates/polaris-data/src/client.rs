@@ -18,9 +18,9 @@ use crate::{
         CatalogAccess, CatalogCount, CatalogInstrument, CatalogMarket, CatalogQuery,
         CatalogResponse, Diagnostic, EventsQuery, FundingRateRow, HistoricalRowsQuery,
         HistoricalStream, InstrumentsQuery, InstrumentsResponse, IntentRow, IntentRowsQuery,
-        L2OrderbooksQuery, L2UpdatesQuery, MixedEventRow, OhlcvRow, OhlcvRowsQuery, OptionContract,
-        OptionTickerRow, OptionTickerRowsQuery, OrderbookL2Row, RawCaptureRow, RawChannelQuery,
-        RawQuery, RealtimeStream, StreamQuery, TradeRow,
+        L2OrderbooksQuery, L2UpdatesQuery, MetaResponse, MixedEventRow, OhlcvRow, OhlcvRowsQuery,
+        OptionContract, OptionTickerRow, OptionTickerRowsQuery, OrderbookL2Row, RawCaptureRow,
+        RawChannelQuery, RawQuery, RealtimeStream, StreamQuery, TradeRow, TradeRowsQuery,
     },
     realtime,
     storage::StorageLayout,
@@ -78,6 +78,14 @@ impl PolarisClient {
 
     pub async fn health(&self) -> Result<Value, PolarisError> {
         self.http.get_json("/health", &[], AuthMode::None).await
+    }
+
+    /// Return API documentation and machine-readable resource links.
+    pub async fn meta(&self) -> Result<MetaResponse, PolarisError> {
+        let payload = self.http.get_json("/meta", &[], AuthMode::None).await?;
+        serde_json::from_value(payload).map_err(|error| {
+            PolarisError::InvalidResponse(format!("invalid /meta response: {error}"))
+        })
     }
 
     pub async fn stream(&self, query: StreamQuery) -> Result<RealtimeStream, PolarisError> {
@@ -345,9 +353,22 @@ impl PolarisClient {
 
     pub async fn trades(
         &self,
-        query: HistoricalRowsQuery,
+        query: impl Into<TradeRowsQuery>,
     ) -> Result<HistoricalStream<TradeRow>, PolarisError> {
-        self.historical_rows("/trades", query, vec![])
+        let query = query.into();
+        let instrument = validate_optional_filter("instrument", query.instrument)?;
+        self.historical_rows(
+            "/trades",
+            HistoricalRowsQuery {
+                source: query.source,
+                market: query.market,
+                start: query.start,
+                end: query.end,
+            },
+            instrument
+                .map(|value| vec![("instrument", value)])
+                .unwrap_or_default(),
+        )
     }
 
     /// Stream typed flat rows in global collector-time order from `/events`.

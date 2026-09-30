@@ -57,6 +57,18 @@ pub struct CatalogQuery {
     pub q: Option<String>,
 }
 
+/// Public API discovery links returned by `/meta`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaResponse {
+    pub name: String,
+    pub docs: String,
+    pub llms: String,
+    pub openapi: String,
+    pub skill: String,
+    pub health: String,
+    pub stream: String,
+}
+
 /// Filters for option-contract discovery. `market` is the normalized underlying.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstrumentsQuery {
@@ -85,6 +97,28 @@ pub struct HistoricalRowsQuery {
     pub market: Option<String>,
     pub start: Option<i64>,
     pub end: Option<i64>,
+}
+
+/// Trade filters. `instrument` selects one exact venue-native instrument.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TradeRowsQuery {
+    pub source: Option<String>,
+    pub market: Option<String>,
+    pub instrument: Option<String>,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+}
+
+impl From<HistoricalRowsQuery> for TradeRowsQuery {
+    fn from(query: HistoricalRowsQuery) -> Self {
+        Self {
+            source: query.source,
+            market: query.market,
+            instrument: None,
+            start: query.start,
+            end: query.end,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

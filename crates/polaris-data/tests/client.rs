@@ -5,7 +5,7 @@ use polaris_data::{
     CatalogQuery, EventsQuery, HistoricalRowsQuery, HistoricalStream, InstrumentsQuery,
     IntentRowsQuery, L2OrderbooksQuery, L2UpdatesQuery, MixedEventRow, MixedEventType,
     OhlcvRowsQuery, OptionTickerRowsQuery, PolarisClient, PolarisError, RawChannelQuery, RawQuery,
-    TimeInput, blocking,
+    TimeInput, TradeRowsQuery, blocking,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -21,6 +21,86 @@ fn build_client(server: &MockServer, root: &TempDir) -> PolarisClient {
         .timeout(Duration::from_secs(5))
         .build()
         .expect("client")
+}
+
+#[tokio::test]
+async fn meta_returns_typed_public_discovery_links() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().expect("tempdir");
+    let client = build_client(&server, &root);
+    Mock::given(method("GET"))
+        .and(path("/meta"))
+        .respond_with(|request: &wiremock::Request| {
+            assert!(request.headers.get("authorization").is_none());
+            ResponseTemplate::new(200).set_body_json(json!({
+                "name": "Polaris API", "docs": "https://docs.polaris.supply",
+                "llms": "https://api.polaris.supply/llms.txt",
+                "openapi": "https://api.polaris.supply/openapi.json",
+                "skill": "https://api.polaris.supply/skill.md",
+                "health": "https://api.polaris.supply/health",
+                "stream": "wss://api.polaris.supply/stream"
+            }))
+        })
+        .mount(&server)
+        .await;
+    let meta = client.meta().await.expect("meta");
+    assert_eq!(meta.name, "Polaris API");
+    assert_eq!(meta.openapi, "https://api.polaris.supply/openapi.json");
+}
+
+#[tokio::test]
+async fn trades_filter_exact_instrument_across_pages() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().expect("tempdir");
+    let client = build_client(&server, &root);
+    Mock::given(method("GET"))
+        .and(path("/trades"))
+        .and(query_param("instrument", "BTC-PERP"))
+        .and(query_param("start", "10"))
+        .and(query_param("end", "10"))
+        .respond_with(|request: &wiremock::Request| {
+            let second = request
+                .url
+                .query_pairs()
+                .any(|(key, value)| key == "cursor" && value == "next");
+            ResponseTemplate::new(200).set_body_json(json!({
+                "items": [{"event_id": if second { "t2" } else { "t1" }, "source": "hyperliquid",
+                    "market": "BTC", "instrument": "BTC-PERP", "collector_timestamp": 10,
+                    "source_capture_id": "capture", "schema_version": 1,
+                    "price": 100.0, "quantity": 2.0}],
+                "has_more": !second, "next_cursor": if second { None } else { Some("next") }
+            }))
+        })
+        .mount(&server)
+        .await;
+    let rows = collect_stream(
+        client
+            .trades(TradeRowsQuery {
+                instrument: Some("BTC-PERP".into()),
+                start: Some(10),
+                end: Some(10),
+                ..Default::default()
+            })
+            .await
+            .expect("trades"),
+    )
+    .await
+    .expect("rows");
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.event_id.as_str())
+            .collect::<Vec<_>>(),
+        ["t1", "t2"]
+    );
+    assert!(
+        client
+            .trades(TradeRowsQuery {
+                instrument: Some(" ".into()),
+                ..Default::default()
+            })
+            .await
+            .is_err()
+    );
 }
 
 async fn collect_stream<T>(stream: HistoricalStream<T>) -> Result<Vec<T>, PolarisError> {

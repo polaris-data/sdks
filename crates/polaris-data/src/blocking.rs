@@ -9,9 +9,9 @@ use tokio::runtime::{Handle, Runtime};
 use crate::{
     CatalogCount, CatalogQuery, CatalogResponse, Diagnostic, EventsQuery, FundingRateRow,
     HistoricalRowsQuery, HistoricalStream, IntentRow, IntentRowsQuery, L2OrderbooksQuery,
-    L2UpdatesQuery, MixedEventRow, OhlcvRow, OhlcvRowsQuery, OptionTickerRow,
+    L2UpdatesQuery, MetaResponse, MixedEventRow, OhlcvRow, OhlcvRowsQuery, OptionTickerRow,
     OptionTickerRowsQuery, OrderbookL2Row, PolarisError, RawCaptureRow, RawChannelQuery, RawQuery,
-    RealtimeStream, StandardEvent, StreamQuery, TradeRow,
+    RealtimeStream, StandardEvent, StreamQuery, TradeRow, TradeRowsQuery,
 };
 
 const HISTORICAL_CHANNEL_CAPACITY: usize = 16;
@@ -139,6 +139,10 @@ impl PolarisClient {
         self.run(self.inner.health())
     }
 
+    pub fn meta(&self) -> Result<MetaResponse, PolarisError> {
+        self.run(self.inner.meta())
+    }
+
     pub fn catalog(&self, query: CatalogQuery) -> Result<CatalogResponse, PolarisError> {
         self.run(self.inner.catalog(query))
     }
@@ -156,7 +160,7 @@ impl PolarisClient {
 
     pub fn trades(
         &self,
-        query: HistoricalRowsQuery,
+        query: impl Into<TradeRowsQuery>,
     ) -> Result<HistoricalIterator<TradeRow>, PolarisError> {
         let stream = self.run(self.inner.trades(query))?;
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
