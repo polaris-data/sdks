@@ -680,6 +680,17 @@ export interface CatalogOptions {
   market?: string;
 }
 
+/** Public API discovery links returned by /meta. */
+export interface MetaResponse {
+  name: string;
+  docs: string;
+  llms: string;
+  openapi: string;
+  skill: string;
+  health: string;
+  stream: string;
+}
+
 /** `market` is the normalized option underlying, such as `BTC`. */
 export interface InstrumentsOptions {
   source: string;
@@ -711,6 +722,11 @@ export interface HistoricalRowsOptions {
   market?: string;
   start?: number;
   end?: number;
+}
+
+export interface TradeRowsOptions extends HistoricalRowsOptions {
+  /** Exact venue-native instrument. */
+  instrument?: string;
 }
 
 export interface EventsOptions extends Omit<HistoricalRowsOptions, "start" | "end"> {

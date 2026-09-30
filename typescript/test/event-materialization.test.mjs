@@ -110,10 +110,11 @@ test("direct historical rows paginate, filter, and keep flat nullable fields", a
     return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
   } });
 
-  const trades = await client.trades({ source: "deribit", market: "BTC", start: 10, end: 10 });
+  const trades = await client.trades({ source: "deribit", market: "BTC", instrument: "BTC-29MAR24-50000-C", start: 10, end: 10 });
   assert.deepEqual(trades, [trade, trade]);
   assert.equal(calls[0].url.searchParams.get("start"), "10");
   assert.equal(calls[0].url.searchParams.get("end"), "10");
+  assert.equal(calls[0].url.searchParams.get("instrument"), "BTC-29MAR24-50000-C");
   assert.equal(calls[0].url.searchParams.get("limit"), "1000");
   assert.equal(calls[1].url.searchParams.get("cursor"), "next");
   assert.equal(calls[0].headers.Authorization, "Bearer secret");
@@ -136,6 +137,7 @@ test("direct historical rows paginate, filter, and keep flat nullable fields", a
     client.trades({ start: -1 }),
     /start must be a non-negative/,
   );
+  await assert.rejects(client.trades({ instrument: " " }), /instrument must be non-empty/);
   client.close();
 });
 

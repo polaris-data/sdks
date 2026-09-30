@@ -5,6 +5,7 @@ import type {
   CatalogMarket,
   CatalogOptions,
   CatalogResponse,
+  MetaResponse,
   InstrumentsOptions,
   InstrumentsResponse,
   OptionContract,
@@ -28,6 +29,7 @@ import type {
   OhlcvRowsOptions,
   OrderbookL2Row,
   TradeRow,
+  TradeRowsOptions,
   PolarisClientOptions,
   StreamOptions,
   TradingViewOhlcvResponse,
@@ -114,6 +116,16 @@ export class BasePolarisClient {
   /** Check API availability. */
   async health(): Promise<Json> {
     return this._getJson("/health", { auth: "none" });
+  }
+
+  /** Return API documentation and machine-readable resource links. */
+  async meta(): Promise<MetaResponse> {
+    const payload = await this._getJson<unknown>("/meta", { auth: "none" });
+    if (!isRecord(payload) || !["name", "docs", "llms", "openapi", "skill", "health", "stream"]
+      .every((key) => typeof payload[key] === "string")) {
+      throw new PolarisError("Invalid /meta response");
+    }
+    return payload as unknown as MetaResponse;
   }
 
   stream(options: StreamOptions): RealtimeStream {
@@ -259,8 +271,10 @@ export class BasePolarisClient {
   // -----------------------------------------------------------------------
 
   /** Return flat trades from the direct historical API. */
-  async trades(options: HistoricalRowsOptions = {}): Promise<TradeRow[]> {
-    return this._historicalRows("/trades", options, isTradeRow);
+  async trades(options: TradeRowsOptions = {}): Promise<TradeRow[]> {
+    const instrument = optionalFilter("instrument", options.instrument);
+    return this._historicalRows("/trades", options, isTradeRow,
+      instrument === undefined ? {} : { instrument });
   }
 
   /** Return authenticated mixed flat rows in global collector-time order. */

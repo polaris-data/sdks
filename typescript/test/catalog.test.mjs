@@ -1,6 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+test("meta returns public API discovery links", async () => {
+  const { PolarisClient } = await import("../dist/node/index.js");
+  const payload = {
+    name: "Polaris API", docs: "https://docs.polaris.supply",
+    llms: "https://api.polaris.supply/llms.txt",
+    openapi: "https://api.polaris.supply/openapi.json",
+    skill: "https://api.polaris.supply/skill.md",
+    health: "https://api.polaris.supply/health",
+    stream: "wss://api.polaris.supply/stream",
+  };
+  const client = new PolarisClient({ baseUrl: "https://api.example", fetch: async (input, init) => {
+    assert.equal(new URL(input).pathname, "/meta");
+    assert.equal(init.headers.Authorization, undefined);
+    return new Response(JSON.stringify(payload), { status: 200 });
+  } });
+  assert.deepEqual(await client.meta(), payload);
+  client.close();
+});
+
 test("catalog exposes provider symbols and falls back to market", async () => {
   const fetch = async (url) => {
     const parsed = new URL(url);
