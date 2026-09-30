@@ -55,17 +55,18 @@ All direct historical methods fetch every cursor page. Their `start` and `end` f
 
 | Rust / Python | TypeScript | API route | Result |
 | --- | --- | --- | --- |
-| `trades` | `trades` | `/historical/trades` | Flat trade rows |
-| `option_tickers` | `optionTickers` | `/historical/option-tickers` | Flat option observations; optional exact `instrument` |
-| `funding_rates` | `fundingRates` | `/historical/funding-rates` | Flat partial funding observations with nullable fields |
-| `perpetual_tickers` | `perpetualTickers` | `/historical/funding-rates` | Funding-bearing observations; not a complete ticker stream |
-| `intents` | `intents` | `/historical/intents` | Single input/output asset observations |
-| `l2_updates` | `l2Updates` | `/historical/l2-updates` | Flat source snapshots and sparse deltas |
-| `l2_snapshots` | `l2Snapshots` | `/historical/l2-orderbooks` | Reconstructed, sorted top-25 books after each update |
-| `ohlcv` | `ohlcv`, `ohlcvTradingView` | `/historical/ohlcv` | Bars from venue candle updates |
-| `raw_channel` | `rawChannel` | `/raw/{exchange}/{event}` | Exact venue-native capture text |
+| `trades` | `trades` | `/trades` | Flat trade rows |
+| `option_tickers` | `optionTickers` | `/options-ticker` | Flat option observations; optional exact `instrument` |
+| `funding_rates` | `fundingRates` | `/funding-rates` | Flat partial funding observations with nullable fields |
+| `perpetual_tickers` | `perpetualTickers` | `/perpetual-ticker` | Funding-bearing observations; not a complete ticker stream |
+| `intents` | `intents` | `/intents` | Single input/output asset observations |
+| `l2_updates` | `l2Updates` | `/l2-updates` | Flat source snapshots and sparse deltas |
+| `l2_snapshots` | `l2Snapshots` | `/l2-orderbooks` | Reconstructed, sorted top-25 books after each update |
+| `ohlcv` | `ohlcv`, `ohlcvTradingView` | `/ohlcv` | Bars from venue candle updates |
+| `raw` | — | `/raw` | Paged raw captures across channels for a source and market |
+| `raw_channel` | `rawChannel` | `/raw` with `channel` | Exact captures from one native channel |
 
-Python returns iterators by default and supports Arrow batches or Pandas DataFrames on methods with an `output` option. Rust uses async streams and also offers a blocking facade. TypeScript returns arrays. `catalog`, `count`, `instruments`, `health`, and realtime `stream` remain available. Rust and Python retain the older source/market `raw` method separately from `raw_channel`.
+Python returns iterators by default and supports Arrow batches or Pandas DataFrames on methods with an `output` option. Rust uses async streams and also offers a blocking facade. TypeScript returns arrays. `catalog`, `count`, `instruments`, `health`, and realtime `stream` remain available. Rust and Python offer `raw` for a source and market, while all three SDKs offer `raw_channel` / `rawChannel` for one channel. Both use the paged JSON `/raw` route. The `raw` method infers a recent seven-day window when bounds are omitted, leaving a one-minute margin inside the public cutoff for anonymous requests. Raw responses include `raw_table`; the SDKs convert raw-channel millisecond bounds to the API's ISO date-time parameters. Recent raw history is public, while older ranges may require an API key.
 
 `l2_snapshots` refers to reconstructed L2 books, not the removed `/snapshots` API. Its `source`, `market`, `start`, and `end` inputs are required. The book rows contain at most 25 levels per side. `OrderbookBuilder` still accepts realtime event envelopes.
 
@@ -73,7 +74,9 @@ Python returns iterators by default and supports Arrow batches or Pandas DataFra
 
 The SDKs no longer expose `events`, `replay`, `list_snapshots` / `listSnapshots`, or the snapshot-backed `propamm_quote_ladders` / `propammQuoteLadders`. TypeScript also removes `getSnapshotDownloadUrls`. Rust and Python remove their cross-channel `raw_replay` variants; Python's `replay(standard=False)` disappears with `replay`. The channel-specific `raw_channel` / `rawChannel` method remains.
 
-Use the matching direct historical method for flat rows and `raw_channel` / `rawChannel` for exact raw captures. Full standardized event replay and PropAMM quote methods have no replacement yet. These SDKs no longer call `/snapshots` or `/download`.
+Use the matching direct data method for flat rows and `raw_channel` / `rawChannel` for exact raw captures. The API now has `/events` and `/quotes`, but these SDKs do not yet wrap them. These SDKs no longer call `/snapshots` or `/download`.
+
+The API moved data routes from `/historical/*` to top-level paths. The old routes no longer work. It also replaced `/raw/{exchange}/{event}` with `/raw?source=...&channel=...`; raw responses now include `raw_table`, and the server supports paged JSON rather than file export.
 
 The clients also remove `bbo`, Rust `bbo_changes`, `depth_metrics` / `depthMetrics`, `intent_rows` / `intentRows`, `ohlcv_rows` / `ohlcvRows`, `quote_rows` / `quoteRows`, `volume`, `vwap`, `volatility`, and `mark_prices` / `markPrices`. These methods may return in a later release.
 

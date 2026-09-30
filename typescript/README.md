@@ -24,21 +24,23 @@ Direct historical methods return arrays and follow every cursor page. `start` an
 
 | Method | Route | Result |
 | --- | --- | --- |
-| `trades` | `/historical/trades` | Flat trades |
-| `optionTickers` | `/historical/option-tickers` | Flat option observations; exact `instrument` filter |
-| `fundingRates` | `/historical/funding-rates` | Partial funding observations with nullable fields |
-| `perpetualTickers` | `/historical/funding-rates` | Funding-bearing observations |
-| `intents` | `/historical/intents` | Single input/output asset observations |
-| `l2Updates` | `/historical/l2-updates` | Source snapshots and sparse deltas as flat rows |
-| `l2Snapshots` | `/historical/l2-orderbooks` | Reconstructed top-25 books after each update |
-| `ohlcv`, `ohlcvTradingView` | `/historical/ohlcv` | Bars from venue candle updates |
-| `rawChannel` | `/raw/{exchange}/{event}` | Exact venue-native capture text |
+| `trades` | `/trades` | Flat trades |
+| `optionTickers` | `/options-ticker` | Flat option observations; exact `instrument` filter |
+| `fundingRates` | `/funding-rates` | Partial funding observations with nullable fields |
+| `perpetualTickers` | `/perpetual-ticker` | Funding-bearing observations |
+| `intents` | `/intents` | Single input/output asset observations |
+| `l2Updates` | `/l2-updates` | Source snapshots and sparse deltas as flat rows |
+| `l2Snapshots` | `/l2-orderbooks` | Reconstructed top-25 books after each update |
+| `ohlcv`, `ohlcvTradingView` | `/ohlcv` | Bars from venue candle updates |
+| `rawChannel` | `/raw` with `channel` | Exact venue-native capture text |
 
-`catalog`, `count`, `instruments`, `health`, and realtime `stream` are also available. `l2Snapshots` requires `source`, `market`, `start`, and `end`; it is unrelated to the removed `/snapshots` route. `OrderbookBuilder` still handles realtime orderbook event envelopes.
+`catalog`, `count`, `instruments`, `health`, and realtime `stream` are also available. `l2Snapshots` requires `source`, `market`, `start`, and `end`; it is unrelated to the removed `/snapshots` route. `rawChannel` maps `exchange` and `event` to the API's `source` and `channel` filters and converts millisecond bounds to ISO date-times. Raw rows include `raw_table`. `OrderbookBuilder` still handles realtime orderbook event envelopes.
 
 ## Breaking changes
 
-`events`, `replay`, `listSnapshots`, `getSnapshotDownloadUrls`, and `propammQuoteLadders` are removed. Use direct historical methods and `rawChannel` for exact raw captures. Full standardized event replay and PropAMM quote methods have no replacement yet. The client no longer requests `/snapshots` or `/download`.
+`events`, `replay`, `listSnapshots`, `getSnapshotDownloadUrls`, and `propammQuoteLadders` are removed. Use direct data methods and `rawChannel` for exact raw captures. The API now has `/events` and `/quotes`, but the client does not yet wrap them. The client no longer requests `/snapshots` or `/download`.
+
+The API moved data routes from `/historical/*` to top-level paths. The old routes no longer work. It also replaced `/raw/{exchange}/{event}` with `/raw?source=...&channel=...`.
 
 The client also removes `bbo`, `depthMetrics`, `intentRows`, `ohlcvRows`, `quoteRows`, `volume`, `vwap`, `volatility`, and `markPrices`. These methods may return in a later release.
 

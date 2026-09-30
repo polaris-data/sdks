@@ -11,7 +11,7 @@ console.log(rows);
 client.close();
 ```
 
-Historical methods return flat API rows as arrays and follow cursor pages. Use inclusive Unix-millisecond `start` and `end` bounds where needed. `rawChannel` queries one exchange and venue event name; `l2Snapshots` returns reconstructed top-25 books.
+Historical methods return flat API rows as arrays and follow cursor pages. Use inclusive Unix-millisecond `start` and `end` bounds where needed. `rawChannel` queries one source and native channel through `/raw`; the client converts its millisecond bounds to ISO date-times. `l2Snapshots` returns reconstructed top-25 books.
 
 `events`, `replay`, `listSnapshots`, `getSnapshotDownloadUrls`, and `propammQuoteLadders` are no longer available. `OrderbookBuilder` remains available for realtime event envelopes.
 
