@@ -267,7 +267,7 @@ export class BasePolarisClient {
   }
 
   // -----------------------------------------------------------------------
-  // Historical data – direct rows and snapshot-backed methods
+  // Historical data from direct API routes
   // -----------------------------------------------------------------------
 
   /** Return flat trades from the direct historical API. */

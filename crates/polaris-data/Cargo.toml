@@ -18,7 +18,6 @@ name = "polaris_data"
 [dependencies]
 async-stream = "0.3"
 chrono.workspace = true
-directories = "6"
 futures-core = "0.3"
 futures-util.workspace = true
 log = "0.4"
@@ -30,10 +29,8 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 url = "2"
-zstd = "0.13"
 
 [dev-dependencies]
 http = "1"
-tempfile = "3"
 tokio.workspace = true
 wiremock = "0.6"

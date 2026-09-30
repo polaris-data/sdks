@@ -1,6 +1,6 @@
 //! Blocking facade over the canonical async Polaris client.
 
-use std::{future::Future, path::PathBuf, sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use futures_util::StreamExt;
 use serde_json::Value;
@@ -22,7 +22,6 @@ pub struct PolarisClientBuilder {
     base_url: String,
     stream_url: Option<String>,
     timeout: Duration,
-    dataset_root: Option<PathBuf>,
 }
 
 impl Default for PolarisClientBuilder {
@@ -32,7 +31,6 @@ impl Default for PolarisClientBuilder {
             base_url: "https://api.polaris.supply".to_owned(),
             stream_url: None,
             timeout: Duration::from_secs(30),
-            dataset_root: None,
         }
     }
 }
@@ -62,11 +60,6 @@ impl PolarisClientBuilder {
         self
     }
 
-    pub fn dataset_root(mut self, value: impl Into<PathBuf>) -> Self {
-        self.dataset_root = Some(value.into());
-        self
-    }
-
     pub fn build(self) -> Result<PolarisClient, PolarisError> {
         let mut builder = crate::PolarisClient::builder()
             .base_url(self.base_url)
@@ -76,9 +69,6 @@ impl PolarisClientBuilder {
         }
         if let Some(api_key) = self.api_key {
             builder = builder.api_key(api_key);
-        }
-        if let Some(root) = self.dataset_root {
-            builder = builder.dataset_root(root);
         }
         PolarisClient::from_async(builder.build()?)
     }
@@ -107,18 +97,6 @@ impl PolarisClient {
 
     pub fn as_async(&self) -> &crate::PolarisClient {
         &self.inner
-    }
-
-    pub fn dataset_root(&self) -> &std::path::Path {
-        self.inner.dataset_root()
-    }
-
-    pub fn cache_dir(&self) -> &std::path::Path {
-        self.inner.cache_dir()
-    }
-
-    pub fn daily_dir(&self) -> &std::path::Path {
-        self.inner.daily_dir()
     }
 
     pub fn take_diagnostics(&self) -> Vec<Diagnostic> {

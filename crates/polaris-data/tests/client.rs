@@ -8,16 +8,14 @@ use polaris_data::{
     TimeInput, TradeRowsQuery, blocking,
 };
 use serde_json::json;
-use tempfile::TempDir;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{header, method, path, query_param},
 };
 
-fn build_client(server: &MockServer, root: &TempDir) -> PolarisClient {
+fn build_client(server: &MockServer) -> PolarisClient {
     PolarisClient::builder()
         .base_url(server.uri())
-        .dataset_root(root.path())
         .timeout(Duration::from_secs(5))
         .build()
         .expect("client")
@@ -26,8 +24,7 @@ fn build_client(server: &MockServer, root: &TempDir) -> PolarisClient {
 #[tokio::test]
 async fn meta_returns_typed_public_discovery_links() {
     let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
-    let client = build_client(&server, &root);
+    let client = build_client(&server);
     Mock::given(method("GET"))
         .and(path("/meta"))
         .respond_with(|request: &wiremock::Request| {
@@ -51,8 +48,7 @@ async fn meta_returns_typed_public_discovery_links() {
 #[tokio::test]
 async fn trades_filter_exact_instrument_across_pages() {
     let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
-    let client = build_client(&server, &root);
+    let client = build_client(&server);
     Mock::given(method("GET"))
         .and(path("/trades"))
         .and(query_param("instrument", "BTC-PERP"))
@@ -108,42 +104,9 @@ async fn collect_stream<T>(stream: HistoricalStream<T>) -> Result<Vec<T>, Polari
 }
 
 #[tokio::test]
-async fn builder_creates_layout_and_uses_explicit_root() {
-    let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
-    let client = build_client(&server, &root);
-
-    assert_eq!(client.dataset_root(), root.path());
-    assert!(client.dataset_root().join("data").exists());
-    assert!(client.dataset_root().join("tmp").exists());
-    assert!(client.cache_dir().exists());
-}
-
-#[tokio::test]
-async fn builder_uses_environment_root_override() {
-    let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
-    let env_root = root.path().join("env-root");
-
-    // SAFETY: the test sets and removes a process env var within a single test scope.
-    unsafe { std::env::set_var("POLARIS_ROOT", &env_root) };
-    let client = PolarisClient::builder()
-        .base_url(server.uri())
-        .timeout(Duration::from_secs(5))
-        .build()
-        .expect("client");
-    // SAFETY: see note above.
-    unsafe { std::env::remove_var("POLARIS_ROOT") };
-
-    assert_eq!(client.dataset_root(), env_root.as_path());
-    assert!(client.dataset_root().join("data").exists());
-}
-
-#[tokio::test]
 async fn catalog_normalizes_flat_shape() {
     let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
-    let client = build_client(&server, &root);
+    let client = build_client(&server);
 
     Mock::given(method("GET"))
         .and(path("/catalog"))
@@ -210,8 +173,7 @@ async fn catalog_normalizes_flat_shape() {
 #[tokio::test]
 async fn catalog_normalizes_legacy_shape() {
     let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
-    let client = build_client(&server, &root);
+    let client = build_client(&server);
 
     Mock::given(method("GET"))
         .and(path("/catalog"))
@@ -246,8 +208,7 @@ async fn catalog_normalizes_legacy_shape() {
 #[tokio::test]
 async fn catalog_paginates_across_cursor_pages() {
     let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
-    let client = build_client(&server, &root);
+    let client = build_client(&server);
 
     Mock::given(method("GET"))
         .and(path("/catalog"))
@@ -306,8 +267,7 @@ async fn catalog_paginates_across_cursor_pages() {
 #[tokio::test]
 async fn instruments_paginates_and_preserves_contract_statistics() {
     let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
-    let client = build_client(&server, &root);
+    let client = build_client(&server);
     Mock::given(method("GET"))
         .and(path("/catalog/instruments"))
         .and(query_param("source", "deribit"))
@@ -393,8 +353,7 @@ async fn instruments_paginates_and_preserves_contract_statistics() {
 #[tokio::test]
 async fn count_returns_catalog_counts() {
     let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
-    let client = build_client(&server, &root);
+    let client = build_client(&server);
 
     Mock::given(method("GET"))
         .and(path("/count"))
@@ -422,8 +381,7 @@ async fn count_returns_catalog_counts() {
 #[tokio::test]
 async fn option_tickers_are_typed_and_filter_exact_instruments() {
     let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
-    let client = build_client(&server, &root);
+    let client = build_client(&server);
     let query = |instrument: Option<&str>| OptionTickerRowsQuery {
         source: Some("deribit".to_owned()),
         market: Some("BTC".to_owned()),
@@ -478,12 +436,10 @@ async fn option_tickers_are_typed_and_filter_exact_instruments() {
     };
     assert!(error.to_string().contains("instrument must be non-empty"));
 
-    let root_path = root.path().to_owned();
     let server_url = server.uri();
     let blocking_rows = std::thread::spawn(move || {
         let client = blocking::PolarisClient::builder()
             .base_url(server_url)
-            .dataset_root(root_path)
             .build()
             .expect("blocking client");
         client
@@ -508,11 +464,9 @@ async fn option_tickers_are_typed_and_filter_exact_instruments() {
 #[tokio::test]
 async fn direct_trades_and_funding_paginate_and_keep_nullable_fields() {
     let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
     let client = PolarisClient::builder()
         .base_url(server.uri())
         .api_key("secret")
-        .dataset_root(root.path())
         .build()
         .expect("client");
     Mock::given(method("GET"))
@@ -621,11 +575,9 @@ async fn direct_trades_and_funding_paginate_and_keep_nullable_fields() {
 #[tokio::test]
 async fn raw_channel_paginates_exact_text_through_source_channel_filters() {
     let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
     let client = PolarisClient::builder()
         .base_url(server.uri())
         .api_key("secret")
-        .dataset_root(root.path())
         .build()
         .expect("client");
     Mock::given(method("GET"))
@@ -695,8 +647,7 @@ async fn raw_channel_paginates_exact_text_through_source_channel_filters() {
 #[tokio::test]
 async fn raw_queries_source_and_market_as_paged_json_without_api_key() {
     let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
-    let client = build_client(&server, &root);
+    let client = build_client(&server);
     Mock::given(method("GET"))
         .and(path("/raw"))
         .and(query_param("source", "binance"))
@@ -739,8 +690,7 @@ async fn raw_queries_source_and_market_as_paged_json_without_api_key() {
 #[tokio::test]
 async fn raw_omits_optional_market_and_channel_filters() {
     let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
-    let client = build_client(&server, &root);
+    let client = build_client(&server);
     Mock::given(method("GET"))
         .and(path("/raw"))
         .respond_with(|request: &wiremock::Request| {
@@ -773,8 +723,7 @@ async fn raw_omits_optional_market_and_channel_filters() {
 #[tokio::test]
 async fn intents_queries_direct_route_with_exact_filter() {
     let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
-    let client = build_client(&server, &root);
+    let client = build_client(&server);
     Mock::given(method("GET"))
         .and(path("/intents"))
         .and(query_param("intent_id", "intent-1"))
@@ -837,8 +786,7 @@ fn l2_row(snapshot: bool) -> serde_json::Value {
 #[tokio::test]
 async fn l2_direct_rows_page_and_accept_variable_ranges() {
     let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
-    let client = build_client(&server, &root);
+    let client = build_client(&server);
     Mock::given(method("GET"))
         .and(path("/l2-updates"))
         .respond_with(|request: &wiremock::Request| {
@@ -932,11 +880,9 @@ async fn l2_direct_rows_page_and_accept_variable_ranges() {
 #[tokio::test]
 async fn events_pages_typed_rows_with_required_auth_and_filters() {
     let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
     let client = PolarisClient::builder()
         .base_url(server.uri())
         .api_key("secret")
-        .dataset_root(root.path())
         .build()
         .expect("client");
     Mock::given(method("GET")).and(path("/events"))
@@ -977,7 +923,7 @@ async fn events_pages_typed_rows_with_required_auth_and_filters() {
         matches!(&rows[1], MixedEventRow::FundingRate(row) if row.funding_rate.is_none() && row.mark_price.as_deref() == Some("100"))
     );
 
-    let anonymous = build_client(&server, &TempDir::new().expect("anonymous root"));
+    let anonymous = build_client(&server);
     let error = collect_stream(anonymous.events(query).await.expect("stream"))
         .await
         .expect_err("auth required");
@@ -987,8 +933,7 @@ async fn events_pages_typed_rows_with_required_auth_and_filters() {
 #[tokio::test]
 async fn ohlcv_returns_every_direct_candle_revision() {
     let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
-    let client = build_client(&server, &root);
+    let client = build_client(&server);
     Mock::given(method("GET"))
         .and(path("/ohlcv"))
         .and(query_param("interval", "1m"))
@@ -1038,8 +983,7 @@ async fn http_errors_are_mapped() {
         (429, "RateLimited"),
     ] {
         let server = MockServer::start().await;
-        let root = TempDir::new().expect("tempdir");
-        let client = build_client(&server, &root);
+        let client = build_client(&server);
 
         Mock::given(method("GET"))
             .and(path("/catalog"))
@@ -1067,8 +1011,7 @@ async fn http_errors_are_mapped() {
 #[tokio::test]
 async fn invalid_json_health_response_returns_invalid_response() {
     let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
-    let client = build_client(&server, &root);
+    let client = build_client(&server);
 
     Mock::given(method("GET"))
         .and(path("/health"))
@@ -1083,10 +1026,8 @@ async fn invalid_json_health_response_returns_invalid_response() {
 #[tokio::test]
 async fn auth_header_is_sent_when_api_key_is_available() {
     let server = MockServer::start().await;
-    let root = TempDir::new().expect("tempdir");
     let client = PolarisClient::builder()
         .base_url(server.uri())
-        .dataset_root(root.path())
         .api_key("secret")
         .build()
         .expect("client");
@@ -1111,12 +1052,9 @@ async fn auth_header_is_sent_when_api_key_is_available() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn blocking_client_matches_async_and_rejects_active_runtime_calls() {
     let server = MockServer::start().await;
-    let async_root = TempDir::new().expect("async root");
-    let blocking_root = TempDir::new().expect("blocking root");
-    let async_client = build_client(&server, &async_root);
+    let async_client = build_client(&server);
     let blocking_client = blocking::PolarisClient::builder()
         .base_url(server.uri())
-        .dataset_root(blocking_root.path())
         .build()
         .expect("blocking client");
 

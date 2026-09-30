@@ -87,7 +87,7 @@ Rust `RawQuery.market` is now optional and `RawQuery.channel` is new; `RawChanne
 
 The clients also remove `bbo`, Rust `bbo_changes`, `depth_metrics` / `depthMetrics`, `intent_rows` / `intentRows`, `ohlcv_rows` / `ohlcvRows`, `quote_rows` / `quoteRows`, `volume`, `vwap`, `volatility`, and `mark_prices` / `markPrices`. These methods may return in a later release.
 
-The snapshot-backed methods' `allow_gaps` and local replay cache options are removed. TypeScript also removes `datasetRoot`, `storage`, and `snapshotDownloadConcurrency` constructor options because historical requests no longer use local snapshot storage. Python removes `replay_cache_enabled` and `replay_cache_dir` constructor options.
+The snapshot-backed methods' `allow_gaps` and local replay cache options are removed. All three SDKs no longer create a local snapshot directory. Rust removes `dataset_root` from both builders, the `dataset_root`, `cache_dir`, and `daily_dir` accessors, the old aggregate query/result types, and `decode_ndjson_file`. Python removes `dataset_root`, `replay_cache_enabled`, and `replay_cache_dir` constructor options. TypeScript removes `datasetRoot`, `storage`, and `snapshotDownloadConcurrency` constructor options. The unused Python native `decode_file` helper and TypeScript snapshot-era query/aggregate types are also removed.
 
 `ohlcv` now returns flat `OhlcvRow` values, with inclusive Unix-millisecond `start` and `end` inputs. Rust's former `OhlcvQuery` and Python's `from_`, `to`, `format`, and `allow_gaps` inputs no longer apply to the method. Python uses `output="iterator"`, `"batches"`, or `"dataframe"`; TypeScript accepts the direct row filters. Existing code expecting collapsed bars must handle candle revisions explicitly.
 

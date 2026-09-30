@@ -745,24 +745,6 @@ impl OhlcvInterval {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum OhlcvFormat {
-    #[default]
-    Bars,
-    TradingView,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OhlcvQuery {
-    pub source: String,
-    pub market: String,
-    pub from: Option<TimeInput>,
-    pub to: Option<TimeInput>,
-    pub interval: OhlcvInterval,
-    pub format: OhlcvFormat,
-    pub allow_gaps: bool,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogResponse {
     #[serde(rename = "updatedAt")]
@@ -1529,44 +1511,6 @@ impl PerpetualTickerEvent {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct OhlcvBar {
-    pub timestamp: i64,
-    pub open: f64,
-    pub high: f64,
-    pub low: f64,
-    pub close: f64,
-    pub volume: f64,
-    pub trades: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TradingViewCandle {
-    pub time: i64,
-    pub open: f64,
-    pub high: f64,
-    pub low: f64,
-    pub close: f64,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TradingViewVolume {
-    pub time: i64,
-    pub value: f64,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TradingViewOhlcv {
-    pub candles: Vec<TradingViewCandle>,
-    pub volumes: Vec<TradingViewVolume>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum OhlcvOutput {
-    Bars(Vec<OhlcvBar>),
-    TradingView(TradingViewOhlcv),
-}
-
 pub type HistoricalStream<T> = Pin<Box<dyn Stream<Item = Result<T, PolarisError>> + Send>>;
 pub type RealtimeStream = Pin<Box<dyn Stream<Item = Result<StandardEvent, PolarisError>> + Send>>;
 
@@ -1778,29 +1722,6 @@ where
         .as_f64()
         .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
         .ok_or_else(|| serde::de::Error::custom("expected a number or numeric string"))
-}
-
-// Aggregated bar types
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct VolumeBar {
-    pub timestamp: i64,
-    pub volume: f64,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct VwapBar {
-    pub timestamp: i64,
-    pub vwap: Option<f64>,
-    pub volume: f64,
-    pub quote_volume: f64,
-    pub trades: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct VolatilityBar {
-    pub timestamp: i64,
-    pub volatility: f64,
-    pub returns: u64,
 }
 
 // Depth metrics

@@ -6,11 +6,10 @@ mod http;
 mod models;
 mod orderbook;
 mod realtime;
-mod storage;
 mod time;
 
 pub use builder::PolarisClientBuilder;
-pub use client::{PolarisClient, decode_ndjson_file};
+pub use client::PolarisClient;
 pub use errors::PolarisError;
 pub use models::{
     AmountKind, AssetAmount, BboQuery, BboQuote, CatalogAccess, CatalogCount, CatalogInstrument,
@@ -20,16 +19,14 @@ pub use models::{
     L2OrderbooksQuery, L2UpdatesQuery, LegacyIntentEvent, LegacyOptionTickerEvent,
     LegacyOrderbookEvent, LegacyPerpetualTickerEvent, LegacyPointSeriesEvent, LegacyStandardEvent,
     LegacyTradeData, LegacyTradeEvent, MetaResponse, MixedEventRow, MixedEventType,
-    ObservedStatistic, OhlcvBar, OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery, OhlcvRow,
-    OhlcvRowsQuery, OptionContract, OptionContractStatistics, OptionGreeks, OptionTickerData,
-    OptionTickerEvent, OptionTickerEventV2, OptionTickerRow, OptionTickerRowsQuery, OrderbookData,
-    OrderbookDataV2, OrderbookEvent, OrderbookEventV2, OrderbookL2Row, OrderbookLevel,
-    PerpetualTickerData, PerpetualTickerEvent, PerpetualTickerEventV2, PointSeriesData,
-    PointSeriesEvent, PointSeriesEventV2, PropammQuote, PropammQuoteLadderData,
-    PropammQuoteLadderEvent, PropammQuoteLadderValues, QuoteRow, QuoteRowsQuery, RawCaptureRow,
-    RawChannelQuery, RawQuery, RealtimeStream, SettlementTransaction, StandardEvent,
-    StandardEventV2, StreamQuery, TimeInput, TradeDataV2, TradeEvent, TradeEventV2, TradeRow,
-    TradeRowsQuery, TradingViewCandle, TradingViewOhlcv, TradingViewVolume, VolatilityBar,
-    VolumeBar, VwapBar,
+    ObservedStatistic, OhlcvInterval, OhlcvRow, OhlcvRowsQuery, OptionContract,
+    OptionContractStatistics, OptionGreeks, OptionTickerData, OptionTickerEvent,
+    OptionTickerEventV2, OptionTickerRow, OptionTickerRowsQuery, OrderbookData, OrderbookDataV2,
+    OrderbookEvent, OrderbookEventV2, OrderbookL2Row, OrderbookLevel, PerpetualTickerData,
+    PerpetualTickerEvent, PerpetualTickerEventV2, PointSeriesData, PointSeriesEvent,
+    PointSeriesEventV2, PropammQuote, PropammQuoteLadderData, PropammQuoteLadderEvent,
+    PropammQuoteLadderValues, QuoteRow, QuoteRowsQuery, RawCaptureRow, RawChannelQuery, RawQuery,
+    RealtimeStream, SettlementTransaction, StandardEvent, StandardEventV2, StreamQuery, TimeInput,
+    TradeDataV2, TradeEvent, TradeEventV2, TradeRow, TradeRowsQuery,
 };
 pub use orderbook::OrderbookBuilder;

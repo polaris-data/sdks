@@ -4,7 +4,6 @@ import json
 import threading
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 
 import httpx
 import pytest
@@ -22,7 +21,6 @@ def make_client(
     handler,
     *,
     api_key: str | None = "polaris_key_test",
-    dataset_root: Path | None = None,
 ) -> PolarisClient:
     class RequestHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -61,7 +59,6 @@ def make_client(
     client = PolarisClient(
         api_key=api_key,
         base_url=f"http://127.0.0.1:{server.server_port}",
-        dataset_root=dataset_root,
     )
     native_close = client.close
 
@@ -333,14 +330,14 @@ def test_older_raw_range_maps_server_authentication_error() -> None:
         client.close()
 
 
-def test_rate_limited_error_maps_reset_at(tmp_path) -> None:
+def test_rate_limited_error_maps_reset_at() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             429,
             json={"error": "quota exceeded", "reset_at": "2026-05-01T00:00:00.000Z"},
         )
 
-    client = make_client(handler, dataset_root=tmp_path)
+    client = make_client(handler)
     try:
         with pytest.raises(RateLimitedError) as exc_info:
             list(client.trades(
@@ -387,7 +384,7 @@ def _l2_row(snapshot: bool) -> dict:
     return row
 
 
-def test_events_pages_mixed_rows_and_requires_api_key(tmp_path) -> None:
+def test_events_pages_mixed_rows_and_requires_api_key() -> None:
     identity = {"source": "binance", "market": "BTC-USDT", "collector_timestamp": 10,
                 "source_capture_id": "capture", "schema_version": 1}
     trade = {"type": "trade", "data": {**identity, "event_id": "t1", "price": 100.0, "quantity": 2.0}}
@@ -407,7 +404,7 @@ def test_events_pages_mixed_rows_and_requires_api_key(tmp_path) -> None:
                                          "has_more": not second,
                                          "next_cursor": None if second else "next"})
 
-    client = make_client(handler, dataset_root=tmp_path)
+    client = make_client(handler)
     try:
         rows = list(client.events(start=10, end=10, types=["trade", "funding_rate"],
                                   source="binance", market="BTC-USDT", instrument="BTCUSDT"))
@@ -422,7 +419,7 @@ def test_events_pages_mixed_rows_and_requires_api_key(tmp_path) -> None:
     finally:
         client.close()
 
-    anonymous = make_client(lambda _: pytest.fail("request should not be sent"), api_key="", dataset_root=tmp_path)
+    anonymous = make_client(lambda _: pytest.fail("request should not be sent"), api_key="")
     try:
         with pytest.raises(UnauthorizedError):
             list(anonymous.events(start=10, end=10))
@@ -430,7 +427,7 @@ def test_events_pages_mixed_rows_and_requires_api_key(tmp_path) -> None:
         anonymous.close()
 
 
-def test_l2_direct_routes_paginate_and_keep_nullable_levels(tmp_path) -> None:
+def test_l2_direct_routes_paginate_and_keep_nullable_levels() -> None:
     calls: list[httpx.Request] = []
     snapshot, delta = _l2_row(True), _l2_row(False)
 
@@ -447,7 +444,7 @@ def test_l2_direct_routes_paginate_and_keep_nullable_levels(tmp_path) -> None:
         assert request.url.path == "/l2-orderbooks"
         return httpx.Response(200, json={"items": [delta], "has_more": False, "next_cursor": None})
 
-    client = make_client(handler, dataset_root=tmp_path)
+    client = make_client(handler)
     try:
         updates = list(client.l2_updates(source="hyperliquid", market="0G", instrument="0G", start=10, end=10))
         books = list(client.l2_snapshots(source="hyperliquid", market="0G", start=10, end=300010))
@@ -467,7 +464,7 @@ def test_l2_direct_routes_paginate_and_keep_nullable_levels(tmp_path) -> None:
     assert len(calls) == 4
 
 
-def test_direct_historical_rows_paginate_filter_and_keep_nullable_fields(tmp_path) -> None:
+def test_direct_historical_rows_paginate_filter_and_keep_nullable_fields() -> None:
     calls: list[httpx.Request] = []
     identity = {
         "source": "deribit", "market": "BTC", "source_capture_id": "capture",
@@ -495,7 +492,7 @@ def test_direct_historical_rows_paginate_filter_and_keep_nullable_fields(tmp_pat
             return httpx.Response(200, json={"items": [funding, funding_without_mark], "has_more": False, "next_cursor": None})
         raise AssertionError(f"unexpected request: {request.url}")
 
-    client = make_client(handler, dataset_root=tmp_path)
+    client = make_client(handler)
     try:
         trades = list(client.trades(source="deribit", market="BTC",
                                     instrument="BTC-29MAR24-50000-C", start=10, end=10))
@@ -526,14 +523,14 @@ def test_direct_historical_rows_paginate_filter_and_keep_nullable_fields(tmp_pat
         client.close()
 
 
-def test_direct_historical_older_range_maps_missing_authentication(tmp_path) -> None:
+def test_direct_historical_older_range_maps_missing_authentication() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/trades"
         assert request.url.params["start"] == "1704067200000"
         assert "authorization" not in request.headers
         return httpx.Response(401, json={"error": "API key required for older history"})
 
-    client = make_client(handler, api_key=None, dataset_root=tmp_path)
+    client = make_client(handler, api_key=None)
     try:
         with pytest.raises(UnauthorizedError, match="API key required"):
             list(client.trades(start=1_704_067_200_000, end=1_704_067_200_000))
@@ -541,7 +538,7 @@ def test_direct_historical_older_range_maps_missing_authentication(tmp_path) -> 
         client.close()
 
 
-def test_raw_channel_pages_exact_captures(tmp_path) -> None:
+def test_raw_channel_pages_exact_captures() -> None:
     calls: list[httpx.Request] = []
     capture = {
         "raw_table": "raw.binance_trades",
@@ -566,7 +563,7 @@ def test_raw_channel_pages_exact_captures(tmp_path) -> None:
             "next_cursor": None if next_page else "next",
         })
 
-    client = make_client(handler, dataset_root=tmp_path)
+    client = make_client(handler)
     try:
         rows = list(client.raw_channel(exchange="binance", event="trades", start=10, end=10, market="BTC-USDT"))
         assert [row["capture_id"] for row in rows] == ["c1", "c2"]
@@ -581,7 +578,7 @@ def test_raw_channel_pages_exact_captures(tmp_path) -> None:
         client.close()
 
 
-def test_intents_queries_direct_route_with_exact_filter(tmp_path) -> None:
+def test_intents_queries_direct_route_with_exact_filter() -> None:
     calls: list[httpx.Request] = []
     intent = {"event_id": "i1", "source": "uniswapx", "market": "intents",
               "source_capture_id": "capture", "collector_timestamp": 10,
@@ -592,7 +589,7 @@ def test_intents_queries_direct_route_with_exact_filter(tmp_path) -> None:
         assert request.url.path == "/intents"
         return httpx.Response(200, json={"items": [intent], "has_more": False, "next_cursor": None})
 
-    client = make_client(handler, dataset_root=tmp_path)
+    client = make_client(handler)
     try:
         rows = list(client.intents(intent_id="intent-1"))
         assert len(rows) == 1
@@ -605,7 +602,7 @@ def test_intents_queries_direct_route_with_exact_filter(tmp_path) -> None:
         client.close()
 
 
-def test_ohlcv_returns_every_venue_candle_revision(tmp_path) -> None:
+def test_ohlcv_returns_every_venue_candle_revision() -> None:
     start = 1_704_067_200_000
     identity = {"source": "binance", "market": "BTC-USDT", "source_capture_id": "capture",
                 "schema_version": 1}
@@ -628,7 +625,7 @@ def test_ohlcv_returns_every_venue_candle_revision(tmp_path) -> None:
                                           "has_more": not second,
                                           "next_cursor": None if second else "next"})
 
-    client = make_client(handler, dataset_root=tmp_path)
+    client = make_client(handler)
     options = {"source": "binance", "market": "BTC-USDT", "instrument": "BTCUSDT",
                "interval": "1m", "start": start, "end": start + 60_000}
     try:

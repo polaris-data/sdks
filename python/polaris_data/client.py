@@ -7,7 +7,6 @@ import json
 import os
 import warnings
 from itertools import islice
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator, Literal, Sequence, overload
 
 from . import _native
@@ -126,7 +125,6 @@ class PolarisClient:
         api_key: str | None = None,
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = DEFAULT_TIMEOUT,
-        dataset_root: str | os.PathLike[str] | None = None,
         stream_url: str | None = None,
     ) -> None:
         self.api_key = api_key or os.getenv("POLARIS_API_KEY")
@@ -136,10 +134,8 @@ class PolarisClient:
             self.api_key,
             self.base_url,
             timeout,
-            Path(dataset_root).expanduser() if dataset_root is not None else None,
             stream_url,
         )
-        self.dataset_root = Path(self._native.dataset_root)
         self._closed = False
         self._streams: set[RealtimeStream] = set()
 
@@ -222,11 +218,6 @@ class PolarisClient:
                 status_code,
                 body,
                 code if isinstance(code, str) else None,
-            )
-        if kind == "coverage_gap":
-            label = operation or "replay"
-            return PolarisError(
-                f"Requested {label} range could not be satisfied from standardized snapshots"
             )
         return PolarisError(message, status_code, body)
 

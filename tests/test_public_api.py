@@ -148,7 +148,6 @@ def test_client_constructor_signature_and_defaults_are_stable() -> None:
         ("api_key", positional, None),
         ("base_url", positional, "https://api.polaris.supply"),
         ("timeout", positional, 30.0),
-        ("dataset_root", positional, None),
         ("stream_url", positional, None),
     ]
 

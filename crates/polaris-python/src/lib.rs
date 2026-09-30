@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use polaris_data::{
     EventsQuery, FundingRateRow, HistoricalRowsQuery, IntentRow, IntentRowsQuery,
     L2OrderbooksQuery, L2UpdatesQuery, MixedEventRow, MixedEventType, OhlcvRow, OhlcvRowsQuery,
@@ -66,23 +64,9 @@ pub(crate) fn native_error(error: PolarisError) -> PyErr {
         PolarisError::Decode(message) => {
             json!({"kind": "stream_decode", "message": message})
         }
-        PolarisError::CoverageGap {
-            dataset_source,
-            market,
-            intervals,
-        } => json!({
-            "kind": "coverage_gap",
-            "message": format!(
-                "snapshot coverage gap for {dataset_source}/{market}: {intervals:?}"
-            ),
-            "source": dataset_source,
-            "market": market,
-            "intervals": intervals,
-        }),
         PolarisError::InvalidResponse(message) => {
             json!({"kind": "invalid_response", "message": message})
         }
-        PolarisError::Io(error) => json!({"kind": "io", "message": error.to_string()}),
         PolarisError::Request(message) => json!({"kind": "request", "message": message}),
         PolarisError::StreamConnection(message) => {
             json!({"kind": "stream_connection", "message": message})
@@ -155,12 +139,11 @@ struct NativeClient {
 #[allow(clippy::too_many_arguments)]
 impl NativeClient {
     #[new]
-    #[pyo3(signature = (api_key=None, base_url="https://api.polaris.supply", timeout=30.0, dataset_root=None, stream_url=None))]
+    #[pyo3(signature = (api_key=None, base_url="https://api.polaris.supply", timeout=30.0, stream_url=None))]
     fn new(
         api_key: Option<String>,
         base_url: &str,
         timeout: f64,
-        dataset_root: Option<PathBuf>,
         stream_url: Option<String>,
     ) -> PyResult<Self> {
         if !timeout.is_finite() || timeout <= 0.0 {
@@ -174,20 +157,12 @@ impl NativeClient {
         if let Some(api_key) = api_key {
             builder = builder.api_key(api_key);
         }
-        if let Some(dataset_root) = dataset_root {
-            builder = builder.dataset_root(dataset_root);
-        }
         if let Some(stream_url) = stream_url {
             builder = builder.stream_url(stream_url);
         }
         Ok(Self {
             inner: builder.build().map_err(native_error)?,
         })
-    }
-
-    #[getter]
-    fn dataset_root(&self) -> String {
-        self.inner.dataset_root().to_string_lossy().into_owned()
     }
 
     fn close(&self) {}
@@ -742,21 +717,12 @@ impl NativeRealtimeStream {
     }
 }
 
-#[pyfunction]
-fn decode_file<'py>(py: Python<'py>, path: PathBuf) -> PyResult<Bound<'py, PyAny>> {
-    let rows = py
-        .detach(|| polaris_data::decode_ndjson_file(&path))
-        .map_err(native_error)?;
-    to_python(py, &rows)
-}
-
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeClient>()?;
     module.add_class::<NativeOrderbookBuilder>()?;
     module.add_class::<NativeHistorical>()?;
     module.add_class::<NativeRealtimeStream>()?;
-    module.add_function(wrap_pyfunction!(decode_file, module)?)?;
     module.add("NativeError", module.py().get_type::<NativeError>())?;
     module.add("__native__", true)?;
     Ok(())

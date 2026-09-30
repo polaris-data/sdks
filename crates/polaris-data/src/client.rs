@@ -1,6 +1,5 @@
 use std::{
     collections::BTreeSet,
-    io::{BufRead, BufReader, Cursor, Read},
     sync::{Arc, Mutex},
 };
 
@@ -23,14 +22,12 @@ use crate::{
         RawChannelQuery, RawQuery, RealtimeStream, StreamQuery, TradeRow, TradeRowsQuery,
     },
     realtime,
-    storage::StorageLayout,
     time::{DEFAULT_INFERRED_LOOKBACK, to_epoch_micros},
 };
 
 #[derive(Clone)]
 pub struct PolarisClient {
     api_key: Option<String>,
-    layout: StorageLayout,
     http: HttpClient,
     diagnostics: Arc<Mutex<Vec<Diagnostic>>>,
     stream_url: url::Url,
@@ -43,29 +40,15 @@ impl PolarisClient {
 
     pub(crate) fn from_parts(
         api_key: Option<String>,
-        layout: StorageLayout,
         http: HttpClient,
         stream_url: url::Url,
     ) -> Self {
         Self {
             api_key,
-            layout,
             http,
             diagnostics: Arc::new(Mutex::new(Vec::new())),
             stream_url,
         }
-    }
-
-    pub fn dataset_root(&self) -> &std::path::Path {
-        &self.layout.root
-    }
-
-    pub fn cache_dir(&self) -> &std::path::Path {
-        &self.layout.cache_dir
-    }
-
-    pub fn daily_dir(&self) -> &std::path::Path {
-        &self.layout.daily_dir
     }
 
     pub fn take_diagnostics(&self) -> Vec<Diagnostic> {
@@ -925,36 +908,4 @@ fn millis_to_iso8601(value: i64) -> Result<String, PolarisError> {
         PolarisError::InvalidResponse(format!("invalid epoch milliseconds value '{value}'"))
     })?;
     micros_to_iso8601(micros)
-}
-
-pub fn decode_ndjson_file(path: &std::path::Path) -> Result<Vec<Value>, PolarisError> {
-    decode_ndjson(&std::fs::read(path)?)
-}
-
-fn decode_ndjson(body: &[u8]) -> Result<Vec<Value>, PolarisError> {
-    const ZSTD_MAGIC: &[u8] = b"\x28\xb5\x2f\xfd";
-    let reader: Box<dyn Read> = if body.starts_with(ZSTD_MAGIC) {
-        Box::new(
-            zstd::stream::read::Decoder::new(Cursor::new(body))
-                .map_err(|err| PolarisError::Decode(format!("invalid zstd stream: {err}")))?,
-        )
-    } else {
-        Box::new(Cursor::new(body))
-    };
-    let mut rows = Vec::new();
-    for line in BufReader::new(reader).lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let row = serde_json::from_str::<Value>(&line)
-            .map_err(|err| PolarisError::Decode(format!("invalid ndjson line: {err}")))?;
-        if !row.is_object() {
-            return Err(PolarisError::Decode(
-                "expected each NDJSON row to be an object".to_owned(),
-            ));
-        }
-        rows.push(row);
-    }
-    Ok(rows)
 }

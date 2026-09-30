@@ -616,25 +616,6 @@ export interface OhlcvBar {
   trades: number;
 }
 
-export interface VolumeBar {
-  timestamp: number;
-  volume: number;
-}
-
-export interface VwapBar {
-  timestamp: number;
-  vwap: number | null;
-  volume: number;
-  quote_volume: number;
-  trades: number;
-}
-
-export interface VolatilityBar {
-  timestamp: number;
-  volatility: number;
-  returns: number;
-}
-
 export interface TradingViewCandle {
   t: number;
   o: number;
@@ -702,20 +683,6 @@ export interface InstrumentsOptions {
   q?: string;
 }
 
-/**
- * Options for snapshot-based historical data methods.
- * If `from` and/or `to` are omitted, the client infers a bounded window
- * from catalog metadata.
- */
-export interface HistoricalQueryOptions {
-  source: string;
-  market: string;
-  from?: TimeInput;
-  to?: TimeInput;
-  /** Materialize complete orderbooks from snapshots and deltas. Defaults to `true`. */
-  materializeOrderbooks?: boolean;
-}
-
 /** Filters for direct historical rows. Bounds are inclusive Unix milliseconds. */
 export interface HistoricalRowsOptions {
   source?: string;
@@ -779,19 +746,6 @@ export interface BboOptions extends Omit<L2OrderbooksOptions, "instrument"> {
 
 export interface OhlcvOptions extends OhlcvRowsOptions {
   interval: OhlcvInterval;
-}
-
-export interface VolumeOptions extends HistoricalQueryOptions {
-  interval: OhlcvInterval;
-}
-
-export interface VwapOptions extends HistoricalQueryOptions {
-  interval: OhlcvInterval;
-}
-
-export interface VolatilityOptions extends HistoricalQueryOptions {
-  interval: OhlcvInterval;
-  method?: "log_returns";
 }
 
 export interface DepthMetricsOptions extends Omit<L2OrderbooksOptions, "instrument"> {

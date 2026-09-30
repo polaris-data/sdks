@@ -26,7 +26,7 @@ def _query(client: PolarisClient, method: str, **kwargs):
         )
 
 
-def test_direct_trade_and_funding_batches_have_flat_schemas(tmp_path) -> None:
+def test_direct_trade_and_funding_batches_have_flat_schemas() -> None:
     identity = {"event_id": "e1", "source": SOURCE, "market": MARKET,
                 "collector_timestamp": START_MS, "source_capture_id": "capture",
                 "schema_version": 1}
@@ -46,7 +46,7 @@ def test_direct_trade_and_funding_batches_have_flat_schemas(tmp_path) -> None:
     assert funding_batches[0].column("mark_price").to_pylist() == ["100"]
 
 
-def test_trade_dataframe_uses_flat_api_fields(tmp_path) -> None:
+def test_trade_dataframe_uses_flat_api_fields() -> None:
     rows = [{"event_id": "e1", "source": SOURCE, "market": MARKET,
              "collector_timestamp": START_MS, "source_capture_id": "capture",
              "schema_version": 1, "price": 100.0, "quantity": 1.0, "side": None}]
@@ -70,13 +70,13 @@ def test_trade_dataframe_uses_flat_api_fields(tmp_path) -> None:
 
 
 
-def test_ohlcv_columnar_outputs_keep_flat_candle_fields(tmp_path) -> None:
+def test_ohlcv_columnar_outputs_keep_flat_candle_fields() -> None:
     rows = [{"event_id": "c1", "source": SOURCE, "market": MARKET,
              "collector_timestamp": START_MS + 1, "source_capture_id": "capture",
              "schema_version": 1, "interval": "1m", "open_timestamp": START_MS,
              "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0,
              "base_volume": 6.0, "trade_count": 3}]
-    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
+    with PolarisClient(base_url="http://127.0.0.1:1") as client:
         client._call = lambda method, *args: iter(rows)
         batches = list(_query(client, "ohlcv", interval="1m", output="batches"))
         frame = _query(client, "ohlcv", interval="1m", output="dataframe")
