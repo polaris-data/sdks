@@ -191,7 +191,7 @@ test("intents use the direct route with an exact filter", async () => {
   client.close();
 });
 
-test("venue candle aggregates use latest revisions and reported volumes", async () => {
+test("ohlcv preserves every venue candle revision and TradingView uses the latest", async () => {
   const { PolarisClient } = await import("../dist/node/index.js");
   const start = 1_704_067_200_000;
   const identity = { source: "binance", market: "BTC-USDT", source_capture_id: "capture", schema_version: 1 };
@@ -200,24 +200,20 @@ test("venue candle aggregates use latest revisions and reported volumes", async 
     base_volume: 1, quote_volume: 101, trade_count: 2 };
   const final = { ...first, event_id: "closed", collector_timestamp: start + 2,
     high: 103, close: 102, base_volume: 2, quote_volume: 204, trade_count: 5, is_closed: true };
-  const fine = [100, 110, 99, 108.9].map((price, i) => ({ ...identity,
-    event_id: `fine-${i}`, collector_timestamp: start + i, interval: "10s",
-    open_timestamp: start + i * 10_000, open: price, high: price, low: price, close: price }));
   const client = new PolarisClient({ baseUrl: "https://api.example", fetch: async (input) => {
     const url = new URL(input);
     assert.equal(url.pathname, "/ohlcv");
     assert.equal(url.searchParams.get("start"), String(start));
     assert.equal(url.searchParams.get("end"), String(start + 60_000));
     const second = url.searchParams.has("cursor");
-    const body = url.searchParams.get("interval") === "1m"
-      ? { items: [second ? final : first], has_more: !second, next_cursor: second ? null : "next" }
-      : { items: fine, has_more: false, next_cursor: null };
+    assert.equal(url.searchParams.get("instrument"), "BTCUSDT");
+    const body = { items: [second ? final : first], has_more: !second,
+      next_cursor: second ? null : "next" };
     return new Response(JSON.stringify(body), { status: 200 });
   } });
-  const options = { source: "binance", market: "BTC-USDT", interval: "1m",
-    from: "2024-01-01T00:00:00Z", to: "2024-01-01T00:01:00Z" };
-  assert.deepEqual(await client.ohlcv(options), [{ timestamp: start, open: 100, high: 103,
-    low: 99, close: 102, volume: 2, trades: 5 }]);
+  const options = { source: "binance", market: "BTC-USDT", instrument: "BTCUSDT", interval: "1m",
+    start, end: start + 60_000 };
+  assert.deepEqual(await client.ohlcv(options), [first, final]);
   assert.equal((await client.ohlcvTradingView(options)).candles[0].c, 102);
   client.close();
 });

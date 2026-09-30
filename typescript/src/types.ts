@@ -747,7 +747,7 @@ export interface BboOptions extends Omit<L2OrderbooksOptions, "instrument"> {
   changesOnly?: boolean;
 }
 
-export interface OhlcvOptions extends HistoricalQueryOptions {
+export interface OhlcvOptions extends OhlcvRowsOptions {
   interval: OhlcvInterval;
 }
 

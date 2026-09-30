@@ -18,14 +18,13 @@ import type {
   OhlcvRow,
   RawCaptureRow,
   RawChannelOptions,
-  HistoricalQueryOptions,
   HistoricalRowsOptions,
   L2UpdatesOptions,
   L2OrderbooksOptions,
   OptionTickerRow,
   OptionTickerRowsOptions,
-  OhlcvBar,
   OhlcvOptions,
+  OhlcvRowsOptions,
   OrderbookL2Row,
   TradeRow,
   PolarisClientOptions,
@@ -40,7 +39,6 @@ import {
   RateLimitedError,
 } from "./errors";
 
-import { toEpochMs } from "./utils";
 import type { PolarisRuntime } from "./runtime/types";
 import { RealtimeStream } from "./realtime";
 
@@ -364,23 +362,20 @@ export class BasePolarisClient {
     return this._historicalRows("/funding-rates", options, isFundingRateRow);
   }
 
-  /** Return the latest venue-published revision of each candle. */
-  async ohlcv(options: OhlcvOptions): Promise<OhlcvBar[]> {
-    return (await this._venueCandles(options, options.interval)).map((row) => ({
-      timestamp: row.open_timestamp, open: row.open, high: row.high, low: row.low,
-      close: row.close, volume: row.base_volume ?? 0, trades: row.trade_count ?? 0,
-    }));
+  /** Return every venue-published candle update as a flat API row. */
+  async ohlcv(options: OhlcvRowsOptions = {}): Promise<OhlcvRow[]> {
+    const instrument = optionalFilter("instrument", options.instrument);
+    const interval = optionalFilter("interval", options.interval);
+    return this._historicalRows("/ohlcv", options, isOhlcvRow, {
+      ...(instrument ? { instrument } : {}),
+      ...(interval ? { interval } : {}),
+    });
   }
 
   private async _venueCandles(
-    options: HistoricalQueryOptions,
-    interval?: string,
+    options: OhlcvOptions,
   ): Promise<OhlcvRow[]> {
-    const rows = await this._historicalRows("/ohlcv", {
-      source: options.source, market: options.market,
-      ...(options.from !== undefined && { start: toEpochMs(options.from) }),
-      ...(options.to !== undefined && { end: toEpochMs(options.to) }),
-    }, isOhlcvRow, interval ? { interval } : {});
+    const rows = await this.ohlcv(options);
     const latest = new Map<string, OhlcvRow>();
     for (const row of rows) {
       const key = JSON.stringify([row.source, row.market, row.instrument, row.interval, row.open_timestamp]);
@@ -401,19 +396,19 @@ export class BasePolarisClient {
   async ohlcvTradingView(
     options: OhlcvOptions,
   ): Promise<TradingViewOhlcvResponse> {
-    const bars = await this.ohlcv(options);
+    const bars = await this._venueCandles(options);
     return {
       candles: bars.map((b) => ({
-        t: b.timestamp,
+        t: b.open_timestamp,
         o: b.open,
         h: b.high,
         l: b.low,
         c: b.close,
       })),
       volumes: bars.map((b) => ({
-        t: b.timestamp,
-        v: b.volume,
-        trades: b.trades,
+        t: b.open_timestamp,
+        v: b.base_volume ?? 0,
+        trades: b.trade_count ?? 0,
       })),
     };
   }

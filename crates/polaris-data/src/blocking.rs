@@ -9,9 +9,9 @@ use tokio::runtime::{Handle, Runtime};
 use crate::{
     CatalogCount, CatalogQuery, CatalogResponse, Diagnostic, EventsQuery, FundingRateRow,
     HistoricalRowsQuery, HistoricalStream, IntentRow, IntentRowsQuery, L2OrderbooksQuery,
-    L2UpdatesQuery, MixedEventRow, OhlcvOutput, OhlcvQuery, OptionTickerRow, OptionTickerRowsQuery,
-    OrderbookL2Row, PolarisError, RawCaptureRow, RawChannelQuery, RawQuery, RealtimeStream,
-    StandardEvent, StreamQuery, TradeRow,
+    L2UpdatesQuery, MixedEventRow, OhlcvRow, OhlcvRowsQuery, OptionTickerRow,
+    OptionTickerRowsQuery, OrderbookL2Row, PolarisError, RawCaptureRow, RawChannelQuery, RawQuery,
+    RealtimeStream, StandardEvent, StreamQuery, TradeRow,
 };
 
 const HISTORICAL_CHANNEL_CAPACITY: usize = 16;
@@ -215,8 +215,12 @@ impl PolarisClient {
         Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 
-    pub fn ohlcv(&self, query: OhlcvQuery) -> Result<OhlcvOutput, PolarisError> {
-        self.run(self.inner.ohlcv(query))
+    pub fn ohlcv(
+        &self,
+        query: OhlcvRowsQuery,
+    ) -> Result<HistoricalIterator<OhlcvRow>, PolarisError> {
+        let stream = self.run(self.inner.ohlcv(query))?;
+        Ok(self.historical_iterator(stream, HISTORICAL_CHANNEL_CAPACITY))
     }
 
     pub fn l2_snapshots(

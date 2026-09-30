@@ -2,10 +2,9 @@ use std::path::PathBuf;
 
 use polaris_data::{
     EventsQuery, FundingRateRow, HistoricalRowsQuery, IntentRow, IntentRowsQuery,
-    L2OrderbooksQuery, L2UpdatesQuery, MixedEventRow, MixedEventType, OhlcvFormat, OhlcvInterval,
-    OhlcvOutput, OhlcvQuery, OptionTickerRow, OptionTickerRowsQuery, OrderbookBuilder,
-    OrderbookL2Row, PolarisError, RawCaptureRow, RawChannelQuery, RawQuery, StandardEvent,
-    StreamQuery, TimeInput, TradeRow,
+    L2OrderbooksQuery, L2UpdatesQuery, MixedEventRow, MixedEventType, OhlcvRow, OhlcvRowsQuery,
+    OptionTickerRow, OptionTickerRowsQuery, OrderbookBuilder, OrderbookL2Row, PolarisError,
+    RawCaptureRow, RawChannelQuery, RawQuery, StandardEvent, StreamQuery, TimeInput, TradeRow,
     blocking::{self},
 };
 use pyo3::{
@@ -100,21 +99,6 @@ pub(crate) fn native_error(error: PolarisError) -> PyErr {
 
 fn time_input(value: Option<String>) -> Option<TimeInput> {
     value.map(TimeInput::Iso8601)
-}
-
-fn parse_interval(value: &str) -> PyResult<OhlcvInterval> {
-    match value {
-        "100ms" => Ok(OhlcvInterval::Ms100),
-        "1s" => Ok(OhlcvInterval::S1),
-        "10s" => Ok(OhlcvInterval::S10),
-        "1m" => Ok(OhlcvInterval::M1),
-        "5m" => Ok(OhlcvInterval::M5),
-        "15m" => Ok(OhlcvInterval::M15),
-        "1h" => Ok(OhlcvInterval::H1),
-        _ => Err(pyo3::exceptions::PyValueError::new_err(
-            "interval must be one of: 100ms, 1s, 10s, 1m, 5m, 15m, 1h",
-        )),
-    }
 }
 
 fn prune_empty_event_identity(value: &mut Value) {
@@ -484,42 +468,31 @@ impl NativeClient {
         ))
     }
 
-    #[pyo3(signature = (source, market, interval, from_=None, to=None, format=None, allow_gaps=false))]
-    fn ohlcv<'py>(
+    #[pyo3(signature = (source=None, market=None, instrument=None, interval=None, start=None, end=None))]
+    fn ohlcv(
         &self,
-        py: Python<'py>,
-        source: String,
-        market: String,
-        interval: &str,
-        from_: Option<String>,
-        to: Option<String>,
-        format: Option<&str>,
-        allow_gaps: bool,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let query = OhlcvQuery {
+        py: Python<'_>,
+        source: Option<String>,
+        market: Option<String>,
+        instrument: Option<String>,
+        interval: Option<String>,
+        start: Option<i64>,
+        end: Option<i64>,
+    ) -> PyResult<NativeHistorical> {
+        let query = OhlcvRowsQuery {
             source,
             market,
-            from: time_input(from_),
-            to: time_input(to),
-            interval: parse_interval(interval)?,
-            format: match format {
-                None => OhlcvFormat::Bars,
-                Some("tradingview") => OhlcvFormat::TradingView,
-                Some(_) => {
-                    return Err(pyo3::exceptions::PyValueError::new_err(
-                        "format must be one of: None, 'tradingview'",
-                    ));
-                }
-            },
-            allow_gaps,
+            instrument,
+            interval,
+            start,
+            end,
         };
-        let output = py
+        let iterator = py
             .detach(|| self.inner.ohlcv(query))
             .map_err(native_error)?;
-        match output {
-            OhlcvOutput::Bars(bars) => to_python(py, &bars),
-            OhlcvOutput::TradingView(value) => to_python(py, &value),
-        }
+        Ok(NativeHistorical::new(NativeHistoricalIterator::Ohlcv(
+            iterator,
+        )))
     }
 
     #[pyo3(signature = (source, market, start, end, instrument=None))]
@@ -606,6 +579,7 @@ struct NativeHistorical {
 
 enum NativeHistoricalIterator {
     Events(blocking::HistoricalIterator<MixedEventRow>),
+    Ohlcv(blocking::HistoricalIterator<OhlcvRow>),
     L2Rows(blocking::HistoricalIterator<OrderbookL2Row>),
     Trades(blocking::HistoricalIterator<TradeRow>),
     Intents(blocking::HistoricalIterator<IntentRow>),
@@ -646,6 +620,7 @@ impl NativeHistorical {
         };
         let result = match iterator {
             NativeHistoricalIterator::Events(iterator) => next_historical(py, iterator),
+            NativeHistoricalIterator::Ohlcv(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::L2Rows(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Trades(iterator) => next_historical(py, iterator),
             NativeHistoricalIterator::Intents(iterator) => next_historical(py, iterator),

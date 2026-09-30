@@ -63,11 +63,13 @@ All direct historical methods fetch every cursor page. Their `start` and `end` f
 | `intents` | `intents` | `/intents` | Single input/output asset observations |
 | `l2_updates` | `l2Updates` | `/l2-updates` | Flat source snapshots and sparse deltas |
 | `l2_snapshots` | `l2Snapshots` | `/l2-orderbooks` | Reconstructed, sorted top-25 books after each update |
-| `ohlcv` | `ohlcv`, `ohlcvTradingView` | `/ohlcv` | Bars from venue candle updates |
+| `ohlcv` | `ohlcv` | `/ohlcv` | Every venue-published candle update as a flat row |
 | `raw` | — | `/raw` | Paged raw captures across channels for a source and market |
 | `raw_channel` | `rawChannel` | `/raw` with `channel` | Exact captures from one native channel |
 
 Python returns iterators by default and supports Arrow batches or Pandas DataFrames on methods with an `output` option. Rust uses async streams and also offers a blocking facade. TypeScript returns arrays. `catalog`, `count`, `instruments`, `health`, and realtime `stream` remain available. Rust and Python offer `raw` for a source and market, while all three SDKs offer `raw_channel` / `rawChannel` for one channel. Both use the paged JSON `/raw` route. The `raw` method infers a recent seven-day window when bounds are omitted, leaving a one-minute margin inside the public cutoff for anonymous requests. Raw responses include `raw_table`; the SDKs convert raw-channel millisecond bounds to the API's ISO date-time parameters. Recent raw history is public, while older ranges may require an API key.
+
+`ohlcv` uses optional `source`, `market`, `instrument`, `interval`, `start`, and `end` filters. Its inclusive bounds refer to candle open time. It preserves every published revision, so multiple rows can share an `open_timestamp`. TypeScript's `ohlcvTradingView` remains a derived latest-revision view.
 
 `l2_snapshots` refers to reconstructed L2 books, not the removed `/snapshots` API. Its `source`, `market`, `start`, and `end` inputs are required. The book rows contain at most 25 levels per side. `OrderbookBuilder` still accepts realtime event envelopes.
 
@@ -82,6 +84,8 @@ The API moved data routes from `/historical/*` to top-level paths. The old route
 The clients also remove `bbo`, Rust `bbo_changes`, `depth_metrics` / `depthMetrics`, `intent_rows` / `intentRows`, `ohlcv_rows` / `ohlcvRows`, `quote_rows` / `quoteRows`, `volume`, `vwap`, `volatility`, and `mark_prices` / `markPrices`. These methods may return in a later release.
 
 The snapshot-backed methods' `allow_gaps` and local replay cache options are removed. TypeScript also removes `datasetRoot`, `storage`, and `snapshotDownloadConcurrency` constructor options because historical requests no longer use local snapshot storage. Python removes `replay_cache_enabled` and `replay_cache_dir` constructor options.
+
+`ohlcv` now returns flat `OhlcvRow` values, with inclusive Unix-millisecond `start` and `end` inputs. Rust's former `OhlcvQuery` and Python's `from_`, `to`, `format`, and `allow_gaps` inputs no longer apply to the method. Python uses `output="iterator"`, `"batches"`, or `"dataframe"`; TypeScript accepts the direct row filters. Existing code expecting collapsed bars must handle candle revisions explicitly.
 
 ## Tests
 

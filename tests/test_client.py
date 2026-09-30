@@ -332,19 +332,17 @@ def test_rate_limited_error_maps_reset_at(tmp_path) -> None:
         client.close()
 
 
-def test_ohlcv_rejects_stale_parquet_format() -> None:
+def test_ohlcv_rejects_old_format_option() -> None:
     client = make_client(lambda request: httpx.Response(500))
     try:
-        with pytest.raises(
-            ValueError, match="format must be one of: None, 'tradingview'"
-        ):
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
             client.ohlcv(
                 source="binance",
                 market="BTC-USDT",
-                from_="2024-01-01T00:00:00Z",
-                to="2024-01-01T00:01:00Z",
+                start=1_704_067_200_000,
+                end=1_704_067_260_000,
                 interval="1m",
-                format="parquet",
+                format="tradingview",
             )
     finally:
         client.close()
@@ -580,7 +578,7 @@ def test_intents_queries_direct_route_with_exact_filter(tmp_path) -> None:
         client.close()
 
 
-def test_venue_candle_aggregates_use_latest_revision_and_reported_volumes(tmp_path) -> None:
+def test_ohlcv_returns_every_venue_candle_revision(tmp_path) -> None:
     start = 1_704_067_200_000
     identity = {"source": "binance", "market": "BTC-USDT", "source_capture_id": "capture",
                 "schema_version": 1}
@@ -591,32 +589,27 @@ def test_venue_candle_aggregates_use_latest_revision_and_reported_volumes(tmp_pa
     final = {**first, "event_id": "closed", "collector_timestamp": start + 2,
              "high": 103.0, "close": 102.0, "base_volume": 2.0,
              "quote_volume": 204.0, "trade_count": 5, "is_closed": True}
-    closes = [100.0, 110.0, 99.0, 108.9]
-    fine = [{**identity, "event_id": f"fine-{i}", "collector_timestamp": start + i,
-             "interval": "10s", "open_timestamp": start + i * 10_000,
-             "open": price, "high": price, "low": price, "close": price}
-            for i, price in enumerate(closes)]
-
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/ohlcv"
         assert request.url.params["source"] == "binance"
         assert request.url.params["start"] == str(start)
         assert request.url.params["end"] == str(start + 60_000)
-        if request.url.params.get("interval") == "1m":
-            second = request.url.params.get("cursor") == "next"
-            return httpx.Response(200, json={"items": [final if second else first],
-                                              "has_more": not second,
-                                              "next_cursor": None if second else "next"})
-        return httpx.Response(200, json={"items": fine, "has_more": False, "next_cursor": None})
+        assert request.url.params["interval"] == "1m"
+        assert request.url.params["instrument"] == "BTCUSDT"
+        second = request.url.params.get("cursor") == "next"
+        return httpx.Response(200, json={"items": [final if second else first],
+                                          "has_more": not second,
+                                          "next_cursor": None if second else "next"})
 
     client = make_client(handler, dataset_root=tmp_path)
-    options = {"source": "binance", "market": "BTC-USDT", "interval": "1m",
-               "from_": "2024-01-01T00:00:00Z", "to": "2024-01-01T00:01:00Z"}
+    options = {"source": "binance", "market": "BTC-USDT", "instrument": "BTCUSDT",
+               "interval": "1m", "start": start, "end": start + 60_000}
     try:
-        assert client.ohlcv(**options) == [{"timestamp": start, "open": 100.0,
-                                            "high": 103.0, "low": 99.0, "close": 102.0,
-                                            "volume": 2.0, "trades": 5}]
-        assert client.ohlcv(**options, format="tradingview")["candles"][0]["close"] == 102.0
+        rows = list(client.ohlcv(**options))
+        assert [row["event_id"] for row in rows] == ["open", "closed"]
+        assert rows[0]["base_volume"] == 1.0
+        assert rows[1]["base_volume"] == 2.0
+        assert rows[1]["close"] == 102.0
     finally:
         client.close()
 

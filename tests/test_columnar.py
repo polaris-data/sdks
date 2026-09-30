@@ -16,7 +16,7 @@ START_MS = 1_704_067_200_000
 
 
 def _query(client: PolarisClient, method: str, **kwargs):
-    if method in {"trades", "funding_rates"}:
+    if method in {"trades", "funding_rates", "ohlcv"}:
         return getattr(client, method)(
             source=SOURCE,
             market=MARKET,
@@ -24,13 +24,6 @@ def _query(client: PolarisClient, method: str, **kwargs):
             end=START_MS + 10,
             **kwargs,
         )
-    return getattr(client, method)(
-        source=SOURCE,
-        market=MARKET,
-        from_=START_MS * 1_000,
-        to=(START_MS + 10) * 1_000,
-        **kwargs,
-    )
 
 
 def test_direct_trade_and_funding_batches_have_flat_schemas(tmp_path) -> None:
@@ -77,81 +70,31 @@ def test_trade_dataframe_uses_flat_api_fields(tmp_path) -> None:
 
 
 
-def test_aggregate_dataframes_have_stable_notebook_ready_schemas(tmp_path) -> None:
-
+def test_ohlcv_columnar_outputs_keep_flat_candle_fields(tmp_path) -> None:
+    rows = [{"event_id": "c1", "source": SOURCE, "market": MARKET,
+             "collector_timestamp": START_MS + 1, "source_capture_id": "capture",
+             "schema_version": 1, "interval": "1m", "open_timestamp": START_MS,
+             "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0,
+             "base_volume": 6.0, "trade_count": 3}]
     with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
-        client._call = lambda method, *args: [{
-            "timestamp": START_MS, "open": 100.0, "high": 101.0, "low": 99.0,
-            "close": 100.0, "volume": 6.0, "trades": 3,
-        }]
-        ohlcv = _query(client, "ohlcv", interval="100ms", output="dataframe")
+        client._call = lambda method, *args: iter(rows)
+        batches = list(_query(client, "ohlcv", interval="1m", output="batches"))
+        frame = _query(client, "ohlcv", interval="1m", output="dataframe")
 
-    assert isinstance(ohlcv, pd.DataFrame)
-    assert ohlcv.columns.tolist() == [
-        "timestamp",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "trades",
-    ]
-    assert str(ohlcv.dtypes["timestamp"]) == "datetime64[ms, UTC]"
-    assert ohlcv.index.equals(pd.RangeIndex(len(ohlcv)))
-    assert str(ohlcv.dtypes["trades"]) == "uint64"
+    assert batches[0].column("open_timestamp").to_pylist() == [START_MS]
+    assert batches[0].column("base_volume").to_pylist() == [6.0]
+    assert isinstance(frame, pd.DataFrame)
+    assert frame["interval"].tolist() == ["1m"]
+    assert frame["trade_count"].tolist() == [3]
+    assert "timestamp" not in frame.columns
 
 
-@pytest.mark.parametrize(
-    ("method", "columns"),
-    [
-        (
-            "ohlcv",
-            ["timestamp", "open", "high", "low", "close", "volume", "trades"],
-        ),
-    ],
-)
-def test_empty_aggregate_dataframes_preserve_schema_and_dtypes(
-    tmp_path,
-    method,
-    columns,
-) -> None:
-
-    with PolarisClient(dataset_root=tmp_path, base_url="http://127.0.0.1:1") as client:
-        client._call = lambda method, *args: []
-        frame = _query(client, method, interval="100ms", output="dataframe")
-
+def test_empty_ohlcv_dataframe_preserves_flat_schema() -> None:
+    with PolarisClient(base_url="http://127.0.0.1:1") as client:
+        client._call = lambda method, *args: iter(())
+        frame = _query(client, "ohlcv", output="dataframe")
     assert frame.empty
-    assert frame.columns.tolist() == columns
-    assert str(frame.dtypes["timestamp"]) == "datetime64[ms, UTC]"
-    assert all(
-        str(frame.dtypes[column]) == "float64"
-        for column in columns[1:]
-        if column not in {"trades", "returns"}
-    )
-    assert all(
-        str(frame.dtypes[column]) == "uint64"
-        for column in columns
-        if column in {"trades", "returns"}
-    )
-
-
-@pytest.mark.parametrize("method", ["ohlcv"])
-def test_aggregate_output_is_validated_before_query(method) -> None:
-    with PolarisClient(base_url="http://127.0.0.1:1") as client:
-        with pytest.raises(ValueError, match="output must be one of"):
-            _query(client, method, interval="100ms", output="table")
-
-
-def test_ohlcv_dataframe_rejects_tradingview_format() -> None:
-    with PolarisClient(base_url="http://127.0.0.1:1") as client:
-        with pytest.raises(ValueError, match="only available when format is None"):
-            _query(
-                client,
-                "ohlcv",
-                interval="100ms",
-                format="tradingview",
-                output="dataframe",
-            )
+    assert {"open_timestamp", "collector_timestamp", "interval", "base_volume"} <= set(frame.columns)
 
 
 @pytest.mark.parametrize(
@@ -159,6 +102,7 @@ def test_ohlcv_dataframe_rejects_tradingview_format() -> None:
     [
         "trades",
         "funding_rates",
+        "ohlcv",
     ],
 )
 def test_columnar_options_are_validated_before_query(method) -> None:

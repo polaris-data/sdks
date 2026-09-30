@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     io::{BufRead, BufReader, Cursor, Read},
     sync::{Arc, Mutex},
 };
@@ -18,10 +18,9 @@ use crate::{
         CatalogAccess, CatalogCount, CatalogInstrument, CatalogMarket, CatalogQuery,
         CatalogResponse, Diagnostic, EventsQuery, FundingRateRow, HistoricalRowsQuery,
         HistoricalStream, InstrumentsQuery, InstrumentsResponse, IntentRow, IntentRowsQuery,
-        L2OrderbooksQuery, L2UpdatesQuery, MixedEventRow, OhlcvBar, OhlcvFormat, OhlcvOutput,
-        OhlcvQuery, OhlcvRow, OhlcvRowsQuery, OptionContract, OptionTickerRow,
-        OptionTickerRowsQuery, OrderbookL2Row, RawCaptureRow, RawChannelQuery, RawQuery,
-        RealtimeStream, StreamQuery, TradeRow,
+        L2OrderbooksQuery, L2UpdatesQuery, MixedEventRow, OhlcvRow, OhlcvRowsQuery, OptionContract,
+        OptionTickerRow, OptionTickerRowsQuery, OrderbookL2Row, RawCaptureRow, RawChannelQuery,
+        RawQuery, RealtimeStream, StreamQuery, TradeRow,
     },
     realtime,
     storage::StorageLayout,
@@ -480,8 +479,8 @@ impl PolarisClient {
         )
     }
 
-    /// Fetch venue-published candle updates for OHLCV calculations.
-    async fn fetch_ohlcv_rows(
+    /// Stream every venue-published candle update from `/ohlcv`.
+    pub async fn ohlcv(
         &self,
         query: OhlcvRowsQuery,
     ) -> Result<HistoricalStream<OhlcvRow>, PolarisError> {
@@ -533,96 +532,6 @@ impl PolarisClient {
         query: HistoricalRowsQuery,
     ) -> Result<HistoricalStream<FundingRateRow>, PolarisError> {
         self.historical_rows("/perpetual-ticker", query, vec![])
-    }
-
-    pub async fn ohlcv(&self, query: OhlcvQuery) -> Result<OhlcvOutput, PolarisError> {
-        let format = query.format;
-        let rows = self
-            .venue_candles(&query, Some(query.interval.as_str()))
-            .await?;
-        let bars = rows
-            .into_iter()
-            .map(|row| OhlcvBar {
-                timestamp: row.open_timestamp,
-                open: row.open,
-                high: row.high,
-                low: row.low,
-                close: row.close,
-                volume: row.base_volume.unwrap_or_default(),
-                trades: row.trade_count.unwrap_or_default(),
-            })
-            .collect::<Vec<_>>();
-        Ok(match format {
-            OhlcvFormat::Bars => OhlcvOutput::Bars(bars),
-            OhlcvFormat::TradingView => OhlcvOutput::TradingView(crate::TradingViewOhlcv {
-                candles: bars
-                    .iter()
-                    .map(|bar| crate::TradingViewCandle {
-                        time: bar.timestamp / 1_000,
-                        open: bar.open,
-                        high: bar.high,
-                        low: bar.low,
-                        close: bar.close,
-                    })
-                    .collect(),
-                volumes: bars
-                    .iter()
-                    .map(|bar| crate::TradingViewVolume {
-                        time: bar.timestamp / 1_000,
-                        value: bar.volume,
-                    })
-                    .collect(),
-            }),
-        })
-    }
-
-    async fn venue_candles(
-        &self,
-        query: &OhlcvQuery,
-        interval: Option<&str>,
-    ) -> Result<Vec<OhlcvRow>, PolarisError> {
-        let start = query
-            .from
-            .as_ref()
-            .map(to_epoch_micros)
-            .transpose()?
-            .map(|value| value.div_euclid(1_000));
-        let end = query
-            .to
-            .as_ref()
-            .map(to_epoch_micros)
-            .transpose()?
-            .map(|value| value.div_euclid(1_000));
-        let mut rows = self
-            .fetch_ohlcv_rows(OhlcvRowsQuery {
-                source: Some(query.source.clone()),
-                market: Some(query.market.clone()),
-                instrument: None,
-                interval: interval.map(ToOwned::to_owned),
-                start,
-                end,
-            })
-            .await?;
-        let mut latest = BTreeMap::<(String, String, String, String, i64), OhlcvRow>::new();
-        while let Some(row) = rows.next().await {
-            let row = row?;
-            let key = (
-                row.source.clone(),
-                row.market.clone(),
-                row.instrument.clone().unwrap_or_default(),
-                row.interval.clone(),
-                row.open_timestamp,
-            );
-            let replace = latest.get(&key).is_none_or(|old| {
-                (row.collector_timestamp, &row.event_id) > (old.collector_timestamp, &old.event_id)
-            });
-            if replace {
-                latest.insert(key, row);
-            }
-        }
-        let mut rows = latest.into_values().collect::<Vec<_>>();
-        rows.sort_by(|a, b| (a.open_timestamp, &a.event_id).cmp(&(b.open_timestamp, &b.event_id)));
-        Ok(rows)
     }
 
     // -----------------------------------------------------------------------

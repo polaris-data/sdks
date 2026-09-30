@@ -28,6 +28,7 @@ from .models import (
     FundingRateRow,
     MixedEventRow,
     MixedEventType,
+    OhlcvRow,
     IntentRow,
     JSONDict,
     OptionTickerRow,
@@ -45,12 +46,6 @@ DEFAULT_BASE_URL = "https://api.polaris.supply"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_BATCH_SIZE = 65_536
 OutputFormat = Literal["iterator", "batches", "dataframe"]
-AggregateOutputFormat = Literal["records", "dataframe"]
-
-AGGREGATE_COLUMNS: dict[str, tuple[str, ...]] = {
-    "ohlcv": ("timestamp", "open", "high", "low", "close", "volume", "trades"),
-}
-AGGREGATE_COUNT_COLUMNS = frozenset({"trades"})
 
 
 class OrderbookBuilder:
@@ -306,7 +301,7 @@ class PolarisClient:
                 pa.field("side", pa.string()),
                 pa.field("taker", pa.string()),
             ]
-        else:
+        elif method == "funding_rates":
             fields += [
                 pa.field("exchange_timestamp", pa.int64()),
                 pa.field("funding_timestamp", pa.int64()),
@@ -315,17 +310,34 @@ class PolarisClient:
                 "instrument", "funding_rate", "index_price", "mark_price",
                 "open_interest", "predicted_funding_rate", "premium",
             )]
+        elif method == "ohlcv":
+            fields += [
+                pa.field("interval", pa.string(), nullable=False),
+                pa.field("open_timestamp", pa.int64(), nullable=False),
+                *[pa.field(name, pa.float64(), nullable=False) for name in (
+                    "open", "high", "low", "close",
+                )],
+                pa.field("exchange_timestamp", pa.int64()),
+                pa.field("instrument", pa.string()),
+                pa.field("close_timestamp", pa.int64()),
+                pa.field("base_volume", pa.float64()),
+                pa.field("quote_volume", pa.float64()),
+                pa.field("trade_count", pa.int64()),
+                pa.field("is_closed", pa.bool_()),
+            ]
         return pa.schema(fields)
 
     def _direct_row_output(
         self,
-        method: Literal["trades", "funding_rates"],
+        method: Literal["trades", "funding_rates", "ohlcv"],
         source: str | None,
         market: str | None,
         start: int | None,
         end: int | None,
         output: OutputFormat,
         batch_size: int,
+        instrument: str | None = None,
+        interval: str | None = None,
     ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
         self._validate_columnar_output(output, batch_size)
         for name, value in (("start", start), ("end", end)):
@@ -340,7 +352,11 @@ class PolarisClient:
                 "pyarrow", "dataframe" if output == "dataframe" else "arrow"
             )
             schema = self._direct_row_schema(method, pa)
-        iterator = self._iterate(self._call(method, source, market, start, end), method)
+        if method == "ohlcv":
+            native_iterator = self._call(method, source, market, instrument, interval, start, end)
+        else:
+            native_iterator = self._call(method, source, market, start, end)
+        iterator = self._iterate(native_iterator, method)
         if output == "iterator":
             return iterator
 
@@ -648,87 +664,58 @@ class PolarisClient:
     def ohlcv(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        format: str | None = None,
-        allow_gaps: bool = False,
-        output: Literal["records"] = "records",
-    ) -> list[JSONDict] | JSONDict: ...
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+        interval: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        output: Literal["iterator"] = "iterator",
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> Iterator[OhlcvRow]: ...
 
     @overload
     def ohlcv(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        format: None = None,
-        allow_gaps: bool = False,
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+        interval: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        output: Literal["batches"],
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> Iterator[pyarrow.RecordBatch]: ...
+
+    @overload
+    def ohlcv(
+        self,
+        *,
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+        interval: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
         output: Literal["dataframe"],
+        batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> pandas.DataFrame: ...
 
     def ohlcv(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        format: str | None = None,
-        allow_gaps: bool = False,
-        output: AggregateOutputFormat = "records",
-    ) -> list[JSONDict] | JSONDict | pandas.DataFrame:
-        if output == "dataframe" and format is not None:
-            raise ValueError(
-                "output='dataframe' is only available when format is None"
-            )
-        pandas_module = self._prepare_aggregate_output(output)
-        result = self._call(
-            "ohlcv",
-            source,
-            market,
-            interval,
-            self._time(from_),
-            self._time(to),
-            format,
-            allow_gaps,
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+        interval: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        output: OutputFormat = "iterator",
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> Iterator[OhlcvRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
+        """Read every venue-published candle update as a flat row."""
+        return self._direct_row_output(
+            "ohlcv", source, market, start, end, output, batch_size,
+            instrument, interval,
         )
-        if output == "records":
-            return result
-        return self._aggregate_dataframe(
-            result,
-            AGGREGATE_COLUMNS["ohlcv"],
-            pandas_module,
-        )
-
-    def _prepare_aggregate_output(
-        self,
-        output: str,
-    ) -> Any | None:
-        if output not in {"records", "dataframe"}:
-            raise ValueError("output must be one of: 'records', 'dataframe'")
-        if output == "dataframe":
-            return self._require_optional_module("pandas", "dataframe")
-        return None
-
-    @staticmethod
-    def _aggregate_dataframe(
-        rows: list[JSONDict],
-        columns: tuple[str, ...],
-        pandas_module: Any,
-    ) -> pandas.DataFrame:
-        frame = pandas_module.DataFrame.from_records(rows, columns=columns)
-        frame["timestamp"] = pandas_module.Series(
-            pandas_module.to_datetime(frame["timestamp"], unit="ms", utc=True),
-            dtype="datetime64[ms, UTC]",
-        )
-        for column in columns[1:]:
-            dtype = "uint64" if column in AGGREGATE_COUNT_COLUMNS else "float64"
-            frame[column] = frame[column].astype(dtype)
-        return frame

@@ -32,10 +32,12 @@ Direct historical methods return arrays and follow every cursor page. `start` an
 | `l2Updates` | `/l2-updates` | Source snapshots and sparse deltas as flat rows |
 | `events` | `/events` | Authenticated mixed `{type, data}` flat rows in collector-time order |
 | `l2Snapshots` | `/l2-orderbooks` | Reconstructed top-25 books after each update |
-| `ohlcv`, `ohlcvTradingView` | `/ohlcv` | Bars from venue candle updates |
+| `ohlcv` | `/ohlcv` | Every venue-published candle update as a flat row |
 | `rawChannel` | `/raw` with `channel` | Exact venue-native capture text |
 
 `catalog`, `count`, `instruments`, `health`, and realtime `stream` are also available. `l2Snapshots` requires `source`, `market`, `start`, and `end`; it is unrelated to the removed `/snapshots` route. `rawChannel` maps `exchange` and `event` to the API's `source` and `channel` filters and converts millisecond bounds to ISO date-times. Raw rows include `raw_table`. `OrderbookBuilder` still handles realtime orderbook event envelopes.
+
+`ohlcv` accepts optional `source`, `market`, `instrument`, `interval`, `start`, and `end` filters. Inclusive bounds refer to candle open time. It preserves every candle revision. `ohlcvTradingView` remains available as a derived latest-revision view.
 
 ## Breaking changes
 
@@ -44,6 +46,8 @@ Direct historical methods return arrays and follow every cursor page. `start` an
 The API moved data routes from `/historical/*` to top-level paths. The old routes no longer work. It also replaced `/raw/{exchange}/{event}` with `/raw?source=...&channel=...`.
 
 The client also removes `bbo`, `depthMetrics`, `intentRows`, `ohlcvRows`, `quoteRows`, `volume`, `vwap`, `volatility`, and `markPrices`. These methods may return in a later release.
+
+`ohlcv` now returns flat `OhlcvRow[]` instead of collapsed bars and accepts inclusive Unix-millisecond `start` and `end` bounds. Existing code expecting one bar per candle must handle revisions explicitly.
 
 The `datasetRoot`, `storage`, and `snapshotDownloadConcurrency` constructor options are removed with local snapshot storage.
 

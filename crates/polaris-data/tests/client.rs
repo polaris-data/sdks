@@ -3,9 +3,9 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use polaris_data::{
     CatalogQuery, EventsQuery, HistoricalRowsQuery, HistoricalStream, InstrumentsQuery,
-    IntentRowsQuery, L2OrderbooksQuery, L2UpdatesQuery, MixedEventRow, MixedEventType, OhlcvFormat,
-    OhlcvInterval, OhlcvOutput, OhlcvQuery, OptionTickerRowsQuery, PolarisClient, PolarisError,
-    RawChannelQuery, RawQuery, TimeInput, blocking,
+    IntentRowsQuery, L2OrderbooksQuery, L2UpdatesQuery, MixedEventRow, MixedEventType,
+    OhlcvRowsQuery, OptionTickerRowsQuery, PolarisClient, PolarisError, RawChannelQuery, RawQuery,
+    TimeInput, blocking,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -867,46 +867,48 @@ async fn events_pages_typed_rows_with_required_auth_and_filters() {
 }
 
 #[tokio::test]
-async fn ohlcv_returns_tradingview_output() {
+async fn ohlcv_returns_every_direct_candle_revision() {
     let server = MockServer::start().await;
     let root = TempDir::new().expect("tempdir");
     let client = build_client(&server, &root);
     Mock::given(method("GET"))
         .and(path("/ohlcv"))
         .and(query_param("interval", "1m"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "items": [{"event_id": "c1", "source": "binance", "market": "BTC-USDT",
+        .and(query_param("instrument", "BTCUSDT"))
+        .and(query_param("start", "1704067200000"))
+        .and(query_param("end", "1704070800000"))
+        .respond_with(|request: &wiremock::Request| {
+            let second = request.url.query_pairs().any(|(key, value)| key == "cursor" && value == "next");
+            ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{"event_id": if second { "c2" } else { "c1" }, "source": "binance", "market": "BTC-USDT",
                 "collector_timestamp": 1_704_067_240_000_i64, "source_capture_id": "capture",
                 "schema_version": 1, "interval": "1m", "open_timestamp": 1_704_067_200_000_i64,
                 "open": 100.0, "high": 101.0, "low": 100.0, "close": 101.0,
                 "base_volume": 2.0, "trade_count": 2}],
-            "has_more": false, "next_cursor": null
-        })))
+            "has_more": !second, "next_cursor": if second { None } else { Some("next") }
+        }))})
         .mount(&server)
         .await;
 
-    let output = client
-        .ohlcv(OhlcvQuery {
-            source: "binance".to_owned(),
-            market: "BTC-USDT".to_owned(),
-            from: Some("2024-01-01T00:00:00Z".into()),
-            to: Some("2024-01-01T01:00:00Z".into()),
-            interval: OhlcvInterval::M1,
-            format: OhlcvFormat::TradingView,
-            allow_gaps: false,
-        })
-        .await
-        .expect("ohlcv");
-
-    match output {
-        OhlcvOutput::TradingView(view) => {
-            assert_eq!(view.candles.len(), 1);
-            assert_eq!(view.candles[0].open, 100.0);
-            assert_eq!(view.candles[0].close, 101.0);
-            assert_eq!(view.volumes[0].value, 2.0);
-        }
-        other => panic!("unexpected output: {other:?}"),
-    }
+    let output = collect_stream(
+        client
+            .ohlcv(OhlcvRowsQuery {
+                source: Some("binance".to_owned()),
+                market: Some("BTC-USDT".to_owned()),
+                instrument: Some("BTCUSDT".to_owned()),
+                start: Some(1_704_067_200_000),
+                end: Some(1_704_070_800_000),
+                interval: Some("1m".to_owned()),
+            })
+            .await
+            .expect("ohlcv"),
+    )
+    .await
+    .expect("rows");
+    assert_eq!(output.len(), 2);
+    assert_eq!(output[0].event_id, "c1");
+    assert_eq!(output[1].event_id, "c2");
+    assert_eq!(output[0].base_volume, Some(2.0));
 }
 
 #[tokio::test]
