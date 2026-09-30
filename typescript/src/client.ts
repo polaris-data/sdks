@@ -9,6 +9,9 @@ import type {
   CatalogMarket,
   CatalogOptions,
   CatalogResponse,
+  InstrumentsOptions,
+  InstrumentsResponse,
+  OptionContract,
   DepthMetricsOptions,
   DepthMetricsRow,
   FetchLike,
@@ -284,6 +287,62 @@ export class BasePolarisClient {
     }
 
     return { updatedAt, markets };
+  }
+
+  /** Discover venue-native option contracts for one underlying market. */
+  async instruments(options: InstrumentsOptions): Promise<InstrumentsResponse> {
+    const source = optionalFilter("source", options.source);
+    const market = optionalFilter("market", options.market);
+    if (!source || !market) throw new PolarisError("source and market are required");
+    const params: Record<string, string> = { source, market, limit: "1000" };
+    const instrument = optionalFilter("instrument", options.instrument);
+    const q = optionalFilter("q", options.q);
+    if (instrument) params.instrument = instrument;
+    if (q) params.q = q;
+    if (options.expiry !== undefined) {
+      if (!Number.isSafeInteger(options.expiry) || options.expiry < 0) {
+        throw new PolarisError("expiry must be a non-negative Unix-millisecond integer");
+      }
+      params.expiry = String(options.expiry);
+    }
+    if (options.optionType !== undefined) {
+      if (options.optionType !== "call" && options.optionType !== "put") {
+        throw new PolarisError("optionType must be call or put");
+      }
+      params.option_type = options.optionType;
+    }
+
+    const instruments: OptionContract[] = [];
+    let updatedAt: string | undefined;
+    let cursor: string | undefined;
+    const cursors = new Set<string>();
+    while (true) {
+      const payload = await this._getJson<{
+        updatedAt?: unknown;
+        instruments?: unknown;
+        next_cursor?: unknown;
+      }>("/catalog/instruments", {
+        params: cursor ? { ...params, cursor } : params,
+        auth: "if-available",
+      });
+      if (typeof payload.updatedAt !== "string" || !payload.updatedAt ||
+          !Array.isArray(payload.instruments)) {
+        throw new PolarisError("Invalid instrument catalog page");
+      }
+      updatedAt ??= payload.updatedAt;
+      for (const item of payload.instruments) {
+        if (!isOptionContract(item)) throw new PolarisError("Invalid option contract");
+        instruments.push(item);
+      }
+      const next = payload.next_cursor;
+      if (next === undefined || next === null) break;
+      if (typeof next !== "string" || !next || cursors.has(next)) {
+        throw new PolarisError("Invalid instrument catalog next_cursor");
+      }
+      cursors.add(next);
+      cursor = next;
+    }
+    return { updatedAt: updatedAt!, instruments };
   }
 
   /** Return global public source and market totals for the catalog. */
@@ -1780,6 +1839,26 @@ function normalizeSnapshotDownloadEntry(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isOptionContract(value: unknown): value is OptionContract {
+  if (!isRecord(value) ||
+      !["source", "market", "instrument", "status", "option_type", "underlying", "strike"]
+        .every((field) => typeof value[field] === "string") ||
+      !Number.isSafeInteger(value.expiry_timestamp) ||
+      !nullableFields(value, ["contract_size", "exercise_style", "premium_currency",
+        "quantity_unit", "settlement_currency"], "string")) return false;
+  if (value.statistics === undefined || value.statistics === null) return true;
+  const statistics = value.statistics;
+  if (!isRecord(statistics) || typeof statistics.source !== "string" ||
+      typeof statistics.market !== "string" ||
+      !nullableFields(statistics, ["instrument"], "string") ||
+      !isRecord(statistics.fields) || Array.isArray(statistics.fields)) return false;
+  return Object.values(statistics.fields).every((field) =>
+    isRecord(field) && typeof field.value === "string" &&
+    Number.isSafeInteger(field.observed_at) &&
+    nullableFields(field, ["exchange_timestamp"], "number") &&
+    nullableFields(field, ["unit", "convention"], "string"));
 }
 
 function isHistoricalIdentity(value: unknown): value is Record<string, unknown> {

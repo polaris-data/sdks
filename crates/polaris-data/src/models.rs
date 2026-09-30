@@ -57,6 +57,18 @@ pub struct CatalogQuery {
     pub q: Option<String>,
 }
 
+/// Filters for option-contract discovery. `market` is the normalized underlying.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstrumentsQuery {
+    pub source: String,
+    pub market: String,
+    pub instrument: Option<String>,
+    /// Exact expiry as Unix milliseconds.
+    pub expiry: Option<i64>,
+    pub option_type: Option<String>,
+    pub q: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListSnapshotsQuery {
     pub source: String,
@@ -730,6 +742,59 @@ pub struct CatalogResponse {
     #[doc(hidden)]
     #[serde(skip)]
     pub legacy_shape: bool,
+}
+
+/// One venue-native option contract in the instrument catalog.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OptionContract {
+    pub source: String,
+    pub market: String,
+    pub instrument: String,
+    pub status: String,
+    pub option_type: String,
+    pub underlying: String,
+    pub strike: String,
+    pub expiry_timestamp: i64,
+    #[serde(default)]
+    pub contract_size: Option<String>,
+    #[serde(default)]
+    pub exercise_style: Option<String>,
+    #[serde(default)]
+    pub premium_currency: Option<String>,
+    #[serde(default)]
+    pub quantity_unit: Option<String>,
+    #[serde(default)]
+    pub settlement_currency: Option<String>,
+    #[serde(default)]
+    pub statistics: Option<OptionContractStatistics>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OptionContractStatistics {
+    pub source: String,
+    pub market: String,
+    #[serde(default)]
+    pub instrument: Option<String>,
+    pub fields: BTreeMap<String, ObservedStatistic>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservedStatistic {
+    pub value: String,
+    pub observed_at: i64,
+    #[serde(default)]
+    pub exchange_timestamp: Option<i64>,
+    #[serde(default)]
+    pub unit: Option<String>,
+    #[serde(default)]
+    pub convention: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstrumentsResponse {
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+    pub instruments: Vec<OptionContract>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

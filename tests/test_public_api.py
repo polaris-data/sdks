@@ -19,6 +19,10 @@ from polaris_data import (
     CatalogInstrument,
     CatalogMarketEntry,
     CatalogResponse,
+    InstrumentsResponse,
+    ObservedStatistic,
+    OptionContract,
+    OptionContractStatistics,
     FundingRateRow,
     IntentRow,
     OhlcvRow,
@@ -84,6 +88,10 @@ def test_top_level_exports_are_stable() -> None:
         "CatalogInstrument",
         "CatalogMarketEntry",
         "CatalogResponse",
+        "InstrumentsResponse",
+        "ObservedStatistic",
+        "OptionContract",
+        "OptionContractStatistics",
         "FundingRateRow",
         "IntentRow",
         "OhlcvRow",
@@ -369,6 +377,7 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
         "CatalogResponse | JSONDict"
     )
     assert inspect.signature(PolarisClient.count).return_annotation == "CatalogCount"
+    assert inspect.signature(PolarisClient.instruments).return_annotation == "InstrumentsResponse"
     assert (
         inspect.signature(PolarisClient.list_snapshots).return_annotation
         == "list[SnapshotEntry]"
@@ -427,6 +436,10 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
     assert get_type_hints(CatalogResponse) == {
         "markets": list[CatalogMarketEntry],
         "updatedAt": str,
+    }
+    assert get_type_hints(InstrumentsResponse) == {
+        "updatedAt": str,
+        "instruments": list[OptionContract],
     }
     assert get_type_hints(CatalogCount) == {
         "updatedAt": str,

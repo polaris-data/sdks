@@ -196,6 +196,7 @@ Use it to inspect available data, query historical market data, and open realtim
 | --- | --- | --- |
 | `health()` | API health/status payload | Connectivity checks and startup validation |
 | `catalog(source=None, market=None, q=None)` | Source/market metadata, including normalized instrument fields | Discover supported datasets, markets, instrument metadata, and time coverage |
+| `instruments(source=..., market=..., instrument=None, expiry=None, option_type=None, q=None)` | Option-contract metadata | Discover venue-native contracts for a normalized underlying; `expiry` is Unix milliseconds |
 
 ### Access patterns
 

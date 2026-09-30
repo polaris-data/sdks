@@ -84,6 +84,51 @@ test("catalog auto-paginates across cursor pages", async () => {
   assert.equal(catalog.markets[2].symbol, "BTC");
 });
 
+test("instruments follows cursors and preserves option contract metadata", async () => {
+  const calls = [];
+  const first = {
+    source: "deribit", market: "BTC", instrument: "BTC-1OCT26-70000-C",
+    status: "active", option_type: "call", underlying: "BTC", strike: "70000.0",
+    expiry_timestamp: 1790812800000, contract_size: "1.0", premium_currency: "BTC",
+    statistics: { source: "deribit", market: "BTC", instrument: "BTC-1OCT26-70000-C",
+      fields: { latest_price: { value: "0.025", observed_at: 1790800000000, unit: "BTC" } } },
+  };
+  const second = { ...first, instrument: "BTC-1OCT26-75000-C", strike: "75000.0", statistics: null };
+  const { PolarisClient } = await import("../dist/node/index.js");
+  const client = new PolarisClient({ baseUrl: "https://api.example", fetch: async (input) => {
+    const url = new URL(input);
+    calls.push(url);
+    assert.equal(url.pathname, "/catalog/instruments");
+    const later = url.searchParams.has("cursor");
+    const exact = url.searchParams.has("instrument");
+    return new Response(JSON.stringify({
+      updatedAt: "2026-09-30T00:00:00Z",
+      instruments: later ? [second] : [first],
+      next_cursor: later || exact ? null : "contract-cursor",
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  } });
+  const result = await client.instruments({
+    source: "deribit", market: "BTC", expiry: first.expiry_timestamp, optionType: "call",
+  });
+  assert.deepEqual(result, { updatedAt: "2026-09-30T00:00:00Z", instruments: [first, second] });
+  assert.equal(calls.length, 2);
+  for (const url of calls) {
+    for (const [key, value] of Object.entries({ source: "deribit", market: "BTC",
+      expiry: String(first.expiry_timestamp), option_type: "call", limit: "1000" })) {
+      assert.equal(url.searchParams.get(key), value);
+    }
+  }
+  assert.equal(calls[1].searchParams.get("cursor"), "contract-cursor");
+  const exact = await client.instruments({ source: "deribit", market: "BTC",
+    instrument: first.instrument, q: "70000" });
+  assert.deepEqual(exact.instruments, [first]);
+  assert.equal(calls[2].searchParams.get("instrument"), first.instrument);
+  assert.equal(calls[2].searchParams.get("q"), "70000");
+  await assert.rejects(client.instruments({ source: "deribit", market: "BTC", expiry: -1 }), /expiry/);
+  assert.equal(calls.length, 3);
+  client.close();
+});
+
 test("count returns catalog totals", async () => {
   const fetch = async (url) => {
     const parsed = new URL(url);

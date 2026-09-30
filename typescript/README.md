@@ -81,6 +81,7 @@ Use it to inspect available data, query historical market data, and open realtim
 | --- | --- | --- |
 | `health()` | API health/status payload | Connectivity checks and startup validation |
 | `catalog(opts?)` | Source/market metadata | Discover supported datasets, markets, and time coverage |
+| `instruments({ source, market, instrument?, expiry?, optionType?, q? })` | Option-contract metadata | Discover venue-native contracts for a normalized underlying |
 | `listSnapshots(opts)` | List of snapshot file entries | Inspect snapshot availability before downloading or replaying |
 
 ### Access patterns
@@ -207,6 +208,9 @@ console.log(catalog);
 
 const markets = await client.catalog({ source: "hyperliquid" });
 console.log(markets.markets.map((m) => m.market));
+
+const contracts = await client.instruments({ source: "deribit", market: "BTC", optionType: "call" });
+console.log(contracts.instruments.map((contract) => contract.instrument));
 ```
 
 ### Events from local snapshots and direct trades

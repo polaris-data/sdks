@@ -19,16 +19,17 @@ use crate::{
         BboQuery, BboQuote, CatalogAccess, CatalogCount, CatalogInstrument, CatalogMarket,
         CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic, DownloadManifestQuery,
         DownloadManifestResponse, FundingRateRow, HistoricalQuery, HistoricalRowsQuery,
-        HistoricalStream, IntentData, IntentEvent, IntentEventV2, IntentRow, IntentRowsQuery,
-        L2OrderbooksQuery, L2UpdatesQuery, LegacyIntentEvent, LegacyPerpetualTickerEvent,
-        LegacyPointSeriesEvent, LegacyTradeData, LegacyTradeEvent, ListSnapshotsQuery, OhlcvBar,
-        OhlcvFormat, OhlcvOutput, OhlcvQuery, OhlcvRow, OhlcvRowsQuery, OptionTickerRow,
-        OptionTickerRowsQuery, OrderbookL2Row, PerpetualTickerData, PerpetualTickerEvent,
-        PerpetualTickerEventV2, PointSeriesData, PointSeriesEvent, PointSeriesEventV2,
-        PropammQuoteLadderData, PropammQuoteLadderEvent, QuoteRow, QuoteRowsQuery, RawCaptureRow,
-        RawChannelQuery, RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery,
-        ReplayStream, SnapshotEntry, StandardEvent, StreamQuery, TradeDataV2, TradeEvent,
-        TradeEventV2, TradeRow, VolatilityBar, VolumeBar, VwapBar,
+        HistoricalStream, InstrumentsQuery, InstrumentsResponse, IntentData, IntentEvent,
+        IntentEventV2, IntentRow, IntentRowsQuery, L2OrderbooksQuery, L2UpdatesQuery,
+        LegacyIntentEvent, LegacyPerpetualTickerEvent, LegacyPointSeriesEvent, LegacyTradeData,
+        LegacyTradeEvent, ListSnapshotsQuery, OhlcvBar, OhlcvFormat, OhlcvOutput, OhlcvQuery,
+        OhlcvRow, OhlcvRowsQuery, OptionContract, OptionTickerRow, OptionTickerRowsQuery,
+        OrderbookL2Row, PerpetualTickerData, PerpetualTickerEvent, PerpetualTickerEventV2,
+        PointSeriesData, PointSeriesEvent, PointSeriesEventV2, PropammQuoteLadderData,
+        PropammQuoteLadderEvent, QuoteRow, QuoteRowsQuery, RawCaptureRow, RawChannelQuery,
+        RawQuery, RawReplayQuery, RawReplayStream, RealtimeStream, ReplayQuery, ReplayStream,
+        SnapshotEntry, StandardEvent, StreamQuery, TradeDataV2, TradeEvent, TradeEventV2, TradeRow,
+        VolatilityBar, VolumeBar, VwapBar,
     },
     ohlcv, realtime, replay,
     storage::{
@@ -176,6 +177,106 @@ impl PolarisClient {
             updated_at,
             markets,
             legacy_shape: false,
+        })
+    }
+
+    /// Discover venue-native option contracts for a source and underlying market.
+    pub async fn instruments(
+        &self,
+        query: InstrumentsQuery,
+    ) -> Result<InstrumentsResponse, PolarisError> {
+        if query.source.trim().is_empty() || query.market.trim().is_empty() {
+            return Err(PolarisError::Request(
+                "instruments requires non-empty source and market".to_owned(),
+            ));
+        }
+        if query.expiry.is_some_and(|expiry| expiry < 0) {
+            return Err(PolarisError::Request(
+                "expiry must be non-negative".to_owned(),
+            ));
+        }
+        if query
+            .option_type
+            .as_deref()
+            .is_some_and(|kind| kind != "call" && kind != "put")
+        {
+            return Err(PolarisError::Request(
+                "option_type must be call or put".to_owned(),
+            ));
+        }
+        let mut params = vec![
+            ("source".to_owned(), query.source),
+            ("market".to_owned(), query.market),
+            ("limit".to_owned(), "1000".to_owned()),
+        ];
+        if let Some(value) = query.instrument {
+            params.push(("instrument".to_owned(), value));
+        }
+        if let Some(value) = query.expiry {
+            params.push(("expiry".to_owned(), value.to_string()));
+        }
+        if let Some(value) = query.option_type {
+            params.push(("option_type".to_owned(), value));
+        }
+        if let Some(value) = query.q {
+            params.push(("q".to_owned(), value));
+        }
+
+        let mut instruments = Vec::new();
+        let mut updated_at = None;
+        let mut cursor: Option<String> = None;
+        let mut cursors = BTreeSet::new();
+        loop {
+            let mut page_params = params.clone();
+            if let Some(value) = &cursor {
+                page_params.push(("cursor".to_owned(), value.clone()));
+            }
+            let payload = self
+                .http
+                .get_json("/catalog/instruments", &page_params, AuthMode::IfAvailable)
+                .await?;
+            let page_updated_at = payload
+                .get("updatedAt")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    PolarisError::InvalidResponse(
+                        "instrument catalog response did not include updatedAt".to_owned(),
+                    )
+                })?;
+            if updated_at.is_none() {
+                updated_at = Some(page_updated_at.to_owned());
+            }
+            let page = payload
+                .get("instruments")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    PolarisError::InvalidResponse(
+                        "instrument catalog response did not include instruments".to_owned(),
+                    )
+                })?;
+            for value in page {
+                instruments.push(
+                    serde_json::from_value::<OptionContract>(value.clone()).map_err(|error| {
+                        PolarisError::InvalidResponse(format!("invalid option contract: {error}"))
+                    })?,
+                );
+            }
+            let next = payload
+                .get("next_cursor")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty());
+            let Some(next) = next else { break };
+            if !cursors.insert(next.to_owned()) {
+                return Err(PolarisError::InvalidResponse(
+                    "instrument catalog repeated a cursor".to_owned(),
+                ));
+            }
+            cursor = Some(next.to_owned());
+        }
+        Ok(InstrumentsResponse {
+            updated_at: updated_at.expect("at least one page"),
+            instruments,
         })
     }
 

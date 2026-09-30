@@ -26,6 +26,7 @@ from .models import (
     IntentEvent,
     CatalogCount,
     CatalogResponse,
+    InstrumentsResponse,
     FundingRateRow,
     IntentRow,
     JSONDict,
@@ -438,6 +439,19 @@ class PolarisClient:
         q: str | None = None,
     ) -> CatalogResponse | JSONDict:
         return self._call("catalog", source, market, q)
+
+    def instruments(
+        self,
+        *,
+        source: str,
+        market: str,
+        instrument: str | None = None,
+        expiry: int | None = None,
+        option_type: Literal["call", "put"] | None = None,
+        q: str | None = None,
+    ) -> InstrumentsResponse:
+        """Discover venue-native option contracts for one underlying market."""
+        return self._call("instruments", source, market, instrument, expiry, option_type, q)
 
     def count(self) -> CatalogCount:
         return self._call("count")

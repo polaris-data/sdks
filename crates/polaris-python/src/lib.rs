@@ -321,6 +321,32 @@ impl NativeClient {
         to_python(py, &result)
     }
 
+    #[pyo3(signature = (source, market, instrument=None, expiry=None, option_type=None, q=None))]
+    fn instruments<'py>(
+        &self,
+        py: Python<'py>,
+        source: String,
+        market: String,
+        instrument: Option<String>,
+        expiry: Option<i64>,
+        option_type: Option<String>,
+        q: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let result = py
+            .detach(|| {
+                self.inner.instruments(polaris_data::InstrumentsQuery {
+                    source,
+                    market,
+                    instrument,
+                    expiry,
+                    option_type,
+                    q,
+                })
+            })
+            .map_err(native_error)?;
+        to_python(py, &result)
+    }
+
     fn count<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let result = py.detach(|| self.inner.count()).map_err(native_error)?;
         to_python(py, &result)

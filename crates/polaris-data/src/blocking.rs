@@ -165,6 +165,13 @@ impl PolarisClient {
         self.run(self.inner.catalog(query))
     }
 
+    pub fn instruments(
+        &self,
+        query: crate::InstrumentsQuery,
+    ) -> Result<crate::InstrumentsResponse, PolarisError> {
+        self.run(self.inner.instruments(query))
+    }
+
     pub fn count(&self) -> Result<CatalogCount, PolarisError> {
         self.run(self.inner.count())
     }

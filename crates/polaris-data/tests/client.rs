@@ -5,9 +5,9 @@ use log::Level;
 use logtest::Logger;
 use polaris_data::{
     AmountKind, BboQuery, CatalogQuery, HistoricalQuery, HistoricalRowsQuery, HistoricalStream,
-    IntentRowsQuery, IntentStatus, L2OrderbooksQuery, L2UpdatesQuery, OhlcvFormat, OhlcvInterval,
-    OhlcvOutput, OhlcvQuery, OhlcvRowsQuery, OptionTickerRowsQuery, PolarisClient, PolarisError,
-    QuoteRowsQuery, RawChannelQuery, ReplayQuery, blocking,
+    InstrumentsQuery, IntentRowsQuery, IntentStatus, L2OrderbooksQuery, L2UpdatesQuery,
+    OhlcvFormat, OhlcvInterval, OhlcvOutput, OhlcvQuery, OhlcvRowsQuery, OptionTickerRowsQuery,
+    PolarisClient, PolarisError, QuoteRowsQuery, RawChannelQuery, ReplayQuery, blocking,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -297,6 +297,93 @@ async fn catalog_paginates_across_cursor_pages() {
     assert_eq!(response.markets[0].market, "BTC-USDT");
     assert_eq!(response.markets[1].market, "ETH-USDT");
     assert_eq!(response.markets[2].market, "BTC");
+}
+
+#[tokio::test]
+async fn instruments_paginates_and_preserves_contract_statistics() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().expect("tempdir");
+    let client = build_client(&server, &root);
+    Mock::given(method("GET"))
+        .and(path("/catalog/instruments"))
+        .and(query_param("source", "deribit"))
+        .and(query_param("market", "BTC"))
+        .and(query_param("option_type", "call"))
+        .respond_with(|request: &wiremock::Request| {
+            let params: std::collections::BTreeMap<_, _> =
+                request.url.query_pairs().into_owned().collect();
+            assert_eq!(
+                params.get("expiry").map(String::as_str),
+                Some("1790812800000")
+            );
+            assert_eq!(params.get("limit").map(String::as_str), Some("1000"));
+            let exact = params.get("instrument").is_some();
+            if exact {
+                assert_eq!(
+                    params.get("instrument").map(String::as_str),
+                    Some("BTC-1OCT26-70000-C")
+                );
+                assert_eq!(params.get("q").map(String::as_str), Some("70000"));
+            } else {
+                assert!(params.get("q").is_none());
+            }
+            let later = params.get("cursor").is_some();
+            ResponseTemplate::new(200).set_body_json(json!({
+                "updatedAt": "2026-09-30T00:00:00Z",
+                "instruments": [{
+                    "source": "deribit", "market": "BTC",
+                    "instrument": if later { "BTC-1OCT26-75000-C" } else { "BTC-1OCT26-70000-C" },
+                    "status": "active", "option_type": "call", "underlying": "BTC",
+                    "strike": if later { "75000.0" } else { "70000.0" },
+                    "expiry_timestamp": 1790812800000_i64,
+                    "statistics": if later { serde_json::Value::Null } else { json!({
+                        "source": "deribit", "market": "BTC",
+                        "fields": { "latest_price": {
+                            "value": "0.025", "observed_at": 1790800000000_i64,
+                            "unit": "BTC"
+                        }}
+                    }) }
+                }],
+                "next_cursor": if later || exact { None } else { Some("contract-cursor") }
+            }))
+        })
+        .mount(&server)
+        .await;
+
+    let response = client
+        .instruments(InstrumentsQuery {
+            source: "deribit".to_owned(),
+            market: "BTC".to_owned(),
+            instrument: None,
+            expiry: Some(1790812800000),
+            option_type: Some("call".to_owned()),
+            q: None,
+        })
+        .await
+        .expect("instruments");
+    assert_eq!(response.updated_at, "2026-09-30T00:00:00Z");
+    assert_eq!(response.instruments.len(), 2);
+    assert_eq!(response.instruments[0].strike, "70000.0");
+    assert_eq!(response.instruments[1].strike, "75000.0");
+    assert_eq!(
+        response.instruments[0].statistics.as_ref().unwrap().fields["latest_price"].value,
+        "0.025"
+    );
+    assert!(response.instruments[1].statistics.is_none());
+
+    let exact = client
+        .instruments(InstrumentsQuery {
+            source: "deribit".to_owned(),
+            market: "BTC".to_owned(),
+            instrument: Some("BTC-1OCT26-70000-C".to_owned()),
+            expiry: Some(1790812800000),
+            option_type: Some("call".to_owned()),
+            q: Some("70000".to_owned()),
+        })
+        .await
+        .expect("exact instrument");
+    assert_eq!(exact.instruments.len(), 1);
+    assert_eq!(exact.instruments[0].instrument, "BTC-1OCT26-70000-C");
 }
 
 #[tokio::test]

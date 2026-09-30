@@ -499,6 +499,58 @@ def test_catalog_paginates_across_cursor_pages() -> None:
         client.close()
 
 
+def test_instruments_paginates_and_preserves_contract_statistics() -> None:
+    calls: list[httpx.Request] = []
+    first = {
+        "source": "deribit", "market": "BTC", "instrument": "BTC-1OCT26-70000-C",
+        "status": "active", "option_type": "call", "underlying": "BTC",
+        "strike": "70000.0", "expiry_timestamp": 1790812800000,
+        "statistics": {"source": "deribit", "market": "BTC", "fields": {
+            "latest_price": {"value": "0.025", "observed_at": 1790800000000, "unit": "BTC"},
+        }},
+    }
+    second = {**first, "instrument": "BTC-1OCT26-75000-C", "strike": "75000.0", "statistics": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        assert request.url.path == "/catalog/instruments"
+        assert request.url.params.get("source") == "deribit"
+        assert request.url.params.get("market") == "BTC"
+        assert request.url.params.get("expiry") == "1790812800000"
+        assert request.url.params.get("option_type") == "call"
+        assert request.url.params.get("limit") == "1000"
+        exact = request.url.params.get("instrument") is not None
+        if exact:
+            assert request.url.params.get("instrument") == first["instrument"]
+            assert request.url.params.get("q") == "70000"
+        else:
+            assert request.url.params.get("q") is None
+        later = request.url.params.get("cursor") == "contract-cursor"
+        return httpx.Response(200, json={
+            "updatedAt": "2026-09-30T00:00:00Z",
+            "instruments": [second if later else first],
+            "next_cursor": None if later or exact else "contract-cursor",
+        })
+
+    client = make_client(handler)
+    try:
+        result = client.instruments(
+            source="deribit", market="BTC", expiry=1790812800000, option_type="call",
+        )
+        assert result["updatedAt"] == "2026-09-30T00:00:00Z"
+        assert len(result["instruments"]) == 2
+        assert result["instruments"][0]["statistics"]["fields"]["latest_price"]["value"] == "0.025"
+        assert result["instruments"][1]["statistics"] is None
+        exact = client.instruments(
+            source="deribit", market="BTC", instrument=first["instrument"],
+            expiry=1790812800000, option_type="call", q="70000",
+        )
+        assert [contract["instrument"] for contract in exact["instruments"]] == [first["instrument"]]
+        assert len(calls) == 3
+    finally:
+        client.close()
+
+
 def test_count_returns_catalog_totals() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/count"

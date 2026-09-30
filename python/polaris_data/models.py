@@ -54,6 +54,43 @@ class CatalogResponse(TypedDict):
     updatedAt: str
 
 
+class ObservedStatistic(TypedDict):
+    value: str
+    observed_at: int
+    exchange_timestamp: int | None
+    unit: str | None
+    convention: str | None
+
+
+class OptionContractStatistics(TypedDict):
+    source: str
+    market: str
+    instrument: str | None
+    fields: dict[str, ObservedStatistic]
+
+
+class OptionContract(TypedDict):
+    source: str
+    market: str
+    instrument: str
+    status: str
+    option_type: str
+    underlying: str
+    strike: str
+    expiry_timestamp: int
+    contract_size: str | None
+    exercise_style: str | None
+    premium_currency: str | None
+    quantity_unit: str | None
+    settlement_currency: str | None
+    statistics: OptionContractStatistics | None
+
+
+class InstrumentsResponse(TypedDict):
+    updatedAt: str
+    instruments: list[OptionContract]
+
+
 class CatalogCount(TypedDict):
     updatedAt: str
     sources: int

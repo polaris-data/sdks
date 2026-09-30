@@ -46,6 +46,44 @@ export interface CatalogInstrument {
   min_notional: string | number | null;
 }
 
+/** Venue-native option contract discovered through `/catalog/instruments`. */
+export interface OptionContract {
+  source: string;
+  market: string;
+  instrument: string;
+  status: string;
+  option_type: string;
+  underlying: string;
+  strike: string;
+  expiry_timestamp: number;
+  contract_size?: string | null;
+  exercise_style?: string | null;
+  premium_currency?: string | null;
+  quantity_unit?: string | null;
+  settlement_currency?: string | null;
+  statistics?: OptionContractStatistics | null;
+}
+
+export interface OptionContractStatistics {
+  source: string;
+  market: string;
+  instrument?: string | null;
+  fields: Record<string, ObservedStatistic>;
+}
+
+export interface ObservedStatistic {
+  value: string;
+  observed_at: number;
+  exchange_timestamp?: number | null;
+  unit?: string | null;
+  convention?: string | null;
+}
+
+export interface InstrumentsResponse {
+  updatedAt: string;
+  instruments: OptionContract[];
+}
+
 export interface CatalogMarket {
   source: string;
   market: string;
@@ -679,6 +717,17 @@ export interface PolarisClientOptions {
 export interface CatalogOptions {
   source?: string;
   market?: string;
+}
+
+/** `market` is the normalized option underlying, such as `BTC`. */
+export interface InstrumentsOptions {
+  source: string;
+  market: string;
+  instrument?: string;
+  /** Exact expiry as Unix milliseconds. */
+  expiry?: number;
+  optionType?: "call" | "put";
+  q?: string;
 }
 
 /**
