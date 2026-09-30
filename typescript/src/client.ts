@@ -258,10 +258,10 @@ export class BasePolarisClient {
 
   /** Return flat trades from the direct historical API. */
   async trades(options: HistoricalRowsOptions = {}): Promise<TradeRow[]> {
-    return this._historicalRows("/historical/trades", options, isTradeRow);
+    return this._historicalRows("/trades", options, isTradeRow);
   }
 
-  /** Return exact raw captures from one venue-native channel. */
+  /** Return exact raw captures from one venue-native channel via `/raw`. */
   async rawChannel(options: RawChannelOptions): Promise<RawCaptureRow[]> {
     if (!options.exchange.trim() || !options.event.trim() ||
       options.exchange === "." || options.exchange === ".." ||
@@ -272,19 +272,25 @@ export class BasePolarisClient {
       !Number.isSafeInteger(options.end) || options.end < options.start) {
       throw new PolarisError("start and end must be non-negative inclusive milliseconds with start <= end");
     }
-    const path = `/raw/${encodeURIComponent(options.exchange)}/${encodeURIComponent(options.event)}`;
-    return this._pagedRows(path, {
-      start: String(options.start),
-      end: String(options.end),
+    const start = new Date(options.start);
+    const end = new Date(options.end);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      throw new PolarisError("start and end must be representable ISO timestamps");
+    }
+    return this._pagedRows("/raw", {
+      source: options.exchange,
+      channel: options.event,
+      start: start.toISOString(),
+      end: end.toISOString(),
       limit: "1000",
-    }, isRawCaptureRow);
+    }, isRawCaptureRow, "data");
   }
 
   /** Return pair-shaped flat intent observations. */
   async intents(options: IntentRowsOptions = {}): Promise<IntentRow[]> {
     const instrument = optionalFilter("instrument", options.instrument);
     const intentId = optionalFilter("intentId", options.intentId);
-    return this._historicalRows("/historical/intents", options, isIntentRow, {
+    return this._historicalRows("/intents", options, isIntentRow, {
       ...(instrument !== undefined && { instrument }),
       ...(intentId !== undefined && { intent_id: intentId }),
     });
@@ -294,13 +300,13 @@ export class BasePolarisClient {
   async optionTickers(options: OptionTickerRowsOptions = {}): Promise<OptionTickerRow[]> {
     const instrument = normalizeInstrumentFilter(options.instrument);
     return this._historicalRows(
-      "/historical/options-ticker", options, isOptionTickerRow, instrument ? { instrument } : {},
+      "/options-ticker", options, isOptionTickerRow, instrument ? { instrument } : {},
     );
   }
 
   /** Return funding-bearing perpetual ticker observations. */
   async perpetualTickers(options: HistoricalRowsOptions = {}): Promise<FundingRateRow[]> {
-    return this.fundingRates(options);
+    return this._historicalRows("/perpetual-ticker", options, isFundingRateRow);
   }
 
   /** Return reconstructed, sorted top-25 books after each L2 event. */
@@ -315,20 +321,20 @@ export class BasePolarisClient {
       throw new PolarisError("l2Snapshots requires non-negative inclusive bounds with start <= end");
     }
     const instrument = optionalFilter("instrument", options.instrument);
-    return this._historicalRows("/historical/l2-orderbooks", { ...options, source, market }, isOrderbookL2Row,
+    return this._historicalRows("/l2-orderbooks", { ...options, source, market }, isOrderbookL2Row,
       instrument ? { instrument } : {});
   }
 
   /** Return flat source snapshots and sparse deltas from the direct API. */
   async l2Updates(options: L2UpdatesOptions = {}): Promise<OrderbookL2Row[]> {
     const instrument = optionalFilter("instrument", options.instrument);
-    return this._historicalRows("/historical/l2-updates", options, isOrderbookL2Row,
+    return this._historicalRows("/l2-updates", options, isOrderbookL2Row,
       instrument ? { instrument } : {});
   }
 
   /** Return partial flat funding observations from the direct historical API. */
   async fundingRates(options: HistoricalRowsOptions = {}): Promise<FundingRateRow[]> {
-    return this._historicalRows("/historical/funding-rates", options, isFundingRateRow);
+    return this._historicalRows("/funding-rates", options, isFundingRateRow);
   }
 
   /** Return the latest venue-published revision of each candle. */
@@ -343,7 +349,7 @@ export class BasePolarisClient {
     options: HistoricalQueryOptions,
     interval?: string,
   ): Promise<OhlcvRow[]> {
-    const rows = await this._historicalRows("/historical/ohlcv", {
+    const rows = await this._historicalRows("/ohlcv", {
       source: options.source, market: options.market,
       ...(options.from !== undefined && { start: toEpochMs(options.from) }),
       ...(options.to !== undefined && { end: toEpochMs(options.to) }),
@@ -434,19 +440,19 @@ export class BasePolarisClient {
     path: string,
     params: Record<string, string>,
     isRow: (value: unknown) => value is T,
+    rowKey: "items" | "data" = "items",
   ): Promise<T[]> {
     const rows: T[] = [];
     let cursor: string | undefined;
     while (true) {
-      const page = await this._getJson<{
-        items?: unknown;
-        has_more?: unknown;
-        next_cursor?: unknown;
-      }>(path, { params: cursor ? { ...params, cursor } : params, auth: "if-available" });
-      if (!Array.isArray(page.items) || typeof page.has_more !== "boolean") {
+      const page = await this._getJson<Record<string, unknown>>(path, {
+        params: cursor ? { ...params, cursor } : params, auth: "if-available",
+      });
+      const values = page[rowKey];
+      if (!Array.isArray(values) || typeof page.has_more !== "boolean") {
         throw new PolarisError(`Invalid ${path} page`);
       }
-      for (const item of page.items) {
+      for (const item of values) {
         if (!isRow(item)) throw new PolarisError(`Invalid ${path} row`);
         rows.push(item);
       }
@@ -792,6 +798,7 @@ function isIntentRow(value: unknown): value is IntentRow {
 
 function isRawCaptureRow(value: unknown): value is RawCaptureRow {
   return isRecord(value) &&
+    typeof value.raw_table === "string" &&
     typeof value.capture_id === "string" &&
     Number.isSafeInteger(value.collector_timestamp) &&
     typeof value.recorder_version === "string" &&

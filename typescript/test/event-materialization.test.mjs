@@ -35,7 +35,7 @@ test("direct L2 routes paginate and accept variable ranges", async () => {
     const url = new URL(input);
     calls.push({ url, headers: init.headers });
     const second = url.searchParams.has("cursor");
-    const body = url.pathname === "/historical/l2-updates"
+    const body = url.pathname === "/l2-updates"
       ? { items: [row(!second)], has_more: !second, next_cursor: second ? null : "next" }
       : { items: [row(false)], has_more: false, next_cursor: null };
     return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -64,11 +64,11 @@ test("direct historical rows paginate, filter, and keep flat nullable fields", a
     const url = new URL(input);
     calls.push({ url, headers: init.headers });
     let body;
-    if (url.pathname === "/historical/trades") {
+    if (url.pathname === "/trades") {
       body = url.searchParams.has("cursor")
         ? { items: [trade], has_more: false, next_cursor: null }
         : { items: [trade], has_more: true, next_cursor: "next" };
-    } else if (url.pathname === "/historical/options-ticker") {
+    } else if (url.pathname === "/options-ticker") {
       body = { items: [option], has_more: false, next_cursor: null };
     } else {
       body = { items: [funding, fundingWithoutMark], has_more: false, next_cursor: null };
@@ -92,6 +92,7 @@ test("direct historical rows paginate, filter, and keep flat nullable fields", a
   assert.equal(calls[2].url.searchParams.get("instrument"), option.instrument);
   assert.deepEqual(await client.fundingRates({}), [funding, fundingWithoutMark]);
   assert.deepEqual(await client.perpetualTickers({}), [funding, fundingWithoutMark]);
+  assert.equal(calls[4].url.pathname, "/perpetual-ticker");
   assert.equal(calls[3].url.searchParams.has("start"), false);
   await assert.rejects(
     client.optionTickers({ source: "deribit", market: "BTC", instrument: "" }),
@@ -108,6 +109,7 @@ test("rawChannel pages exact captures with required channel and time bounds", as
   const { PolarisClient } = await import("../dist/node/index.js");
   const calls = [];
   const capture = {
+    raw_table: "raw.binance_trades",
     capture_id: "c1", collector_timestamp: 10, recorder_version: "v1", ingested_at: 11,
     additional_context: { channel: "trades" }, original_json: '{ "price": 1.0 }',
   };
@@ -115,20 +117,24 @@ test("rawChannel pages exact captures with required channel and time bounds", as
     const url = new URL(input);
     calls.push({ url, headers: init.headers });
     const second = url.searchParams.get("cursor") === "next";
-    const body = { items: [{ ...capture, capture_id: second ? "c2" : "c1" }],
+    const body = { data: [{ ...capture, capture_id: second ? "c2" : "c1" }],
       has_more: !second, next_cursor: second ? null : "next" };
     return new Response(JSON.stringify(body), { status: 200 });
   } });
   const rows = await client.rawChannel({ exchange: "binance", event: "trades", start: 10, end: 10 });
   assert.deepEqual(rows.map((row) => row.capture_id), ["c1", "c2"]);
   assert.equal(rows[0].original_json, '{ "price": 1.0 }');
-  assert.equal(calls[0].url.pathname, "/raw/binance/trades");
-  assert.equal(calls[0].url.searchParams.get("start"), "10");
-  assert.equal(calls[0].url.searchParams.get("end"), "10");
+  assert.equal(rows[0].raw_table, "raw.binance_trades");
+  assert.equal(calls[0].url.pathname, "/raw");
+  assert.equal(calls[0].url.searchParams.get("source"), "binance");
+  assert.equal(calls[0].url.searchParams.get("channel"), "trades");
+  assert.equal(calls[0].url.searchParams.get("start"), "1970-01-01T00:00:00.010Z");
+  assert.equal(calls[0].url.searchParams.get("end"), "1970-01-01T00:00:00.010Z");
   assert.equal(calls[0].headers.Authorization, "Bearer secret");
   assert.equal(calls[1].url.searchParams.get("cursor"), "next");
   await assert.rejects(client.rawChannel({ exchange: "", event: "trades", start: 10, end: 10 }), /exchange and event/);
   await assert.rejects(client.rawChannel({ exchange: "binance", event: "trades", start: 11, end: 10 }), /start and end/);
+  await assert.rejects(client.rawChannel({ exchange: "binance", event: "trades", start: Number.MAX_SAFE_INTEGER, end: Number.MAX_SAFE_INTEGER }), /representable ISO timestamps/);
   client.close();
 });
 
@@ -141,7 +147,7 @@ test("intents use the direct route with an exact filter", async () => {
   const client = new PolarisClient({ baseUrl: "https://api.example", apiKey: "secret", fetch: async (input, init) => {
     const url = new URL(input);
     calls.push({ url, headers: init.headers });
-    assert.equal(url.pathname, "/historical/intents");
+    assert.equal(url.pathname, "/intents");
     return new Response(JSON.stringify({ items: [intent], has_more: false, next_cursor: null }), { status: 200 });
   } });
   assert.deepEqual(await client.intents({ intentId: "intent-1" }), [intent]);
@@ -165,7 +171,7 @@ test("venue candle aggregates use latest revisions and reported volumes", async 
     open_timestamp: start + i * 10_000, open: price, high: price, low: price, close: price }));
   const client = new PolarisClient({ baseUrl: "https://api.example", fetch: async (input) => {
     const url = new URL(input);
-    assert.equal(url.pathname, "/historical/ohlcv");
+    assert.equal(url.pathname, "/ohlcv");
     assert.equal(url.searchParams.get("start"), String(start));
     assert.equal(url.searchParams.get("end"), String(start + 60_000));
     const second = url.searchParams.has("cursor");

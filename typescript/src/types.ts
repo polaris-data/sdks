@@ -157,7 +157,7 @@ export interface TradeEventV2 extends StandardEventV2 {
 
 export type TradeEvent = LegacyTradeEvent | TradeEventV2;
 
-/** Flat row returned by GET /historical/trades. */
+/** Flat row returned by GET /trades. */
 export interface TradeRow {
   event_id: string;
   source: string;
@@ -283,7 +283,7 @@ export interface OptionTickerEventV2 extends StandardEventV2 {
 
 export type OptionTickerEvent = LegacyOptionTickerEvent | OptionTickerEventV2;
 
-/** Partial flat row returned by GET /historical/options-ticker. */
+/** Partial flat row returned by GET /options-ticker. */
 export interface OptionTickerRow {
   event_id: string;
   source: string;
@@ -377,7 +377,7 @@ export interface FundingRateData extends Record<string, unknown> {
 
 export type FundingRateEvent = PointSeriesEvent & { data: FundingRateData };
 
-/** Partial flat row returned by GET /historical/funding-rates. */
+/** Partial flat row returned by GET /funding-rates. */
 export interface FundingRateRow {
   event_id: string;
   source: string;
@@ -396,7 +396,7 @@ export interface FundingRateRow {
   premium?: string | null;
 }
 
-/** Venue-published candle update from /historical/ohlcv. */
+/** Venue-published candle update from /ohlcv. */
 export interface OhlcvRow {
   event_id: string; source: string; market: string; collector_timestamp: number;
   source_capture_id: string; schema_version: number; interval: string;
@@ -406,7 +406,7 @@ export interface OhlcvRow {
   quote_volume?: number | null; trade_count?: number | null; is_closed?: boolean | null;
 }
 
-/** Pair-shaped intent observation from /historical/intents. */
+/** Pair-shaped intent observation from /intents. */
 export interface IntentRow {
   event_id: string; source: string; market: string; collector_timestamp: number;
   source_capture_id: string; schema_version: number;
@@ -420,7 +420,7 @@ export interface IntentRow {
   rfq_id?: string | null; settled_at?: number | null; status?: string | null;
 }
 
-/** Individual PropAMM quote point from /historical/quotes. */
+/** Individual PropAMM quote point from /quotes. */
 export interface QuoteRow {
   event_id: string; source: string; market: string; instrument: string;
   collector_timestamp: number; source_capture_id: string; schema_version: number;
@@ -432,8 +432,9 @@ export interface QuoteRow {
   exchange_timestamp?: number | null; oracle?: string | null; pool?: string | null;
 }
 
-/** Exact raw capture from GET /raw/{exchange}/{event}. */
+/** Exact raw capture from GET /raw. */
 export interface RawCaptureRow {
+  raw_table: string;
   capture_id: string;
   collector_timestamp: number;
   recorder_version: string;
