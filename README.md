@@ -1,53 +1,16 @@
 # Polaris SDKs
 
-The official Rust, Python, and TypeScript SDKs for the Polaris API. Rust and
-Python share one Rust engine; TypeScript is an independent Node.js and browser
-package. All three distributions are named `polaris-data`, with Python
-importing as `polaris_data`.
-
-Documentation can be found at https://polaris.supply/docs
+Rust, Python, and TypeScript clients for the Polaris API. Rust and Python share the Rust core; TypeScript supports Node.js and browsers. All three packages are named `polaris-data`, and the Python import is `polaris_data`.
 
 ## Install
 
-Install the Python SDK from PyPI:
-
 ```bash
 pip install polaris-data
-```
-
-If you use `uv`, install it into a project with:
-
-```bash
-uv add polaris-data
-```
-
-Or install it into the active environment with:
-
-```bash
-uv pip install polaris-data
-```
-
-Install optional notebook and Arrow support with:
-
-```bash
-pip install "polaris-data[dataframe]"  # Pandas + PyArrow
-pip install "polaris-data[arrow]"      # PyArrow batches only
-```
-
-Install the Rust SDK from crates.io:
-
-```bash
 cargo add polaris-data
-```
-
-Install the TypeScript SDK from npm:
-
-```bash
 npm install polaris-data
 ```
 
-Python wheels always include the Rust core. CPython 3.9+ is supported through
-PyO3's stable ABI; there is no pure-Python runtime fallback.
+For Python Arrow batches or Pandas DataFrames, install `polaris-data[arrow]` or `polaris-data[dataframe]`.
 
 ## Quickstart
 
@@ -55,514 +18,75 @@ PyO3's stable ABI; there is no pure-Python runtime fallback.
 from polaris_data import PolarisClient
 
 with PolarisClient(api_key="polaris_key_your_key") as client:
-    row_count = sum(
-        1
-        for _ in client.replay(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
-        )
-    )
-    print(f"Replayed {row_count} rows")
+    for trade in client.trades(source="binance", market="BTC-USDT"):
+        print(trade["price"], trade["quantity"])
 ```
 
-If `api_key` is omitted, the client reads `POLARIS_API_KEY` from the environment.
+```typescript
+import { PolarisClient } from "polaris-data";
 
-The equivalent async Rust workflow is:
+const client = new PolarisClient({ apiKey: "polaris_key_your_key" });
+const trades = await client.trades({ source: "binance", market: "BTC-USDT" });
+console.log(trades[0]?.price);
+client.close();
+```
 
-```rust,no_run
+```rust
 use futures_util::StreamExt;
-use polaris_data::{PolarisClient, ReplayQuery};
+use polaris_data::{HistoricalRowsQuery, PolarisClient};
 
-#[tokio::main]
-async fn main() -> Result<(), polaris_data::PolarisError> {
-    let client = PolarisClient::builder().build()?;
-    let mut rows = client
-        .replay(ReplayQuery {
-            source: "binance".into(),
-            market: "BTC-USDT".into(),
-            from: Some("2024-01-01T00:00:00Z".into()),
-            to: Some("2024-01-01T01:00:00Z".into()),
-            allow_gaps: false,
-            materialize_orderbooks: true,
-        })
-        .await?;
-
-    while let Some(row) = rows.next().await {
-        println!("{:?}", row?);
-    }
-    Ok(())
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let client = PolarisClient::builder().build()?;
+let mut trades = client.trades(HistoricalRowsQuery {
+    source: Some("binance".into()),
+    market: Some("BTC-USDT".into()),
+    ..Default::default()
+}).await?;
+while let Some(row) = trades.next().await {
+    println!("{}", row?.price);
 }
+# Ok(())
+# }
 ```
 
-For synchronous Rust applications use
-`polaris_data::blocking::PolarisClient`. It owns a Tokio runtime and returns
-`PolarisError::BlockingInAsyncRuntime` when called from an active Tokio runtime,
-instead of panicking.
+## Historical methods
 
-## Realtime streams
+All direct historical methods fetch every cursor page. Their `start` and `end` filters are inclusive Unix milliseconds; omitted bounds use the API default window where the route permits it. Older ranges may require an API key.
 
-`stream(...)` opens an unbounded WebSocket feed of the same standardized event
-shape returned by `replay(...)`. A stream covers one source and up to 1,000
-markets, reconnects automatically after transport failures, and closes when its
-iterator is dropped or explicitly closed.
+| Rust / Python | TypeScript | API route | Result |
+| --- | --- | --- | --- |
+| `trades` | `trades` | `/historical/trades` | Flat trade rows |
+| `option_tickers` | `optionTickers` | `/historical/option-tickers` | Flat option observations; optional exact `instrument` |
+| `funding_rates` | `fundingRates` | `/historical/funding-rates` | Flat partial funding observations with nullable fields |
+| `perpetual_tickers` | `perpetualTickers` | `/historical/funding-rates` | Funding-bearing observations; not a complete ticker stream |
+| `mark_prices` | `markPrices` | `/historical/funding-rates` | Funding observations with a present `mark_price`; not a complete mark stream |
+| `ohlcv_rows` | `ohlcvRows` | `/historical/ohlcv` | Each venue candle update, including revisions |
+| `intent_rows`, `intents` | `intentRows`, `intents` | `/historical/intents` | Single input/output asset observations |
+| `quote_rows` | `quoteRows` | `/historical/quotes` | Individual quote observations |
+| `l2_updates` | `l2Updates` | `/historical/l2-updates` | Flat source snapshots and sparse deltas |
+| `l2_snapshots` | `l2Snapshots` | `/historical/l2-orderbooks` | Reconstructed, sorted top-25 books after each update |
+| `bbo`, `bbo_changes` (Rust) | `bbo` | `/historical/l2-orderbooks` | Quotes derived from reconstructed books |
+| `depth_metrics` | `depthMetrics` | `/historical/l2-orderbooks` | Metrics from the available top-25 levels |
+| `ohlcv`, `volume`, `vwap`, `volatility` | Same names, plus `ohlcvTradingView` | `/historical/ohlcv` | Aggregates from venue candle updates |
+| `raw_channel` | `rawChannel` | `/raw/{exchange}/{event}` | Exact venue-native capture text |
 
-```python
-from polaris_data import PolarisClient
+Python returns iterators by default and supports Arrow batches or Pandas DataFrames on methods with an `output` option. Rust uses async streams and also offers a blocking facade. TypeScript returns arrays. `catalog`, `count`, `instruments`, `health`, and realtime `stream` remain available. Rust and Python retain the older source/market `raw` method separately from `raw_channel`.
 
-with PolarisClient(api_key="polaris_key_your_key") as client:
-    with client.stream(source="binance", markets=["BTC-USDT", "ETH-USDT"]) as events:
-        for event in events:
-            print(event)
-```
+`l2_snapshots` refers to reconstructed L2 books, not the removed `/snapshots` API. Its `source`, `market`, `start`, and `end` inputs are required. The book rows contain at most 25 levels per side, so depth calculations use only those levels. `OrderbookBuilder` still accepts realtime event envelopes.
 
-The equivalent async Rust workflow is:
+## Breaking changes
 
-```rust,no_run
-use futures_util::StreamExt;
-use polaris_data::{PolarisClient, StreamQuery};
+The SDKs no longer expose `events`, `replay`, `list_snapshots` / `listSnapshots`, or the snapshot-backed `propamm_quote_ladders` / `propammQuoteLadders`. TypeScript also removes `getSnapshotDownloadUrls`. Rust and Python remove their cross-channel `raw_replay` variants; Python's `replay(standard=False)` disappears with `replay`. The channel-specific `raw_channel` / `rawChannel` method remains.
 
-#[tokio::main]
-async fn main() -> Result<(), polaris_data::PolarisError> {
-    let client = PolarisClient::builder().build()?;
-    let mut events = client.stream(StreamQuery {
-        source: "binance".into(),
-        markets: vec!["BTC-USDT".into(), "ETH-USDT".into()],
-        instrument: None,
-        include_buffer: false,
-        materialize_orderbooks: true,
-    }).await?;
+Use the matching direct historical method for flat rows, `quote_rows` / `quoteRows` for individual PropAMM quotes, and `raw_channel` / `rawChannel` for exact raw captures. Full standardized event replay and complete PropAMM quote ladders have no replacement method yet. These SDKs no longer call `/snapshots` or `/download`.
 
-    while let Some(event) = events.next().await {
-        println!("{:?}", event?);
-    }
-    Ok(())
-}
-```
-
-Orderbooks are materialized by default. A standardized `orderbook` event replaces
-the complete book; each `orderbook_delta` updates only its listed prices, and a
-zero quantity deletes that price. Materialized output is relabeled `orderbook`
-and uses sorted `{price, quantity}` levels. Set `materialize_orderbooks=False`
-(Python), `materialize_orderbooks: false` (Rust), or
-`materializeOrderbooks: false` (TypeScript) to receive raw deltas.
-
-Reconnection is best-effort: the current live protocol has no resume cursor, so
-a reconnect can introduce a gap or duplicate event. The SDK clears reconstructed
-books on reconnect and suppresses later deltas until a new snapshot arrives.
-Protocol and authentication errors are terminal and are not retried.
-
-For option sources, `market` remains the normalized underlying (for example,
-`BTC`) and `instrument` is the exact option contract. Omit `instrument` to
-subscribe to the entire option chain, or provide a non-empty exact instrument
-to narrow every market subscription in the stream.
-
-For snapshot-backed standardized orderbook events, use `events(..., materialize_orderbooks=False)` or replay. `OrderbookBuilder` accepts those event envelopes. The direct `l2_updates()` and `l2_snapshots()` methods below return flat top-25 rows and are not inputs to the builder.
-
-```python
-from polaris_data import OrderbookBuilder
-
-books = OrderbookBuilder()
-books.update(snapshot)
-books.update(delta)  # False until a snapshot initializes this book
-complete = books.snapshot("lighter", "BTC-USD")
-books.clear_book("lighter", "BTC-USD")
-```
-
-`update()` mutates book state without constructing a full result. Call
-`snapshot()` only when you need sorted levels. The existing `apply()` method
-remains available as a compatibility shortcut that performs both operations.
-
-## PolarisClient API
-
-`PolarisClient` is the main sync client for the SDK:
-
-```python
-PolarisClient(
-    api_key=None,
-    base_url="https://api.polaris.supply",
-    timeout=30.0,
-    dataset_root=None,
-    stream_url=None,
-)
-```
-
-Use it to inspect available data, query historical market data, and open realtime streams.
-
-### Discovery
-
-| Method | Returns | Use case |
-| --- | --- | --- |
-| `health()` | API health/status payload | Connectivity checks and startup validation |
-| `catalog(source=None, market=None, q=None)` | Source/market metadata, including normalized instrument fields | Discover supported datasets, markets, instrument metadata, and time coverage |
-| `instruments(source=..., market=..., instrument=None, expiry=None, option_type=None, q=None)` | Option-contract metadata | Discover venue-native contracts for a normalized underlying; `expiry` is Unix milliseconds |
-
-### Access patterns
-
-| Method | Returns | Use case |
-| --- | --- | --- |
-| `replay(source=..., market=..., from_=None, to=None, standard=True, allow_gaps=False, parallel=False, materialize_orderbooks=True, output="iterator", batch_size=65536)` | Iterator, exact Arrow batches, or Pandas DataFrame | Backfills and lossless replay-style processing |
-| `stream(source=..., markets=[...], instrument=None, include_buffer=False, materialize_orderbooks=True)` | Closeable iterator of realtime events | Open-ended normalized market data with automatic reconnection and optional exact-instrument filtering |
-| `raw(source=..., market=..., from_=None, to=None, limit=1000)` | List of raw source payloads | Inspect exchange-native payloads and compare raw vs standardized schemas |
-| `raw_channel(exchange=..., event=..., start=..., end=...)` | Iterator of `RawCaptureRow` values | Query exact captures from one venue-native channel |
-
-### Standardized Data Schemas
-
-| Method | Returns | Use case |
-| --- | --- | --- |
-| `events(source=..., market=..., from_=None, to=None, allow_gaps=False, materialize_orderbooks=True, output="iterator", batch_size=65536)` | Iterator, exact Arrow batches, or Pandas DataFrame | General-purpose historical analysis and exact event transport |
-| `trades(source=None, market=None, start=None, end=None, output="iterator", batch_size=65536)` | Flat `TradeRow` iterator, Arrow batches, or Pandas DataFrame | Direct trade queries and notebook analysis |
-| `intents(source=None, market=None, instrument=None, intent_id=None, start=None, end=None)` | Iterator of flat `IntentRow` values | Pair-shaped RFQ and intent observations |
-| `option_tickers(source=None, market=None, instrument=None, start=None, end=None)` | Iterator of flat `OptionTickerRow` values | Read an underlying's whole option chain or one exact contract |
-| `perpetual_tickers(source=None, market=None, start=None, end=None)` | Iterator of flat `FundingRateRow` values | Read funding-bearing perpetual ticker observations |
-| `l2_snapshots(source=..., market=..., start=..., end=..., instrument=None)` | Iterator of flat `OrderbookL2Row` values | Reconstructed, sorted top-25 book after each L2 event |
-| `l2_updates(source=None, market=None, instrument=None, start=None, end=None)` | Iterator of flat `OrderbookL2Row` values | Stateless source snapshots and sparse deltas |
-| `funding_rates(source=None, market=None, start=None, end=None, output="iterator", batch_size=65536)` | Flat `FundingRateRow` iterator, Arrow batches, or Pandas DataFrame | Partial funding observations |
-| `ohlcv_rows(source=None, market=None, instrument=None, interval=None, start=None, end=None)` | Iterator of flat `OhlcvRow` values | Every venue-published candle update, including open-candle revisions |
-| `intent_rows(source=None, market=None, instrument=None, intent_id=None, start=None, end=None)` | Iterator of flat `IntentRow` values | Pair-shaped intent observations and exact intent ID filtering |
-| `quote_rows(source=None, market=None, instrument=None, observation_id=None, start=None, end=None)` | Iterator of flat `QuoteRow` values | Individual PropAMM quote points and exact observation filtering |
-| `mark_prices(source=None, market=None, start=None, end=None, output="iterator", batch_size=65536)` | Flat `FundingRateRow` iterator, Arrow batches, or Pandas DataFrame | Mark prices published with funding observations |
-| `propamm_quote_ladders(source=..., market=..., from_=None, to=None, allow_gaps=False, output="iterator", batch_size=65536)` | Iterator, exact Arrow batches, or Pandas DataFrame | PropAMM execution-quote analysis with full-precision Ethereum amounts |
-| `ohlcv(source=..., market=..., from_=None, to=None, interval=..., format=None, allow_gaps=False, output="records")` | Aggregated OHLCV records or Pandas DataFrame | Charting, bar-based strategies, and downstream TA workflows |
-| `volume(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False, output="records")` | Bucketed volume records or Pandas DataFrame | Volume profiling and participation analysis |
-| `vwap(source=..., market=..., from_=None, to=None, interval=..., allow_gaps=False, output="records")` | Bucketed VWAP records or Pandas DataFrame | Execution benchmarking and price smoothing |
-| `volatility(source=..., market=..., from_=None, to=None, interval=..., method="log_returns", allow_gaps=False, output="records")` | Bucketed volatility records or Pandas DataFrame | Risk modeling and intraperiod volatility analysis |
-| `bbo(source=..., market=..., start=..., end=..., interval=None, changes_only=False, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Spread tracking, quote analytics, and top-of-book monitoring |
-| `depth_metrics(source=..., market=..., start=..., end=..., depth_pct=0.01, slippage_notional=10000.0, output="iterator", batch_size=65536)` | Iterator, Arrow batches, or Pandas DataFrame | Liquidity analysis and market impact estimation |
-
-Historical row methods are single-pass iterators. Iterate them directly for bounded memory, or call `list(...)` when you intentionally want an eager result. Direct endpoint request and decode errors can occur while iterating. If you stop early, call the generator's `close()` method to promptly release its native reader. `bbo(interval="1s")` emits the last quote from each non-empty, UTC-aligned interval.
-
-`trades`, `option_tickers`, and `funding_rates` query `/historical/trades`, `/historical/options-ticker`, and `/historical/funding-rates` respectively. Their `start` and `end` bounds are inclusive Unix milliseconds, and omitted bounds use the API defaults. They follow all cursor pages and return flat rows; fields such as `price`, `funding_rate`, and option Greeks are at the top level rather than under `data`. These methods no longer accept `from_`, `to`, or `allow_gaps`. Older direct history requires an API key and these methods do not provide snapshot coverage checks or local caching.
-
-`l2_updates` queries `/historical/l2-updates` with optional filters and inclusive Unix-millisecond bounds; omitted bounds use the API default window. `l2_snapshots` queries `/historical/l2-orderbooks` with required `source`, `market`, `start`, and `end`, plus optional `instrument`. Both follow cursor pages and return fixed top-25 nullable price and size fields. The `source_event_is_snapshot` flag identifies the original event: `l2_snapshots` includes books reconstructed after deltas too. These are breaking return-type and query changes; use `events` or replay for event envelopes and full-depth reconstruction. Older ranges require an API key. The orderbook route also has server limits of 100,000 raw captures, 1 GiB read, and 30 seconds.
-
-`bbo` and `depth_metrics` derive their results from `/historical/l2-orderbooks` using required inclusive Unix-millisecond `start` and `end` bounds. Rust `bbo_changes` and Python `bbo(changes_only=True)` use the same route. These methods no longer accept `from_`, `to`, or `allow_gaps`, and no longer use snapshot coverage or local book caches. BBO uses the best visible prices and sizes. Depth, imbalance, and slippage use at most 25 levels per side; depth can be understated when the requested percentage reaches beyond level 25, and slippage fields are null if the visible levels cannot fill the target. Large queries remain subject to the route's capture, read-byte, and time budgets.
-
-`raw_channel` queries `/raw/{exchange}/{event}` with required inclusive Unix-millisecond bounds and follows all cursor pages. For example, `list(client.raw_channel(exchange="binance", event="trades", start=1704067200000, end=1704067200000))` returns capture metadata and `original_json` as exact text. It does not parse that JSON. The route exposes the latest seven days without a key; older ranges require an API key. The existing source/market `raw` and raw replay methods retain their current interface.
-
-`ohlcv_rows`, `intent_rows`, and `quote_rows` query their matching `/historical/*` routes with optional exact filters and inclusive Unix-millisecond bounds. They follow all cursor pages; omitted bounds use the API's default recent window. `ohlcv_rows` returns every published candle update and filters bounds by candle open time. `intent_rows` includes pair-shaped observations but not multi-asset intents. `quote_rows` returns individual quote points rather than complete quote ladders. `intents` now has the same pair-shaped scope as `intent_rows`; `propamm_quote_ladders` remains snapshot-backed.
-
-`perpetual_tickers` now returns all flat funding-bearing observations from `/historical/funding-rates`. `mark_prices` returns only those rows whose nullable `mark_price` is present. These methods no longer expose the full perpetual-ticker or mark-price event streams. Their inputs are optional `source` and `market` plus inclusive Unix-millisecond `start` and `end`; `from_`, `to`, and `allow_gaps` have been removed. Use `events` or `replay` for the original event envelopes.
-
-`ohlcv`, `volume`, `vwap`, and `volatility` now read venue candle updates from `/historical/ohlcv`. For each candle, they use the latest collector revision. `ohlcv` and `volume` use the requested exact candle interval and venue base volume; missing volume or trade count is represented as zero. `vwap` divides venue quote volume by base volume, falling back to close times base volume when quote volume is absent. `volatility` calculates sample standard deviation of log returns from the finest available candle closes shorter than the requested interval; it returns no row when fewer than two returns fall in a bucket. These calculations are not trade-level aggregates. Their existing `from_` and `to` inputs are applied as inclusive candle-open bounds; `allow_gaps` remains accepted but does not trigger snapshot coverage checks.
-
-Standardized replay automatically prefetches and decompresses one subsequent
-snapshot file on a bounded background worker while preserving file and row
-order. The legacy `parallel` argument remains accepted for compatibility; raw
-replay still uses its historical 24-hour chunking behavior.
-
-The columnar methods above accept `output="batches"` for a bounded
-iterator of `pyarrow.RecordBatch` objects or `output="dataframe"` for an eager
-Pandas DataFrame. Typed-series output flattens fields, uses UTC millisecond
-timestamps, and dictionary-encodes source, market, and side. Venue-specific
-trade and point fields appear as sorted `extra.<name>` columns; discovering
-those fields requires one schema pass before batches are emitted.
-Trade output includes nullable `maker` and `taker` fields when the venue
-publishes account or address identifiers.
-
-Perpetual ticker rows preserve venue decimal values as strings. They contain
-only values published with funding observations:
-
-```python
-for row in client.perpetual_tickers(source="hyperliquid", market="BTC"):
-    print(row.get("mark_price"), row.get("funding_rate"))
-```
-
-The eager aggregate methods (`ohlcv`, `volume`, `vwap`, and `volatility`)
-accept `output="dataframe"` for a fixed-schema Pandas DataFrame with a UTC
-millisecond `timestamp` column. Their default `output="records"` preserves the
-existing list-of-dictionaries response. TradingView-formatted OHLCV output is
-available only as records.
-
-Common notebook preamble helpers are available from `polaris_data.utils`:
-
-```python
-from polaris_data.utils import (
-    accessible_bounds,
-    as_utc,
-    bounded_rows,
-    event_timestamp,
-)
-```
-
-`accessible_bounds` clips preview catalog entries to their public day,
-`bounded_rows` safely closes partially consumed iterators, and the timestamp
-helpers return timezone-aware Pandas timestamps. Install
-`polaris-data[dataframe]` to use the Pandas-backed helpers.
-
-PropAMM quote ladders retain their complete v2 record envelope. Quote amounts
-remain decimal strings so values across the full Ethereum `uint256` range are
-lossless; `oracle` may be `None`, and Metric records additionally include
-`pool`:
-
-```python
-for event in client.propamm_quote_ladders(
-    source="metric",
-    market="ethereum",
-    from_="2024-01-01T00:00:00Z",
-    to="2024-01-01T01:00:00Z",
-):
-    print(event["data"]["values"]["quotes"])
-```
-
-`intents` returns pair-shaped flat observations from `/historical/intents`:
-
-```python
-for source in ("uniswapx", "lifi", "cowswap"):
-    for event in client.intents(
-        source=source,
-        market="intents",
-        start=1704067200000,
-        end=1704070800000,
-    ):
-        print(source, event.get("rfq_id"), event.get("intent_id"), event.get("status"))
-```
-
-When the standardized row owns the exact captured upstream payload, it is
-available as `event["raw"]` alongside the canonical `event["data"]`.
-
-Exact `events()` and standardized `replay()` batches use UTC microsecond
-timestamps and preserve storage order without timestamp sorting. Every row has
-stable `replay_ordinal`, `source_file_ordinal`, and `source_row_ordinal` fields,
-plus nullable legacy `timestamp` and v2 `collector_timestamp`,
-`collector_sequence`, `exchange_timestamp`, and `exchange_sequence` fields.
-Common trade, order-book, and point payloads have typed columns, including
-nullable `order_id`, `side`, and `is_snapshot`. With raw order-book
-updates, `event_json` preserves the complete source event, including unknown
-event types and venue-specific fields; with materialization enabled it contains
-the resulting complete-book event.
-Use `materialize_orderbooks=False` for execution replay so batches contain the
-initial snapshot and every ordered delta.
-
-Metadata-framed event schema v2 uses `collector_timestamp` for SDK filtering,
-bucketing, and replay timing while retaining nullable venue
-`exchange_timestamp` as provenance. Rust exposes this through
-`StandardEvent::V2` and the shared `timestamp()` accessor; Python preserves the
-v2 dictionary shape; TypeScript exports a structural legacy/v2 union. See the
-[schema v2 migration guide](https://docs.polaris.supply/guides/event-schema-v2-migration).
-
-For parameter details, response shapes, and end-to-end examples, see the
-[Python SDK docs](https://docs.polaris.supply/sdks/python).
-
-## Benchmarks
-
-### Streaming and memory
-
-Run the opt-in end-to-end benchmark after building the Python extension:
-
-```bash
-uv run python benchmarks/streaming_memory.py
-```
-
-It generates a 3,000-level local book with one million deltas, consumes raw standardized events, snapshot event L2 updates, and lazy application-managed books in isolated processes, and reports end-to-end wall time, rows per second, and peak RSS. The command fails when peak RSS from 100,000 to one million deltas grows by more than the larger of 20% or 64 MiB, or when long-run throughput falls below 75% of short-run throughput.
-
-Optionally set machine-specific throughput floors:
-
-```bash
-uv run python benchmarks/streaming_memory.py \
-  --min-rps events=50000 \
-  --min-rps l2_updates=500000 --min-rps l2_builder=250000
-```
-
-Compare iterator, native RecordBatch, and native DataFrame paths over the
-788,383-trade fixture with:
-
-```bash
-uv run python benchmarks/columnar.py
-```
-
-Compare exact dictionary replay with microsecond Arrow batches across trade,
-point, shallow-book, and deep-book fixtures using explicitly page-cache-warm
-samples and recorded hardware metadata with:
-
-```bash
-uv run python benchmarks/exact_events.py --events 788383 --runs 3
-```
-
-Evaluate first-use Arrow IPC construction, disk amplification, and repeated
-memory-mapped scans without enabling a persistent SDK cache with:
-
-```bash
-uv run python benchmarks/replay_cache_prototype.py --events 788383
-```
-
-The standardized IPC cache is deliberately not enabled by the SDK yet. The
-prototype reports cache-build cost, compressed-source versus IPC disk size, and
-warm scan throughput so a persistent format can be chosen against real venue
-datasets. Adoption also requires versioned cache keys, atomic multi-process
-construction, corruption recovery, invalidation, and an eviction policy.
-
-The benchmark runs each mode in a separate process and reports elapsed time,
-throughput, peak and incremental RSS, row count, and a price checksum. It does
-not enforce machine-specific performance thresholds. Its
-`list-json-normalize` mode is a worst-case convenience pattern: it first
-materializes every nested row dictionary with `list(client.events(...))`, then
-calls `pandas.json_normalize(...)`. The resulting peak RSS includes the Python
-row objects and Pandas conversion temporaries, not just the final DataFrame.
-
-Full-book materialization remains available as an explicitly scaled benchmark:
-
-```bash
-uv run python benchmarks/streaming_memory.py --modes l2 \
-  --short-deltas 100 --long-deltas 1000
-```
-
-Absolute throughput floors are intentionally opt-in because results vary by hardware and build profile.
-
-### Local event replay
-
-Use the focused local replay benchmark to compare direct zstd+orjson decoding
-with `events()` and `replay()`:
-
-```bash
-uv run python benchmarks/local_replay.py \
-  --fixture trade --events 788383
-```
-
-The benchmark warms the filesystem cache, runs each path in an isolated
-process, and reports iterator construction time, time to first event,
-steady-state throughput, and peak RSS growth. Pass `--enforce-targets` to require
-the SDK to deliver the first event in under 10 ms, process at least 500,000
-events/s, and stay within 2× of direct zstd+orjson.
-
-### Reference results
-
-The streaming and memory results below came from a local development build.
-The raw modes used the default million-update scale; materialized L2 used the
-explicit 1,000-update scale shown above.
-The local replay results came from one Apple Silicon macOS release run using
-the synthetic 788,383-event UNI-sized trade fixture.
-The exact-event results are three-run medians from page-cache-warm 200,000-event
-trade, point, shallow-book, and deep-book fixtures on Apple Silicon macOS.
-
-| Benchmark | Path | Scale | Construction | First event | Throughput | Memory result |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Streaming and memory | Raw events | 1,000,001 rows | — | — | 1.10M rows/s | 30.7 MiB peak RSS |
-| Streaming and memory | Direct BBO | 1,000,001 quotes | — | — | 866k rows/s | 30.4 MiB peak RSS |
-| Streaming and memory | Raw L2 updates | 1,000,001 updates | — | — | 1.15M rows/s | 30.8 MiB peak RSS |
-| Streaming and memory | Lazy 3,000-level builder | 1,000,001 updates | — | — | 443k rows/s | 36.3 MiB peak RSS |
-| Streaming and memory | Materialized 3,000-level L2 | 1,001 books | — | — | 646 books/s | 36.9 MiB peak RSS |
-| Local replay | Direct zstd+orjson | 788,383 events | <0.01 ms | 0.08 ms | 2.33M events/s | +0.4 MiB peak RSS |
-| Local replay | SDK `events()` | 788,383 events | 0.71 ms | 0.07 ms | 1.20M events/s | +2.5 MiB peak RSS |
-| Local replay | SDK `replay()` | 788,383 events | 0.72 ms | 0.10 ms | 1.20M events/s | +3.1 MiB peak RSS |
-| Exact events | Python dictionary iterator | 200,000 events per fixture | — | — | 722k–824k events/s | +3.1–4.6 MiB peak RSS |
-| Exact events | Arrow batches | 200,000 events per fixture | — | — | 976k–1.13M events/s | +50.7–56.2 MiB peak RSS |
-
-In these runs, `events()` was 1.94× the direct decoder time while exceeding the
-500,000 events/s target by more than 2×. Exact Arrow batches were 1.35–1.41×
-faster than the per-event Python dictionary iterator across the four fixture
-shapes. Construction and first-event latency were reported separately; together
-they remained under 0.8 ms for `events()`.
-
-## Local dataset storage
-
-Standardized snapshots are stored under the shared Polaris app-data root so the Python SDK and CLI can reuse the same files. Legacy materialized day files are also recognized when present.
-
-Default roots:
-
-- macOS: `~/Library/Application Support/polaris`
-- Linux: `$XDG_DATA_HOME/polaris` or `~/.local/share/polaris`
-- Windows: `%APPDATA%\\polaris`
-
-Within that root, the SDK uses the same layout as the CLI:
-
-```text
-<root>/
-  data/
-  daily/
-  tmp/
-  cache/
-  locks/
-```
-
-Standardized snapshot downloads are stored under:
-
-```text
-<root>/data/<tier>/<source>/<market>/<YYYY-MM-DD>/<opaque-key>.jsonl.zst
-```
-
-When the snapshot service provides authoritative bounds, the SDK stores them in
-an atomic `<opaque-key>.jsonl.zst.coverage.json` sidecar. Explicitly bounded
-replays whose local files cover the requested interval do not perform a remote
-coverage lookup. Older caches without sidecars remain readable using estimated
-filename coverage and emit a warning until exact metadata is available.
-
-The opaque key is the flat upstream snapshot identifier, for example:
-
-```text
-standard-aster-ASTERUSDT-2026-06-01-00
-```
-
-which is stored on disk as:
-
-```text
-<root>/data/standard/aster/ASTERUSDT/2026-06-01/standard-aster-ASTERUSDT-2026-06-01-00.jsonl.zst
-```
-
-Compatible materialized day files, when present, are stored under:
-
-```text
-<root>/daily/<source>/<market>/<YYYY-MM-DD>.jsonl.zst
-```
-
-Pass `dataset_root=...` to `PolarisClient(...)` to override the root explicitly.
-`POLARIS_ROOT` overrides the shared root globally.
-
-## Snapshot-first replay
-
-For standardized snapshot-backed data, `replay(...)`, `events(...)`, and `propamm_quote_ladders(...)` prefer `/snapshots` plus daily bulk `/download?source=...&market=...&date=...&mode=json` manifests, and reuse local snapshot files when they already exist:
-
-```python
-from polaris_data import PolarisClient
-
-with PolarisClient(api_key="polaris_key_your_key") as client:
-    for row in client.replay(
-        source="binance",
-        market="BTC-USDT",
-        from_="2024-01-01T00:00:00Z",
-        to="2024-01-01T01:00:00Z",
-    ):
-        print(row)
-```
-
-If the requested standardized range cannot be satisfied from available standardized snapshots, these snapshot-backed methods raise by default instead of falling back. Pass `allow_gaps=True` on those methods to return only covered data and receive a warning with the missing intervals. Direct historical row methods do not accept `allow_gaps`.
-
-## Error handling
-
-```python
-from polaris_data import PolarisClient, RateLimitedError, UnauthorizedError
-
-client = PolarisClient()
-
-try:
-    client.replay(
-        source="binance",
-        market="BTC-USDT",
-        from_="2024-01-01T00:00:00Z",
-        to="2024-01-01T01:00:00Z",
-    )
-except UnauthorizedError:
-    print("API key is required")
-except RateLimitedError as err:
-    print(f"Rate limited. Reset at: {err.reset_at}")
-```
+The snapshot-backed methods' `allow_gaps` and local replay cache options are removed. TypeScript also removes `datasetRoot`, `storage`, and `snapshotDownloadConcurrency` constructor options because historical requests no longer use local snapshot storage. Python removes `replay_cache_enabled` and `replay_cache_dir` constructor options.
 
 ## Tests
 
 ```bash
+cargo test -p polaris-data
+uv run --with maturin maturin develop --manifest-path crates/polaris-python/Cargo.toml
 uv run pytest
-cargo test --workspace
-cd typescript && npm ci && npm run typecheck && npm test
+cd typescript && npm test
 ```
-
-Build and inspect the native Python wheel with:
-
-```bash
-uv run --with maturin maturin build --release
-```
-
-Python, Rust, and TypeScript are versioned independently. Python releases use
-`python-vX.Y.Z` tags and publish `polaris-data` to PyPI; Rust releases use
-`rust-vX.Y.Z` tags and publish `polaris-data` to crates.io; TypeScript releases
-use `typescript-vX.Y.Z` tags and publish `polaris-data` to npm.
