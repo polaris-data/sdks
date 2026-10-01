@@ -281,7 +281,7 @@ async fn instruments_paginates_and_preserves_contract_statistics() {
                 Some("1790812800000")
             );
             assert_eq!(params.get("limit").map(String::as_str), Some("1000"));
-            let exact = params.get("instrument").is_some();
+            let exact = params.contains_key("instrument");
             if exact {
                 assert_eq!(
                     params.get("instrument").map(String::as_str),
@@ -289,9 +289,9 @@ async fn instruments_paginates_and_preserves_contract_statistics() {
                 );
                 assert_eq!(params.get("q").map(String::as_str), Some("70000"));
             } else {
-                assert!(params.get("q").is_none());
+                assert!(!params.contains_key("q"));
             }
-            let later = params.get("cursor").is_some();
+            let later = params.contains_key("cursor");
             ResponseTemplate::new(200).set_body_json(json!({
                 "updatedAt": "2026-09-30T00:00:00Z",
                 "instruments": [{

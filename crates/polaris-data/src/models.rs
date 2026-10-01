@@ -637,6 +637,8 @@ pub struct FundingRateRow {
 }
 
 /// A typed flat row from the authenticated mixed `/events` stream.
+// Keep variant payloads public and unboxed so callers can construct and match them directly.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum MixedEventRow {
