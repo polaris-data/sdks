@@ -57,83 +57,598 @@ pub struct CatalogQuery {
     pub q: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ListSnapshotsQuery {
-    pub source: String,
-    pub market: String,
-    pub from: Option<TimeInput>,
-    pub to: Option<TimeInput>,
-    pub limit: Option<usize>,
+/// Public API discovery links returned by `/meta`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaResponse {
+    pub name: String,
+    pub docs: String,
+    pub llms: String,
+    pub openapi: String,
+    pub skill: String,
+    pub health: String,
+    pub stream: String,
 }
 
+/// Filters for option-contract discovery. `market` is the normalized underlying.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HistoricalQuery {
+pub struct InstrumentsQuery {
     pub source: String,
     pub market: String,
-    pub from: Option<TimeInput>,
-    pub to: Option<TimeInput>,
-    pub allow_gaps: bool,
-    pub materialize_orderbooks: bool,
+    pub instrument: Option<String>,
+    /// Exact expiry as Unix milliseconds.
+    pub expiry: Option<i64>,
+    pub option_type: Option<String>,
+    pub q: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BboQuery {
     pub source: String,
     pub market: String,
-    pub from: Option<TimeInput>,
-    pub to: Option<TimeInput>,
-    pub allow_gaps: bool,
+    pub start: i64,
+    pub end: i64,
     pub interval: Option<OhlcvInterval>,
 }
 
-impl Default for HistoricalQuery {
-    fn default() -> Self {
+/// Filters for the direct historical row endpoints. Times are inclusive Unix milliseconds.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HistoricalRowsQuery {
+    pub source: Option<String>,
+    pub market: Option<String>,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+}
+
+/// Trade filters. `instrument` selects one exact venue-native instrument.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TradeRowsQuery {
+    pub source: Option<String>,
+    pub market: Option<String>,
+    pub instrument: Option<String>,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+}
+
+impl From<HistoricalRowsQuery> for TradeRowsQuery {
+    fn from(query: HistoricalRowsQuery) -> Self {
         Self {
-            source: String::new(),
-            market: String::new(),
-            from: None,
-            to: None,
-            allow_gaps: false,
-            materialize_orderbooks: true,
+            source: query.source,
+            market: query.market,
+            instrument: None,
+            start: query.start,
+            end: query.end,
         }
     }
 }
 
-/// Query for standardized option ticker events.
-///
-/// Omitting `instrument` selects the whole option chain for `market`; setting
-/// it selects one exact venue-native contract.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct OptionTickerQuery {
+pub struct OptionTickerRowsQuery {
+    pub source: Option<String>,
+    pub market: Option<String>,
+    pub instrument: Option<String>,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OhlcvRowsQuery {
+    pub source: Option<String>,
+    pub market: Option<String>,
+    pub instrument: Option<String>,
+    pub interval: Option<String>,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+}
+
+/// Required inclusive collector-time window for the authenticated `/events` route.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventsQuery {
+    pub start: i64,
+    pub end: i64,
+    pub types: Option<Vec<MixedEventType>>,
+    pub source: Option<String>,
+    pub market: Option<String>,
+    pub instrument: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MixedEventType {
+    Trade,
+    L2Update,
+    FundingRate,
+    Intent,
+    Quote,
+    OptionTicker,
+    Ohlcv,
+}
+
+impl MixedEventType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Trade => "trade",
+            Self::L2Update => "l2_update",
+            Self::FundingRate => "funding_rate",
+            Self::Intent => "intent",
+            Self::Quote => "quote",
+            Self::OptionTicker => "option_ticker",
+            Self::Ohlcv => "ohlcv",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IntentRowsQuery {
+    pub source: Option<String>,
+    pub market: Option<String>,
+    pub instrument: Option<String>,
+    pub intent_id: Option<String>,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QuoteRowsQuery {
+    pub source: Option<String>,
+    pub market: Option<String>,
+    pub instrument: Option<String>,
+    pub observation_id: Option<String>,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+}
+
+/// Filters for flat source snapshots and deltas from `/l2-updates`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct L2UpdatesQuery {
+    pub source: Option<String>,
+    pub market: Option<String>,
+    pub instrument: Option<String>,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+}
+
+/// Required inclusive millisecond window for `/l2-orderbooks`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct L2OrderbooksQuery {
     pub source: String,
     pub market: String,
     pub instrument: Option<String>,
-    pub from: Option<TimeInput>,
-    pub to: Option<TimeInput>,
-    pub allow_gaps: bool,
+    pub start: i64,
+    pub end: i64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReplayQuery {
+/// One flat top-25 L2 row with all nullable fixed level fields from the API.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OrderbookL2Row {
+    pub event_id: String,
     pub source: String,
     pub market: String,
-    pub from: Option<TimeInput>,
-    pub to: Option<TimeInput>,
-    pub allow_gaps: bool,
-    pub materialize_orderbooks: bool,
+    pub instrument: Option<String>,
+    pub collector_timestamp: i64,
+    pub exchange_timestamp: Option<i64>,
+    pub source_capture_id: String,
+    pub schema_version: u32,
+    pub source_event_is_snapshot: bool,
+    pub bid_px_00: Option<f64>,
+    pub bid_sz_00: Option<f64>,
+    pub ask_px_00: Option<f64>,
+    pub ask_sz_00: Option<f64>,
+    pub bid_px_01: Option<f64>,
+    pub bid_sz_01: Option<f64>,
+    pub ask_px_01: Option<f64>,
+    pub ask_sz_01: Option<f64>,
+    pub bid_px_02: Option<f64>,
+    pub bid_sz_02: Option<f64>,
+    pub ask_px_02: Option<f64>,
+    pub ask_sz_02: Option<f64>,
+    pub bid_px_03: Option<f64>,
+    pub bid_sz_03: Option<f64>,
+    pub ask_px_03: Option<f64>,
+    pub ask_sz_03: Option<f64>,
+    pub bid_px_04: Option<f64>,
+    pub bid_sz_04: Option<f64>,
+    pub ask_px_04: Option<f64>,
+    pub ask_sz_04: Option<f64>,
+    pub bid_px_05: Option<f64>,
+    pub bid_sz_05: Option<f64>,
+    pub ask_px_05: Option<f64>,
+    pub ask_sz_05: Option<f64>,
+    pub bid_px_06: Option<f64>,
+    pub bid_sz_06: Option<f64>,
+    pub ask_px_06: Option<f64>,
+    pub ask_sz_06: Option<f64>,
+    pub bid_px_07: Option<f64>,
+    pub bid_sz_07: Option<f64>,
+    pub ask_px_07: Option<f64>,
+    pub ask_sz_07: Option<f64>,
+    pub bid_px_08: Option<f64>,
+    pub bid_sz_08: Option<f64>,
+    pub ask_px_08: Option<f64>,
+    pub ask_sz_08: Option<f64>,
+    pub bid_px_09: Option<f64>,
+    pub bid_sz_09: Option<f64>,
+    pub ask_px_09: Option<f64>,
+    pub ask_sz_09: Option<f64>,
+    pub bid_px_10: Option<f64>,
+    pub bid_sz_10: Option<f64>,
+    pub ask_px_10: Option<f64>,
+    pub ask_sz_10: Option<f64>,
+    pub bid_px_11: Option<f64>,
+    pub bid_sz_11: Option<f64>,
+    pub ask_px_11: Option<f64>,
+    pub ask_sz_11: Option<f64>,
+    pub bid_px_12: Option<f64>,
+    pub bid_sz_12: Option<f64>,
+    pub ask_px_12: Option<f64>,
+    pub ask_sz_12: Option<f64>,
+    pub bid_px_13: Option<f64>,
+    pub bid_sz_13: Option<f64>,
+    pub ask_px_13: Option<f64>,
+    pub ask_sz_13: Option<f64>,
+    pub bid_px_14: Option<f64>,
+    pub bid_sz_14: Option<f64>,
+    pub ask_px_14: Option<f64>,
+    pub ask_sz_14: Option<f64>,
+    pub bid_px_15: Option<f64>,
+    pub bid_sz_15: Option<f64>,
+    pub ask_px_15: Option<f64>,
+    pub ask_sz_15: Option<f64>,
+    pub bid_px_16: Option<f64>,
+    pub bid_sz_16: Option<f64>,
+    pub ask_px_16: Option<f64>,
+    pub ask_sz_16: Option<f64>,
+    pub bid_px_17: Option<f64>,
+    pub bid_sz_17: Option<f64>,
+    pub ask_px_17: Option<f64>,
+    pub ask_sz_17: Option<f64>,
+    pub bid_px_18: Option<f64>,
+    pub bid_sz_18: Option<f64>,
+    pub ask_px_18: Option<f64>,
+    pub ask_sz_18: Option<f64>,
+    pub bid_px_19: Option<f64>,
+    pub bid_sz_19: Option<f64>,
+    pub ask_px_19: Option<f64>,
+    pub ask_sz_19: Option<f64>,
+    pub bid_px_20: Option<f64>,
+    pub bid_sz_20: Option<f64>,
+    pub ask_px_20: Option<f64>,
+    pub ask_sz_20: Option<f64>,
+    pub bid_px_21: Option<f64>,
+    pub bid_sz_21: Option<f64>,
+    pub ask_px_21: Option<f64>,
+    pub ask_sz_21: Option<f64>,
+    pub bid_px_22: Option<f64>,
+    pub bid_sz_22: Option<f64>,
+    pub ask_px_22: Option<f64>,
+    pub ask_sz_22: Option<f64>,
+    pub bid_px_23: Option<f64>,
+    pub bid_sz_23: Option<f64>,
+    pub ask_px_23: Option<f64>,
+    pub ask_sz_23: Option<f64>,
+    pub bid_px_24: Option<f64>,
+    pub bid_sz_24: Option<f64>,
+    pub ask_px_24: Option<f64>,
+    pub ask_sz_24: Option<f64>,
 }
 
-impl Default for ReplayQuery {
-    fn default() -> Self {
-        Self {
-            source: String::new(),
-            market: String::new(),
-            from: None,
-            to: None,
-            allow_gaps: false,
-            materialize_orderbooks: true,
-        }
+impl OrderbookL2Row {
+    /// Return the reconstructed top-25 bid levels in API order.
+    pub fn bids(&self) -> impl Iterator<Item = (f64, f64)> + '_ {
+        [
+            (self.bid_px_00, self.bid_sz_00),
+            (self.bid_px_01, self.bid_sz_01),
+            (self.bid_px_02, self.bid_sz_02),
+            (self.bid_px_03, self.bid_sz_03),
+            (self.bid_px_04, self.bid_sz_04),
+            (self.bid_px_05, self.bid_sz_05),
+            (self.bid_px_06, self.bid_sz_06),
+            (self.bid_px_07, self.bid_sz_07),
+            (self.bid_px_08, self.bid_sz_08),
+            (self.bid_px_09, self.bid_sz_09),
+            (self.bid_px_10, self.bid_sz_10),
+            (self.bid_px_11, self.bid_sz_11),
+            (self.bid_px_12, self.bid_sz_12),
+            (self.bid_px_13, self.bid_sz_13),
+            (self.bid_px_14, self.bid_sz_14),
+            (self.bid_px_15, self.bid_sz_15),
+            (self.bid_px_16, self.bid_sz_16),
+            (self.bid_px_17, self.bid_sz_17),
+            (self.bid_px_18, self.bid_sz_18),
+            (self.bid_px_19, self.bid_sz_19),
+            (self.bid_px_20, self.bid_sz_20),
+            (self.bid_px_21, self.bid_sz_21),
+            (self.bid_px_22, self.bid_sz_22),
+            (self.bid_px_23, self.bid_sz_23),
+            (self.bid_px_24, self.bid_sz_24),
+        ]
+        .into_iter()
+        .filter_map(|(price, quantity)| price.zip(quantity))
+        .filter(|(price, quantity)| {
+            price.is_finite() && *price > 0.0 && quantity.is_finite() && *quantity > 0.0
+        })
     }
+
+    /// Return the reconstructed top-25 ask levels in API order.
+    pub fn asks(&self) -> impl Iterator<Item = (f64, f64)> + '_ {
+        [
+            (self.ask_px_00, self.ask_sz_00),
+            (self.ask_px_01, self.ask_sz_01),
+            (self.ask_px_02, self.ask_sz_02),
+            (self.ask_px_03, self.ask_sz_03),
+            (self.ask_px_04, self.ask_sz_04),
+            (self.ask_px_05, self.ask_sz_05),
+            (self.ask_px_06, self.ask_sz_06),
+            (self.ask_px_07, self.ask_sz_07),
+            (self.ask_px_08, self.ask_sz_08),
+            (self.ask_px_09, self.ask_sz_09),
+            (self.ask_px_10, self.ask_sz_10),
+            (self.ask_px_11, self.ask_sz_11),
+            (self.ask_px_12, self.ask_sz_12),
+            (self.ask_px_13, self.ask_sz_13),
+            (self.ask_px_14, self.ask_sz_14),
+            (self.ask_px_15, self.ask_sz_15),
+            (self.ask_px_16, self.ask_sz_16),
+            (self.ask_px_17, self.ask_sz_17),
+            (self.ask_px_18, self.ask_sz_18),
+            (self.ask_px_19, self.ask_sz_19),
+            (self.ask_px_20, self.ask_sz_20),
+            (self.ask_px_21, self.ask_sz_21),
+            (self.ask_px_22, self.ask_sz_22),
+            (self.ask_px_23, self.ask_sz_23),
+            (self.ask_px_24, self.ask_sz_24),
+        ]
+        .into_iter()
+        .filter_map(|(price, quantity)| price.zip(quantity))
+        .filter(|(price, quantity)| {
+            price.is_finite() && *price > 0.0 && quantity.is_finite() && *quantity > 0.0
+        })
+    }
+}
+
+/// One venue-published candle update from `/ohlcv`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OhlcvRow {
+    pub event_id: String,
+    pub source: String,
+    pub market: String,
+    pub collector_timestamp: i64,
+    pub source_capture_id: String,
+    pub schema_version: u32,
+    pub interval: String,
+    pub open_timestamp: i64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    #[serde(default)]
+    pub exchange_timestamp: Option<i64>,
+    #[serde(default)]
+    pub instrument: Option<String>,
+    #[serde(default)]
+    pub close_timestamp: Option<i64>,
+    #[serde(default)]
+    pub base_volume: Option<f64>,
+    #[serde(default)]
+    pub quote_volume: Option<f64>,
+    #[serde(default)]
+    pub trade_count: Option<u64>,
+    #[serde(default)]
+    pub is_closed: Option<bool>,
+}
+
+/// One pair-shaped intent observation from `/intents`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntentRow {
+    pub event_id: String,
+    pub source: String,
+    pub market: String,
+    pub collector_timestamp: i64,
+    pub source_capture_id: String,
+    pub schema_version: u32,
+    #[serde(default)]
+    pub exchange_timestamp: Option<i64>,
+    #[serde(default)]
+    pub instrument: Option<String>,
+    #[serde(default)]
+    pub amount_kind: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<i64>,
+    #[serde(default)]
+    pub input_amount: Option<String>,
+    #[serde(default)]
+    pub input_asset_id: Option<String>,
+    #[serde(default)]
+    pub input_chain_id: Option<String>,
+    #[serde(default)]
+    pub intent_id: Option<String>,
+    #[serde(default)]
+    pub output_amount: Option<String>,
+    #[serde(default)]
+    pub output_asset_id: Option<String>,
+    #[serde(default)]
+    pub output_chain_id: Option<String>,
+    #[serde(default)]
+    pub quote_id: Option<String>,
+    #[serde(default)]
+    pub quoted_input_amount: Option<String>,
+    #[serde(default)]
+    pub quoted_output_amount: Option<String>,
+    #[serde(default)]
+    pub rfq_id: Option<String>,
+    #[serde(default)]
+    pub settled_at: Option<i64>,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+/// One PropAMM quote point from `/quotes`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuoteRow {
+    pub event_id: String,
+    pub source: String,
+    pub market: String,
+    pub instrument: String,
+    pub collector_timestamp: i64,
+    pub source_capture_id: String,
+    pub schema_version: u32,
+    pub observation_id: String,
+    pub input_asset_id: String,
+    pub input_chain_id: String,
+    pub input_amount: String,
+    pub input_decimals: u32,
+    pub output_asset_id: String,
+    pub output_chain_id: String,
+    pub output_amount: String,
+    pub output_decimals: u32,
+    pub amount_kind: String,
+    pub block_number: u64,
+    pub block_hash: String,
+    pub transaction_hash: String,
+    pub transaction_index: u64,
+    pub router: String,
+    #[serde(default)]
+    pub exchange_timestamp: Option<i64>,
+    #[serde(default)]
+    pub oracle: Option<String>,
+    #[serde(default)]
+    pub pool: Option<String>,
+}
+
+/// One flat row from `/trades`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TradeRow {
+    pub event_id: String,
+    pub source: String,
+    pub market: String,
+    pub collector_timestamp: i64,
+    pub source_capture_id: String,
+    pub schema_version: u32,
+    pub price: f64,
+    pub quantity: f64,
+    #[serde(default)]
+    pub exchange_timestamp: Option<i64>,
+    #[serde(default)]
+    pub instrument: Option<String>,
+    #[serde(default)]
+    pub liquidation: Option<bool>,
+    #[serde(default)]
+    pub maker: Option<String>,
+    #[serde(default)]
+    pub order_id: Option<String>,
+    #[serde(default)]
+    pub side: Option<String>,
+    #[serde(default)]
+    pub taker: Option<String>,
+}
+
+/// One partial flat row from `/options-ticker`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OptionTickerRow {
+    pub event_id: String,
+    pub source: String,
+    pub market: String,
+    pub instrument: String,
+    pub collector_timestamp: i64,
+    pub source_capture_id: String,
+    pub schema_version: u32,
+    #[serde(default)]
+    pub exchange_timestamp: Option<i64>,
+    #[serde(default)]
+    pub expiry_timestamp: Option<i64>,
+    #[serde(default)]
+    pub ask_iv: Option<String>,
+    #[serde(default)]
+    pub ask_price: Option<String>,
+    #[serde(default)]
+    pub ask_size: Option<String>,
+    #[serde(default)]
+    pub bid_iv: Option<String>,
+    #[serde(default)]
+    pub bid_price: Option<String>,
+    #[serde(default)]
+    pub bid_size: Option<String>,
+    #[serde(default)]
+    pub delta: Option<String>,
+    #[serde(default)]
+    pub forward_price: Option<String>,
+    #[serde(default)]
+    pub gamma: Option<String>,
+    #[serde(default)]
+    pub index_price: Option<String>,
+    #[serde(default)]
+    pub last_price: Option<String>,
+    #[serde(default)]
+    pub mark_iv: Option<String>,
+    #[serde(default)]
+    pub mark_price: Option<String>,
+    #[serde(default)]
+    pub open_interest: Option<String>,
+    #[serde(default)]
+    pub option_type: Option<String>,
+    #[serde(default)]
+    pub premium_currency: Option<String>,
+    #[serde(default)]
+    pub quantity_unit: Option<String>,
+    #[serde(default)]
+    pub rho: Option<String>,
+    #[serde(default)]
+    pub strike: Option<String>,
+    #[serde(default)]
+    pub theta: Option<String>,
+    #[serde(default)]
+    pub turnover_24h: Option<String>,
+    #[serde(default)]
+    pub underlying: Option<String>,
+    #[serde(default)]
+    pub underlying_price: Option<String>,
+    #[serde(default)]
+    pub vega: Option<String>,
+    #[serde(default)]
+    pub volume_24h: Option<String>,
+}
+
+/// One partial flat row from `/funding-rates`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FundingRateRow {
+    pub event_id: String,
+    pub source: String,
+    pub market: String,
+    pub collector_timestamp: i64,
+    pub source_capture_id: String,
+    pub schema_version: u32,
+    #[serde(default)]
+    pub exchange_timestamp: Option<i64>,
+    #[serde(default)]
+    pub funding_timestamp: Option<i64>,
+    #[serde(default)]
+    pub instrument: Option<String>,
+    #[serde(default)]
+    pub funding_rate: Option<String>,
+    #[serde(default)]
+    pub index_price: Option<String>,
+    #[serde(default)]
+    pub mark_price: Option<String>,
+    #[serde(default)]
+    pub open_interest: Option<String>,
+    #[serde(default)]
+    pub predicted_funding_rate: Option<String>,
+    #[serde(default)]
+    pub premium: Option<String>,
+}
+
+/// A typed flat row from the authenticated mixed `/events` stream.
+// Keep variant payloads public and unboxed so callers can construct and match them directly.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum MixedEventRow {
+    Trade(TradeRow),
+    L2Update(OrderbookL2Row),
+    FundingRate(FundingRateRow),
+    Intent(IntentRow),
+    Quote(QuoteRow),
+    OptionTicker(OptionTickerRow),
+    Ohlcv(OhlcvRow),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -162,19 +677,42 @@ impl Default for StreamQuery {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawQuery {
     pub source: String,
-    pub market: String,
+    /// Exact recorded routing market. `None` includes every source market.
+    pub market: Option<String>,
+    /// Exact native channel. `None` includes every raw channel.
+    pub channel: Option<String>,
+    /// Inclusive lower bound. Omitted bounds use a seven-day window.
     pub from: Option<TimeInput>,
+    /// Inclusive upper bound. Omitted bounds use a seven-day window.
     pub to: Option<TimeInput>,
     pub limit: usize,
 }
 
+/// Query for exact captures from one venue-native raw channel.
+/// `exchange` and `event` map to the API's `source` and `channel` filters.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RawReplayQuery {
-    pub source: String,
-    pub market: String,
-    pub from: Option<TimeInput>,
-    pub to: Option<TimeInput>,
-    pub limit: usize,
+pub struct RawChannelQuery {
+    pub exchange: String,
+    pub event: String,
+    /// Optional exact recorded routing market within the channel.
+    pub market: Option<String>,
+    /// Inclusive collector time in Unix milliseconds.
+    pub start: i64,
+    /// Inclusive collector time in Unix milliseconds.
+    pub end: i64,
+}
+
+/// One capture from `GET /raw`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RawCaptureRow {
+    pub raw_table: String,
+    pub capture_id: String,
+    pub collector_timestamp: i64,
+    pub recorder_version: String,
+    pub ingested_at: i64,
+    pub additional_context: Value,
+    /// Exact upstream JSON text; intentionally left unparsed.
+    pub original_json: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,24 +747,6 @@ impl OhlcvInterval {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum OhlcvFormat {
-    #[default]
-    Bars,
-    TradingView,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OhlcvQuery {
-    pub source: String,
-    pub market: String,
-    pub from: Option<TimeInput>,
-    pub to: Option<TimeInput>,
-    pub interval: OhlcvInterval,
-    pub format: OhlcvFormat,
-    pub allow_gaps: bool,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogResponse {
     #[serde(rename = "updatedAt")]
@@ -235,6 +755,59 @@ pub struct CatalogResponse {
     #[doc(hidden)]
     #[serde(skip)]
     pub legacy_shape: bool,
+}
+
+/// One venue-native option contract in the instrument catalog.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OptionContract {
+    pub source: String,
+    pub market: String,
+    pub instrument: String,
+    pub status: String,
+    pub option_type: String,
+    pub underlying: String,
+    pub strike: String,
+    pub expiry_timestamp: i64,
+    #[serde(default)]
+    pub contract_size: Option<String>,
+    #[serde(default)]
+    pub exercise_style: Option<String>,
+    #[serde(default)]
+    pub premium_currency: Option<String>,
+    #[serde(default)]
+    pub quantity_unit: Option<String>,
+    #[serde(default)]
+    pub settlement_currency: Option<String>,
+    #[serde(default)]
+    pub statistics: Option<OptionContractStatistics>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OptionContractStatistics {
+    pub source: String,
+    pub market: String,
+    #[serde(default)]
+    pub instrument: Option<String>,
+    pub fields: BTreeMap<String, ObservedStatistic>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservedStatistic {
+    pub value: String,
+    pub observed_at: i64,
+    #[serde(default)]
+    pub exchange_timestamp: Option<i64>,
+    #[serde(default)]
+    pub unit: Option<String>,
+    #[serde(default)]
+    pub convention: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstrumentsResponse {
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+    pub instruments: Vec<OptionContract>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -272,45 +845,6 @@ pub struct CatalogMarket {
     pub categories: Option<Vec<String>>,
     pub access: Option<CatalogAccess>,
     pub instrument: CatalogInstrument,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct SnapshotEntry {
-    pub key: String,
-    pub source: Option<String>,
-    pub market: Option<String>,
-    pub date: Option<String>,
-    pub start: Option<String>,
-    pub end: Option<String>,
-    pub timestamp: Option<String>,
-    pub hour: Option<u8>,
-    pub filename: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DownloadManifestQuery {
-    pub source: String,
-    pub market: String,
-    pub date: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DownloadManifestResponse {
-    pub source: String,
-    pub market: String,
-    pub date: String,
-    pub total: usize,
-    pub total_bytes: u64,
-    pub snapshots: Vec<DownloadManifestEntry>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct DownloadManifestEntry {
-    pub date: String,
-    pub timestamp: String,
-    pub key: String,
-    pub url: String,
-    pub expires_in_seconds: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -436,12 +970,6 @@ impl StandardEvent {
         match self {
             Self::Legacy(event) => &mut event.extra,
             Self::V2(event) => &mut event.extra,
-        }
-    }
-
-    pub(crate) fn set_legacy_timestamp(&mut self, timestamp: i64) {
-        if let Self::Legacy(event) = self {
-            event.timestamp = timestamp;
         }
     }
 }
@@ -985,47 +1513,7 @@ impl PerpetualTickerEvent {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct OhlcvBar {
-    pub timestamp: i64,
-    pub open: f64,
-    pub high: f64,
-    pub low: f64,
-    pub close: f64,
-    pub volume: f64,
-    pub trades: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TradingViewCandle {
-    pub time: i64,
-    pub open: f64,
-    pub high: f64,
-    pub low: f64,
-    pub close: f64,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TradingViewVolume {
-    pub time: i64,
-    pub value: f64,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TradingViewOhlcv {
-    pub candles: Vec<TradingViewCandle>,
-    pub volumes: Vec<TradingViewVolume>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum OhlcvOutput {
-    Bars(Vec<OhlcvBar>),
-    TradingView(TradingViewOhlcv),
-}
-
 pub type HistoricalStream<T> = Pin<Box<dyn Stream<Item = Result<T, PolarisError>> + Send>>;
-pub type ReplayStream = HistoricalStream<StandardEvent>;
-pub type RawReplayStream = Pin<Box<dyn Stream<Item = Result<Value, PolarisError>> + Send>>;
 pub type RealtimeStream = Pin<Box<dyn Stream<Item = Result<StandardEvent, PolarisError>> + Send>>;
 
 // PropAMM quote-ladder types
@@ -1236,29 +1724,6 @@ where
         .as_f64()
         .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
         .ok_or_else(|| serde::de::Error::custom("expected a number or numeric string"))
-}
-
-// Aggregated bar types
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct VolumeBar {
-    pub timestamp: i64,
-    pub volume: f64,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct VwapBar {
-    pub timestamp: i64,
-    pub vwap: Option<f64>,
-    pub volume: f64,
-    pub quote_volume: f64,
-    pub trades: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct VolatilityBar {
-    pub timestamp: i64,
-    pub volatility: f64,
-    pub returns: u64,
 }
 
 // Depth metrics

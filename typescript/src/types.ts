@@ -46,6 +46,44 @@ export interface CatalogInstrument {
   min_notional: string | number | null;
 }
 
+/** Venue-native option contract discovered through `/catalog/instruments`. */
+export interface OptionContract {
+  source: string;
+  market: string;
+  instrument: string;
+  status: string;
+  option_type: string;
+  underlying: string;
+  strike: string;
+  expiry_timestamp: number;
+  contract_size?: string | null;
+  exercise_style?: string | null;
+  premium_currency?: string | null;
+  quantity_unit?: string | null;
+  settlement_currency?: string | null;
+  statistics?: OptionContractStatistics | null;
+}
+
+export interface OptionContractStatistics {
+  source: string;
+  market: string;
+  instrument?: string | null;
+  fields: Record<string, ObservedStatistic>;
+}
+
+export interface ObservedStatistic {
+  value: string;
+  observed_at: number;
+  exchange_timestamp?: number | null;
+  unit?: string | null;
+  convention?: string | null;
+}
+
+export interface InstrumentsResponse {
+  updatedAt: string;
+  instruments: OptionContract[];
+}
+
 export interface CatalogMarket {
   source: string;
   market: string;
@@ -118,6 +156,25 @@ export interface TradeEventV2 extends StandardEventV2 {
 }
 
 export type TradeEvent = LegacyTradeEvent | TradeEventV2;
+
+/** Flat row returned by GET /trades. */
+export interface TradeRow {
+  event_id: string;
+  source: string;
+  market: string;
+  collector_timestamp: number;
+  source_capture_id: string;
+  schema_version: number;
+  price: number;
+  quantity: number;
+  exchange_timestamp?: number | null;
+  instrument?: string | null;
+  liquidation?: boolean | null;
+  maker?: string | null;
+  order_id?: string | null;
+  side?: string | null;
+  taker?: string | null;
+}
 
 export type AmountKind = "exact_input" | "exact_output";
 
@@ -226,6 +283,44 @@ export interface OptionTickerEventV2 extends StandardEventV2 {
 
 export type OptionTickerEvent = LegacyOptionTickerEvent | OptionTickerEventV2;
 
+/** Partial flat row returned by GET /options-ticker. */
+export interface OptionTickerRow {
+  event_id: string;
+  source: string;
+  market: string;
+  instrument: string;
+  collector_timestamp: number;
+  source_capture_id: string;
+  schema_version: number;
+  exchange_timestamp?: number | null;
+  expiry_timestamp?: number | null;
+  ask_iv?: string | null;
+  ask_price?: string | null;
+  ask_size?: string | null;
+  bid_iv?: string | null;
+  bid_price?: string | null;
+  bid_size?: string | null;
+  delta?: string | null;
+  forward_price?: string | null;
+  gamma?: string | null;
+  index_price?: string | null;
+  last_price?: string | null;
+  mark_iv?: string | null;
+  mark_price?: string | null;
+  open_interest?: string | null;
+  option_type?: string | null;
+  premium_currency?: string | null;
+  quantity_unit?: string | null;
+  rho?: string | null;
+  strike?: string | null;
+  theta?: string | null;
+  turnover_24h?: string | null;
+  underlying?: string | null;
+  underlying_price?: string | null;
+  vega?: string | null;
+  volume_24h?: string | null;
+}
+
 export interface PerpetualTickerData extends Record<string, unknown> {
   last_price?: string;
   mark_price?: string;
@@ -281,6 +376,107 @@ export interface FundingRateData extends Record<string, unknown> {
 }
 
 export type FundingRateEvent = PointSeriesEvent & { data: FundingRateData };
+
+/** Partial flat row returned by GET /funding-rates. */
+export interface FundingRateRow {
+  event_id: string;
+  source: string;
+  market: string;
+  collector_timestamp: number;
+  source_capture_id: string;
+  schema_version: number;
+  exchange_timestamp?: number | null;
+  funding_timestamp?: number | null;
+  instrument?: string | null;
+  funding_rate?: string | null;
+  index_price?: string | null;
+  mark_price?: string | null;
+  open_interest?: string | null;
+  predicted_funding_rate?: string | null;
+  premium?: string | null;
+}
+
+/** Venue-published candle update from /ohlcv. */
+export interface OhlcvRow {
+  event_id: string; source: string; market: string; collector_timestamp: number;
+  source_capture_id: string; schema_version: number; interval: string;
+  open_timestamp: number; open: number; high: number; low: number; close: number;
+  exchange_timestamp?: number | null; instrument?: string | null;
+  close_timestamp?: number | null; base_volume?: number | null;
+  quote_volume?: number | null; trade_count?: number | null; is_closed?: boolean | null;
+}
+
+export type MixedEventType = "trade" | "l2_update" | "funding_rate" | "intent" |
+  "quote" | "option_ticker" | "ohlcv";
+
+/** One typed flat row from the authenticated mixed /events route. */
+export type MixedEventRow =
+  | { type: "trade"; data: TradeRow }
+  | { type: "l2_update"; data: OrderbookL2Row }
+  | { type: "funding_rate"; data: FundingRateRow }
+  | { type: "intent"; data: IntentRow }
+  | { type: "quote"; data: QuoteRow }
+  | { type: "option_ticker"; data: OptionTickerRow }
+  | { type: "ohlcv"; data: OhlcvRow };
+
+/** Pair-shaped intent observation from /intents. */
+export interface IntentRow {
+  event_id: string; source: string; market: string; collector_timestamp: number;
+  source_capture_id: string; schema_version: number;
+  exchange_timestamp?: number | null; instrument?: string | null;
+  amount_kind?: string | null; expires_at?: number | null;
+  input_amount?: string | null; input_asset_id?: string | null;
+  input_chain_id?: string | null; intent_id?: string | null;
+  output_amount?: string | null; output_asset_id?: string | null;
+  output_chain_id?: string | null; quote_id?: string | null;
+  quoted_input_amount?: string | null; quoted_output_amount?: string | null;
+  rfq_id?: string | null; settled_at?: number | null; status?: string | null;
+}
+
+/** Individual PropAMM quote point from /quotes. */
+export interface QuoteRow {
+  event_id: string; source: string; market: string; instrument: string;
+  collector_timestamp: number; source_capture_id: string; schema_version: number;
+  observation_id: string; input_asset_id: string; input_chain_id: string;
+  input_amount: string; input_decimals: number; output_asset_id: string;
+  output_chain_id: string; output_amount: string; output_decimals: number;
+  amount_kind: string; block_number: number; block_hash: string;
+  transaction_hash: string; transaction_index: number; router: string;
+  exchange_timestamp?: number | null; oracle?: string | null; pool?: string | null;
+}
+
+/** Exact raw capture from GET /raw. */
+export interface RawCaptureRow {
+  raw_table: string;
+  capture_id: string;
+  collector_timestamp: number;
+  recorder_version: string;
+  ingested_at: number;
+  additional_context: unknown;
+  /** Exact upstream JSON text, intentionally unparsed. */
+  original_json: string;
+}
+
+/** Filters for exact raw captures from GET /raw. */
+export interface RawQueryOptions {
+  source: string;
+  /** Exact recorded routing market; omit to include all source markets. */
+  market?: string;
+  /** Exact native raw channel; omit to include all channels. */
+  channel?: string;
+  /** Inclusive collector times in Unix milliseconds. */
+  start: number;
+  end: number;
+  limit?: number;
+}
+
+export interface RawChannelOptions {
+  exchange: string;
+  event: string;
+  market?: string;
+  start: number;
+  end: number;
+}
 
 export interface MarkPriceData extends Record<string, unknown> {
   series: "mark_price" | "mark_px";
@@ -357,6 +553,24 @@ export interface OrderbookEventV2 extends StandardEventV2 {
 
 export type OrderbookEvent = LegacyOrderbookEvent | OrderbookEventV2;
 
+type L2LevelIndex = "00" | "01" | "02" | "03" | "04" | "05" | "06" | "07" | "08" | "09"
+  | "10" | "11" | "12" | "13" | "14" | "15" | "16" | "17" | "18" | "19"
+  | "20" | "21" | "22" | "23" | "24";
+type L2LevelField = `${"bid" | "ask"}_${"px" | "sz"}_${L2LevelIndex}`;
+
+/** Flat top-25 source update or reconstructed book from a historical L2 route. */
+export type OrderbookL2Row = {
+  event_id: string;
+  source: string;
+  market: string;
+  instrument: string | null;
+  collector_timestamp: number;
+  exchange_timestamp: number | null;
+  source_capture_id: string;
+  schema_version: number;
+  source_event_is_snapshot: boolean;
+} & Record<L2LevelField, number | null>;
+
 export interface BboQuote {
   timestamp: number;
   bid_price: number;
@@ -402,25 +616,6 @@ export interface OhlcvBar {
   trades: number;
 }
 
-export interface VolumeBar {
-  timestamp: number;
-  volume: number;
-}
-
-export interface VwapBar {
-  timestamp: number;
-  vwap: number | null;
-  volume: number;
-  quote_volume: number;
-  trades: number;
-}
-
-export interface VolatilityBar {
-  timestamp: number;
-  volatility: number;
-  returns: number;
-}
-
 export interface TradingViewCandle {
   t: number;
   o: number;
@@ -441,57 +636,6 @@ export interface TradingViewOhlcvResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Snapshots – GET /snapshots
-// ---------------------------------------------------------------------------
-
-export interface SnapshotEntry {
-  key: string;
-  source?: string;
-  market?: string;
-  date?: string;
-  start?: string;
-  end?: string;
-  hour?: number;
-  filename?: string;
-}
-
-export interface SnapshotsResponse {
-  source: string;
-  market: string;
-  access?: {
-    status: string;
-    public_cutoff_date?: string;
-  };
-  total: number;
-  total_bytes: number;
-  limit: number;
-  has_more: boolean;
-  next_cursor: string | null;
-  snapshots: SnapshotEntry[];
-}
-
-// ---------------------------------------------------------------------------
-// Snapshot download manifest – GET /download
-// ---------------------------------------------------------------------------
-
-export interface SnapshotDownloadEntry {
-  date: string;
-  timestamp: string;
-  key: string;
-  url: string;
-  expires_in_seconds: number;
-}
-
-export interface SnapshotDownloadManifest {
-  source: string;
-  market: string;
-  date: string;
-  total: number;
-  total_bytes: number;
-  snapshots: SnapshotDownloadEntry[];
-}
-
-// ---------------------------------------------------------------------------
 // Client constructor options
 // ---------------------------------------------------------------------------
 
@@ -506,22 +650,6 @@ export interface PolarisClientOptions {
   timeout?: number;
   /** Custom fetch implementation (useful for testing or proxies). */
   fetch?: FetchLike;
-  /**
-   * Override the local dataset root directory.
-   * Defaults to the platform-specific Polaris app-data directory,
-   * overridable globally via `POLARIS_ROOT` env var.
-   */
-  datasetRoot?: string;
-  /**
-   * Maximum number of snapshot artifact downloads to run concurrently.
-   * Defaults to `8`.
-   */
-  snapshotDownloadConcurrency?: number;
-  /**
-   * Custom storage implementation (useful for testing or advanced scenarios).
-   * If not provided, storage is automatically detected based on platform.
-   */
-  storage?: import("./storage/interface").IStorage;
 }
 
 // ---------------------------------------------------------------------------
@@ -533,68 +661,96 @@ export interface CatalogOptions {
   market?: string;
 }
 
-/**
- * Options for snapshot-based historical data methods.
- * If `from` and/or `to` are omitted, the client infers a bounded window
- * from catalog metadata.
- */
-export interface HistoricalQueryOptions {
-  source: string;
-  market: string;
-  from?: TimeInput;
-  to?: TimeInput;
-  /** Materialize complete orderbooks from snapshots and deltas. Defaults to `true`. */
-  materializeOrderbooks?: boolean;
+/** Public API discovery links returned by /meta. */
+export interface MetaResponse {
+  name: string;
+  docs: string;
+  llms: string;
+  openapi: string;
+  skill: string;
+  health: string;
+  stream: string;
 }
 
-/** Options for option ticker reads across a chain or one exact contract. */
-export interface OptionTickerOptions extends HistoricalQueryOptions {
-  /** Exact venue-native contract. Omit to read the whole option chain. */
+/** `market` is the normalized option underlying, such as `BTC`. */
+export interface InstrumentsOptions {
+  source: string;
+  market: string;
+  instrument?: string;
+  /** Exact expiry as Unix milliseconds. */
+  expiry?: number;
+  optionType?: "call" | "put";
+  q?: string;
+}
+
+/** Filters for direct historical rows. Bounds are inclusive Unix milliseconds. */
+export interface HistoricalRowsOptions {
+  source?: string;
+  market?: string;
+  start?: number;
+  end?: number;
+}
+
+export interface TradeRowsOptions extends HistoricalRowsOptions {
+  /** Exact venue-native instrument. */
   instrument?: string;
 }
 
-/** Options for raw snapshot-and-delta orderbook reads. */
-export type L2UpdatesOptions = Omit<HistoricalQueryOptions, "materializeOrderbooks">;
+export interface EventsOptions extends Omit<HistoricalRowsOptions, "start" | "end"> {
+  /** Required inclusive collector timestamps in Unix milliseconds. */
+  start: number;
+  end: number;
+  types?: MixedEventType[];
+  instrument?: string;
+}
 
-export interface ListSnapshotsOptions {
+export interface OptionTickerRowsOptions extends HistoricalRowsOptions {
+  instrument?: string;
+}
+
+export interface OhlcvRowsOptions extends HistoricalRowsOptions {
+  instrument?: string;
+  interval?: string;
+}
+
+export interface IntentRowsOptions extends HistoricalRowsOptions {
+  instrument?: string;
+  intentId?: string;
+}
+
+export interface QuoteRowsOptions extends HistoricalRowsOptions {
+  instrument?: string;
+  observationId?: string;
+}
+
+/** Optional filters for flat source snapshots and deltas. */
+export interface L2UpdatesOptions extends HistoricalRowsOptions {
+  instrument?: string;
+}
+
+/** Required inclusive window for reconstructed books. */
+export interface L2OrderbooksOptions extends L2UpdatesOptions {
   source: string;
   market: string;
-  from?: TimeInput;
-  to?: TimeInput;
-  limit?: number;
+  start: number;
+  end: number;
 }
 
-export interface OhlcvOptions extends HistoricalQueryOptions {
+/** Options for quotes derived from reconstructed top-of-book levels. */
+export interface BboOptions extends Omit<L2OrderbooksOptions, "instrument"> {
+  /** Keep the last quote in each UTC-aligned interval bucket. */
+  interval?: OhlcvInterval;
+  /** Suppress consecutive quotes whose best prices and quantities are unchanged. */
+  changesOnly?: boolean;
+}
+
+export interface OhlcvOptions extends OhlcvRowsOptions {
   interval: OhlcvInterval;
 }
 
-export interface VolumeOptions extends HistoricalQueryOptions {
-  interval: OhlcvInterval;
-}
-
-export interface VwapOptions extends HistoricalQueryOptions {
-  interval: OhlcvInterval;
-}
-
-export interface VolatilityOptions extends HistoricalQueryOptions {
-  interval: OhlcvInterval;
-  method?: "log_returns";
-}
-
-export interface DepthMetricsOptions extends HistoricalQueryOptions {
+export interface DepthMetricsOptions extends Omit<L2OrderbooksOptions, "instrument"> {
   depthPct?: number;
   slippageNotional?: number;
-}
-
-export interface ReplayOptions {
-  source: string;
-  market: string;
-  from?: TimeInput;
-  to?: TimeInput;
-  /** `true` (default) streams standardised events from local snapshots. */
-  standard?: boolean;
-  /** Materialize complete orderbooks from snapshots and deltas. Defaults to `true`. */
-  materializeOrderbooks?: boolean;
 }
 
 export interface StreamOptions {
@@ -605,10 +761,4 @@ export interface StreamOptions {
   includeBuffer?: boolean;
   /** Materialize complete orderbooks from snapshots and deltas. Defaults to `true`. */
   materializeOrderbooks?: boolean;
-}
-
-export interface SnapshotDownloadManifestOptions {
-  source: string;
-  market: string;
-  date: string;
 }

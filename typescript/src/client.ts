@@ -1,45 +1,38 @@
-import { decompress } from "fzstd";
-
 import type {
   AuthMode,
-  BboQuote,
   CatalogCount,
   CatalogInstrument,
   CatalogMarket,
   CatalogOptions,
   CatalogResponse,
-  DepthMetricsOptions,
-  DepthMetricsRow,
+  MetaResponse,
+  InstrumentsOptions,
+  InstrumentsResponse,
+  OptionContract,
   FetchLike,
-  FundingRateEvent,
-  HistoricalQueryOptions,
+  FundingRateRow,
+  EventsOptions,
+  MixedEventRow,
+  MixedEventType,
+  IntentRow,
+  IntentRowsOptions,
+  OhlcvRow,
+  RawCaptureRow,
+  RawQueryOptions,
+  RawChannelOptions,
+  HistoricalRowsOptions,
   L2UpdatesOptions,
-  ListSnapshotsOptions,
-  MarkPriceEvent,
-  IntentData,
-  IntentEvent,
-  OptionTickerEvent,
-  OptionTickerOptions,
-  PerpetualTickerEvent,
-  OhlcvBar,
+  L2OrderbooksOptions,
+  OptionTickerRow,
+  OptionTickerRowsOptions,
   OhlcvOptions,
-  OrderbookEvent,
-  StandardEvent,
-  TradeEvent,
+  OhlcvRowsOptions,
+  OrderbookL2Row,
+  TradeRow,
+  TradeRowsOptions,
   PolarisClientOptions,
-  PropammQuoteLadderEvent,
-  ReplayOptions,
-  SnapshotDownloadManifest,
-  SnapshotDownloadManifestOptions,
-  SnapshotEntry,
   StreamOptions,
   TradingViewOhlcvResponse,
-  VolumeBar,
-  VolumeOptions,
-  VolatilityBar,
-  VolatilityOptions,
-  VwapBar,
-  VwapOptions,
 } from "./types";
 
 import {
@@ -49,27 +42,14 @@ import {
   RateLimitedError,
 } from "./errors";
 
-import { toIso8601, toEpochMs, datesInRange } from "./utils";
-import {
-  ensureLayout,
-  dataFilePath,
-  parseSnapshotKey,
-  inferSnapshotStartMs,
-  inferSnapshotEndMs,
-  fileExists,
-  type StorageLayout,
-} from "./storage";
-import { OhlcvAggregator } from "./aggregator";
-import type { IStorage } from "./storage/interface";
 import type { PolarisRuntime } from "./runtime/types";
 import { RealtimeStream } from "./realtime";
-import { OrderbookBuilder } from "./orderbook";
 
 // ---------------------------------------------------------------------------
 // SDK version – bumped manually during releases
 // ---------------------------------------------------------------------------
 
-const VERSION = "0.8.0";
+const VERSION = "0.9.0";
 
 // ---------------------------------------------------------------------------
 // Internal shorthand
@@ -84,40 +64,6 @@ interface FetchOptions {
 }
 
 type RedirectMode = "error" | "follow" | "manual";
-
-interface ResolvedHistoricalRange {
-  fromMs: number;
-  toMs: number;
-}
-
-interface CatalogMarketBounds {
-  startMs: number;
-  endMs: number;
-  accessStatus?: string;
-  publicCutoffMs?: number;
-}
-
-interface GapInterval {
-  startMs: number;
-  endMs: number;
-}
-
-interface ResolvedSnapshotCoverage {
-  paths: string[];
-  gaps: GapInterval[];
-}
-
-interface LocalSnapshotFileEntry extends SnapshotEntry {
-  path: string;
-  source: string;
-  market: string;
-  date: string;
-  startMs?: number;
-  endMs?: number;
-}
-
-const DEFAULT_INFERRED_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1_000;
-const DEFAULT_SNAPSHOT_DOWNLOAD_CONCURRENCY = 8;
 
 function resolveStreamUrl(baseUrl: URL, explicit?: string): string {
   if (explicit) {
@@ -147,11 +93,7 @@ export class BasePolarisClient {
   private readonly _streamUrl: string;
   private readonly _timeout: number;
   private readonly _fetch: FetchLike;
-  private readonly _root: string;
   private readonly _runtime: PolarisRuntime;
-  private readonly _snapshotDownloadConcurrency: number;
-  private _storage: IStorage | undefined;
-  private _layout: StorageLayout | undefined;
   private readonly _streams = new Set<RealtimeStream>();
   private _closed = false;
 
@@ -164,27 +106,7 @@ export class BasePolarisClient {
     this._streamUrl = resolveStreamUrl(this._baseUrl, options.streamUrl);
     this._timeout = options.timeout ?? 30_000;
     this._fetch = options.fetch ?? globalThis.fetch;
-    this._root = runtime.resolveRoot(options.datasetRoot);
     this._runtime = runtime;
-    this._snapshotDownloadConcurrency = normalizePositiveInteger(
-      options.snapshotDownloadConcurrency,
-    ) ?? DEFAULT_SNAPSHOT_DOWNLOAD_CONCURRENCY;
-    this._storage = options.storage;
-  }
-
-  // ---------------------------------------------------------------------
-  // Storage initialization (lazy)
-  // ---------------------------------------------------------------------
-
-  /**
-   * Get or create the storage implementation.
-   * Lazily initialized on first use.
-   */
-  private async _getStorage(): Promise<IStorage> {
-    if (!this._storage) {
-      this._storage = await this._runtime.createStorage(this._root);
-    }
-    return this._storage;
   }
 
   // -----------------------------------------------------------------------
@@ -194,6 +116,16 @@ export class BasePolarisClient {
   /** Check API availability. */
   async health(): Promise<Json> {
     return this._getJson("/health", { auth: "none" });
+  }
+
+  /** Return API documentation and machine-readable resource links. */
+  async meta(): Promise<MetaResponse> {
+    const payload = await this._getJson<unknown>("/meta", { auth: "none" });
+    if (!isRecord(payload) || !["name", "docs", "llms", "openapi", "skill", "health", "stream"]
+      .every((key) => typeof payload[key] === "string")) {
+      throw new PolarisError("Invalid /meta response");
+    }
+    return payload as unknown as MetaResponse;
   }
 
   stream(options: StreamOptions): RealtimeStream {
@@ -273,462 +205,247 @@ export class BasePolarisClient {
     return { updatedAt, markets };
   }
 
+  /** Discover venue-native option contracts for one underlying market. */
+  async instruments(options: InstrumentsOptions): Promise<InstrumentsResponse> {
+    const source = optionalFilter("source", options.source);
+    const market = optionalFilter("market", options.market);
+    if (!source || !market) throw new PolarisError("source and market are required");
+    const params: Record<string, string> = { source, market, limit: "1000" };
+    const instrument = optionalFilter("instrument", options.instrument);
+    const q = optionalFilter("q", options.q);
+    if (instrument) params.instrument = instrument;
+    if (q) params.q = q;
+    if (options.expiry !== undefined) {
+      if (!Number.isSafeInteger(options.expiry) || options.expiry < 0) {
+        throw new PolarisError("expiry must be a non-negative Unix-millisecond integer");
+      }
+      params.expiry = String(options.expiry);
+    }
+    if (options.optionType !== undefined) {
+      if (options.optionType !== "call" && options.optionType !== "put") {
+        throw new PolarisError("optionType must be call or put");
+      }
+      params.option_type = options.optionType;
+    }
+
+    const instruments: OptionContract[] = [];
+    let updatedAt: string | undefined;
+    let cursor: string | undefined;
+    const cursors = new Set<string>();
+    while (true) {
+      const payload = await this._getJson<{
+        updatedAt?: unknown;
+        instruments?: unknown;
+        next_cursor?: unknown;
+      }>("/catalog/instruments", {
+        params: cursor ? { ...params, cursor } : params,
+        auth: "if-available",
+      });
+      if (typeof payload.updatedAt !== "string" || !payload.updatedAt ||
+          !Array.isArray(payload.instruments)) {
+        throw new PolarisError("Invalid instrument catalog page");
+      }
+      updatedAt ??= payload.updatedAt;
+      for (const item of payload.instruments) {
+        if (!isOptionContract(item)) throw new PolarisError("Invalid option contract");
+        instruments.push(item);
+      }
+      const next = payload.next_cursor;
+      if (next === undefined || next === null) break;
+      if (typeof next !== "string" || !next || cursors.has(next)) {
+        throw new PolarisError("Invalid instrument catalog next_cursor");
+      }
+      cursors.add(next);
+      cursor = next;
+    }
+    return { updatedAt: updatedAt!, instruments };
+  }
+
   /** Return global public source and market totals for the catalog. */
   async count(): Promise<CatalogCount> {
     return this._getJson<CatalogCount>("/count", { auth: "if-available" });
   }
 
-  /**
-   * List available snapshot files for a source and market over a time range.
-   * Auto-paginates to return **all** matching entries.
-   */
-  async listSnapshots(options: ListSnapshotsOptions): Promise<SnapshotEntry[]> {
-    const entries: SnapshotEntry[] = [];
-    let cursor: string | undefined;
-
-    do {
-      const params = buildSnapshotParams(options);
-      if (cursor) params.cursor = cursor;
-
-      const res = await this._getJson<{
-        snapshots: unknown[];
-        next_cursor: string | null;
-        has_more: boolean;
-      }>("/snapshots", { params, auth: "if-available" });
-
-      entries.push(...res.snapshots.map((entry) => normalizeSnapshotEntry(entry)));
-      cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
-    } while (cursor);
-
-    return entries;
-  }
-
   // -----------------------------------------------------------------------
-  // Historical data – snapshot-first
+  // Historical data from direct API routes
   // -----------------------------------------------------------------------
 
-  /**
-   * Return all standardised historical events for a time range.
-   *
-   * Reads from locally-cached standard snapshot files in `data/`.
-   * Missing standardized snapshots are discovered via daily `GET /download`
-   * manifests and downloaded automatically.
-   */
-  async events(options: HistoricalQueryOptions): Promise<StandardEvent[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: StandardEvent[] = [];
-    const events = this._readSnapshotEvents(options.source, options.market, fromMs, toMs);
-    for await (const event of materializeEvents(
-      events,
-      options.materializeOrderbooks ?? true,
-    )) {
-      result.push(event as StandardEvent);
-    }
-    return result;
+  /** Return flat trades from the direct historical API. */
+  async trades(options: TradeRowsOptions = {}): Promise<TradeRow[]> {
+    const instrument = optionalFilter("instrument", options.instrument);
+    return this._historicalRows("/trades", options, isTradeRow,
+      instrument === undefined ? {} : { instrument });
   }
 
-  /**
-   * Return all standardised trade events for a time range.
-   *
-   * Reads from locally-cached standard snapshot files, filtering to
-   * `type === "trade"`.
-   */
-  async trades(options: HistoricalQueryOptions): Promise<TradeEvent[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: TradeEvent[] = [];
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      (e) => e.type === "trade",
-    )) {
-      result.push(event as TradeEvent);
+  /** Return authenticated mixed flat rows in global collector-time order. */
+  async events(options: EventsOptions): Promise<MixedEventRow[]> {
+    if (!Number.isSafeInteger(options.start) || options.start < 0 ||
+        !Number.isSafeInteger(options.end) || options.end < options.start) {
+      throw new PolarisError("start and end must be non-negative inclusive milliseconds with start <= end");
     }
-    return result;
+    const params: Record<string, string> = {
+      start: String(options.start), end: String(options.end), limit: "1000",
+    };
+    for (const name of ["source", "market", "instrument"] as const) {
+      const value = optionalFilter(name, options[name]);
+      if (value !== undefined) params[name] = value;
+    }
+    if (options.types !== undefined) {
+      const allowed: readonly MixedEventType[] = ["trade", "l2_update", "funding_rate", "intent", "quote", "option_ticker", "ohlcv"];
+      if (!Array.isArray(options.types) || options.types.length === 0 ||
+          options.types.some((value) => !allowed.includes(value))) {
+        throw new PolarisError("types must contain valid event types");
+      }
+      params.types = options.types.join(",");
+    }
+    return this._pagedRows("/events", params, isMixedEventRow, "items", "required");
   }
 
-  /** Return canonical RFQ, quote, and executable-intent observations. */
-  async intents(options: HistoricalQueryOptions): Promise<IntentEvent[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: IntentEvent[] = [];
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      (candidate) => candidate.type === "intent",
-    )) {
-      result.push(parseIntentEvent(event));
+  /** Return exact raw captures with optional market and channel filters. */
+  async raw(options: RawQueryOptions): Promise<RawCaptureRow[]> {
+    const source = optionalFilter("source", options.source);
+    if (!source || source === "." || source === "..") {
+      throw new PolarisError("source must be a non-empty raw source identifier");
     }
-    return result;
+    const market = optionalFilter("market", options.market);
+    const channel = optionalFilter("channel", options.channel);
+    if (channel === "." || channel === "..") {
+      throw new PolarisError("channel must be a native raw channel identifier");
+    }
+    if (!Number.isSafeInteger(options.start) || options.start < 0 ||
+      !Number.isSafeInteger(options.end) || options.end < options.start) {
+      throw new PolarisError("start and end must be non-negative inclusive milliseconds with start <= end");
+    }
+    const start = new Date(options.start);
+    const end = new Date(options.end);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      throw new PolarisError("start and end must be representable ISO timestamps");
+    }
+    const limit = options.limit ?? 1000;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) {
+      throw new PolarisError("limit must be an integer from 1 to 1000");
+    }
+    return this._pagedRows("/raw", {
+      source,
+      ...(market !== undefined && { market }),
+      ...(channel !== undefined && { channel }),
+      start: start.toISOString(),
+      end: end.toISOString(),
+      limit: String(limit),
+    }, isRawCaptureRow, "data");
   }
 
-  /**
-   * Return standardized option tickers for a whole chain or one exact
-   * venue-native contract.
-   */
-  async optionTickers(options: OptionTickerOptions): Promise<OptionTickerEvent[]> {
+  /** Return exact captures from one venue-native channel. */
+  async rawChannel(options: RawChannelOptions): Promise<RawCaptureRow[]> {
+    if (!options.exchange.trim() || !options.event.trim() ||
+      options.exchange === "." || options.exchange === ".." ||
+      options.event === "." || options.event === "..") {
+      throw new PolarisError("exchange and event must be non-empty channel identifiers");
+    }
+    return this.raw({ source: options.exchange, channel: options.event, market: options.market,
+      start: options.start, end: options.end });
+  }
+
+  /** Return pair-shaped flat intent observations. */
+  async intents(options: IntentRowsOptions = {}): Promise<IntentRow[]> {
+    const instrument = optionalFilter("instrument", options.instrument);
+    const intentId = optionalFilter("intentId", options.intentId);
+    return this._historicalRows("/intents", options, isIntentRow, {
+      ...(instrument !== undefined && { instrument }),
+      ...(intentId !== undefined && { intent_id: intentId }),
+    });
+  }
+
+  /** Return flat option ticker rows for a whole chain or one exact venue-native contract. */
+  async optionTickers(options: OptionTickerRowsOptions = {}): Promise<OptionTickerRow[]> {
     const instrument = normalizeInstrumentFilter(options.instrument);
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: OptionTickerEvent[] = [];
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      (candidate) => candidate.type === "option_ticker",
-    )) {
-      const ticker = parseOptionTickerEvent(event);
-      if (instrument !== undefined && ticker.instrument !== instrument) continue;
-      result.push(ticker);
-    }
-    return result;
-  }
-
-  /** Return partial venue-published perpetual market-state updates. */
-  async perpetualTickers(options: HistoricalQueryOptions): Promise<PerpetualTickerEvent[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: PerpetualTickerEvent[] = [];
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      (candidate) => candidate.type === "perpetual_ticker",
-    )) {
-      result.push(parsePerpetualTickerEvent(event));
-    }
-    return result;
-  }
-
-  /**
-   * Return standardised orderbook snapshot events for a time range.
-   *
-   * Reads snapshots and deltas from locally-cached standard snapshot files.
-   * By default every returned row contains a complete reconstructed book.
-   */
-  async l2Snapshots(
-    options: HistoricalQueryOptions,
-  ): Promise<OrderbookEvent[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: OrderbookEvent[] = [];
-    const events = this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      isOrderbookEvent,
+    return this._historicalRows(
+      "/options-ticker", options, isOptionTickerRow, instrument ? { instrument } : {},
     );
-    for await (const event of materializeEvents(
-      events,
-      options.materializeOrderbooks ?? true,
-    )) {
-      result.push(event as OrderbookEvent);
-    }
-    return result;
   }
 
-  /**
-   * Return raw standardized orderbook snapshots and deltas for a time range.
-   *
-   * No complete-book reconstruction is performed. Feed the returned rows into
-   * `OrderbookBuilder` when application-managed book state is needed.
-   */
-  async l2Updates(options: L2UpdatesOptions): Promise<OrderbookEvent[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: OrderbookEvent[] = [];
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      isOrderbookEvent,
-    )) {
-      result.push(event);
-    }
-    return result;
+  /** Return funding-bearing perpetual ticker observations. */
+  async perpetualTickers(options: HistoricalRowsOptions = {}): Promise<FundingRateRow[]> {
+    return this._historicalRows("/perpetual-ticker", options, isFundingRateRow);
   }
 
-  /**
-   * Derive best bid / offer quotes from standardised orderbook snapshots.
-   */
-  async bbo(options: HistoricalQueryOptions): Promise<BboQuote[]> {
-    const result: BboQuote[] = [];
-    for (const event of await this.l2Snapshots({
-      ...options,
-      materializeOrderbooks: true,
-    })) {
-      const quote = deriveBbo(event);
-      if (quote) result.push(quote);
+  /** Return reconstructed, sorted top-25 books after each L2 event. */
+  async l2Snapshots(options: L2OrderbooksOptions): Promise<OrderbookL2Row[]> {
+    const source = optionalFilter("source", options.source);
+    const market = optionalFilter("market", options.market);
+    if (!source || !market) {
+      throw new PolarisError("source and market are required");
     }
-
-    return result;
+    if (!Number.isSafeInteger(options.start) || !Number.isSafeInteger(options.end) ||
+        options.start < 0 || options.end < options.start) {
+      throw new PolarisError("l2Snapshots requires non-negative inclusive bounds with start <= end");
+    }
+    const instrument = optionalFilter("instrument", options.instrument);
+    return this._historicalRows("/l2-orderbooks", { ...options, source, market }, isOrderbookL2Row,
+      instrument ? { instrument } : {});
   }
 
-  /**
-   * Return standardised funding-rate point-series events for a time range.
-   */
-  async fundingRates(
-    options: HistoricalQueryOptions,
-  ): Promise<FundingRateEvent[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: FundingRateEvent[] = [];
-
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      isFundingRateEvent,
-    )) {
-      result.push(event);
-    }
-
-    return result;
+  /** Return flat source snapshots and sparse deltas from the direct API. */
+  async l2Updates(options: L2UpdatesOptions = {}): Promise<OrderbookL2Row[]> {
+    const instrument = optionalFilter("instrument", options.instrument);
+    return this._historicalRows("/l2-updates", options, isOrderbookL2Row,
+      instrument ? { instrument } : {});
   }
 
-  /**
-   * Return standardised mark-price point-series events for a time range.
-   */
-  async markPrices(
-    options: HistoricalQueryOptions,
-  ): Promise<MarkPriceEvent[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: MarkPriceEvent[] = [];
-
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      isMarkPriceEvent,
-    )) {
-      result.push(event);
-    }
-
-    return result;
+  /** Return partial flat funding observations from the direct historical API. */
+  async fundingRates(options: HistoricalRowsOptions = {}): Promise<FundingRateRow[]> {
+    return this._historicalRows("/funding-rates", options, isFundingRateRow);
   }
 
-  /**
-   * Return standardized PropAMM quote-ladder record events for a time range.
-   */
-  async propammQuoteLadders(
-    options: HistoricalQueryOptions,
-  ): Promise<PropammQuoteLadderEvent[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const result: PropammQuoteLadderEvent[] = [];
-
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-    )) {
-      const ladder = parsePropammQuoteLadderEvent(event);
-      if (ladder) result.push(ladder);
-    }
-
-    return result;
+  /** Return every venue-published candle update as a flat API row. */
+  async ohlcv(options: OhlcvRowsOptions = {}): Promise<OhlcvRow[]> {
+    const instrument = optionalFilter("instrument", options.instrument);
+    const interval = optionalFilter("interval", options.interval);
+    return this._historicalRows("/ohlcv", options, isOhlcvRow, {
+      ...(instrument ? { instrument } : {}),
+      ...(interval ? { interval } : {}),
+    });
   }
 
-  /**
-   * Aggregate per-bucket trade volume from standardised trade data.
-   */
-  async volume(options: VolumeOptions): Promise<VolumeBar[]> {
-    const bars = await this.ohlcv(options);
-    return bars.map((bar) => ({
-      timestamp: bar.timestamp,
-      volume: bar.volume,
-    }));
-  }
-
-  /**
-   * Aggregate per-bucket VWAP from standardised trade data.
-   */
-  async vwap(options: VwapOptions): Promise<VwapBar[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const agg = new VwapAggregator(options.interval);
-
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      (e) => e.type === "trade",
-    )) {
-      const data = event.data as { price: unknown; quantity: unknown };
-      const price = coerceNumeric(data.price);
-      const quantity = coerceNumeric(data.quantity);
-      if (price === undefined || quantity === undefined) continue;
-      agg.add(sdkTimestamp(event as StandardEvent)!, price, quantity);
+  private async _venueCandles(
+    options: OhlcvOptions,
+  ): Promise<OhlcvRow[]> {
+    const rows = await this.ohlcv(options);
+    const latest = new Map<string, OhlcvRow>();
+    for (const row of rows) {
+      const key = JSON.stringify([row.source, row.market, row.instrument, row.interval, row.open_timestamp]);
+      const prior = latest.get(key);
+      if (!prior || row.collector_timestamp > prior.collector_timestamp ||
+          (row.collector_timestamp === prior.collector_timestamp && row.event_id > prior.event_id)) {
+        latest.set(key, row);
+      }
     }
-
-    return agg.finish();
-  }
-
-  /**
-   * Aggregate realised volatility from standardised trade data.
-   */
-  async volatility(options: VolatilityOptions): Promise<VolatilityBar[]> {
-    if (options.method !== undefined && options.method !== "log_returns") {
-      throw new PolarisError("method must be 'log_returns'");
-    }
-
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const agg = new VolatilityAggregator(options.interval);
-
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      (e) => e.type === "trade",
-    )) {
-      const data = event.data as { price: unknown };
-      const price = coerceNumeric(data.price);
-      if (price === undefined) continue;
-      agg.add(sdkTimestamp(event as StandardEvent)!, price);
-    }
-
-    return agg.finish();
-  }
-
-  /**
-   * Derive spread, depth, imbalance, and slippage metrics from orderbooks.
-   */
-  async depthMetrics(
-    options: DepthMetricsOptions,
-  ): Promise<DepthMetricsRow[]> {
-    const depthPct = options.depthPct ?? 0.01;
-    const slippageNotional = options.slippageNotional ?? 10_000;
-
-    if (depthPct <= 0) {
-      throw new PolarisError("depthPct must be greater than 0");
-    }
-    if (slippageNotional <= 0) {
-      throw new PolarisError("slippageNotional must be greater than 0");
-    }
-
-    const result: DepthMetricsRow[] = [];
-    for (const event of await this.l2Snapshots({
-      ...options,
-      materializeOrderbooks: true,
-    })) {
-      const row = deriveDepthMetrics(event, depthPct, slippageNotional);
-      if (row) result.push(row);
-    }
-
-    return result;
-  }
-
-  /**
-   * Aggregate OHLCV bars from standardised trade data.
-   *
-   * Reads from locally-cached standard snapshot files and aggregates in memory
-   * using the same interval-bucketing strategy as the Python SDK.
-   */
-  async ohlcv(options: OhlcvOptions): Promise<OhlcvBar[]> {
-    const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-    const agg = new OhlcvAggregator(options.interval);
-
-    for await (const event of this._readSnapshotEvents(
-      options.source,
-      options.market,
-      fromMs,
-      toMs,
-      (e) => e.type === "trade",
-    )) {
-      const data = event.data as { price: number; quantity: number };
-      agg.add(sdkTimestamp(event as StandardEvent)!, data.price, data.quantity);
-    }
-
-    return agg.finish();
+    return [...latest.values()].sort((a, b) => a.open_timestamp - b.open_timestamp || a.event_id.localeCompare(b.event_id));
   }
 
   /**
    * Return a TradingView-shaped OHLCV response.
    *
-   * Aggregates bars from local snapshot data and reshapes to
-   * `{ candles, volumes }`.
+   * Reshapes venue candle bars to `{ candles, volumes }`.
    */
   async ohlcvTradingView(
     options: OhlcvOptions,
   ): Promise<TradingViewOhlcvResponse> {
-    const bars = await this.ohlcv(options);
+    const bars = await this._venueCandles(options);
     return {
       candles: bars.map((b) => ({
-        t: b.timestamp,
+        t: b.open_timestamp,
         o: b.open,
         h: b.high,
         l: b.low,
         c: b.close,
       })),
       volumes: bars.map((b) => ({
-        t: b.timestamp,
-        v: b.volume,
-        trades: b.trades,
+        t: b.open_timestamp,
+        v: b.base_volume ?? 0,
+        trades: b.trade_count ?? 0,
       })),
     };
-  }
-
-  /**
-   * Stream historical events as an async iterable.
-   *
-   * Defaults to standardised events from local snapshots (`standard: true`).
-   * `standard: false` is not supported because historical reads are
-   * restricted to snapshot discovery plus `GET /download`.
-   *
-   * @example
-   * ```ts
-   * for await (const row of client.replay({
-   *   source: "binance",
-   *   market: "BTC-USDT",
-   *   from: "2024-01-01T00:00:00Z",
-   *   to: "2024-01-01T01:00:00Z",
-   * })) {
-   *   console.log(row);
-   * }
-   * ```
-   */
-  async *replay(options: ReplayOptions): AsyncGenerator<StandardEvent> {
-    if (options.standard !== false) {
-      const { fromMs, toMs } = await this._resolveHistoricalRange(options);
-      const events = this._readSnapshotEvents(
-        options.source,
-        options.market,
-        fromMs,
-        toMs,
-      );
-      yield* materializeEvents(events, options.materializeOrderbooks ?? true);
-    } else {
-      throw new PolarisError(
-        "replay({ standard: false }) is not supported by the TypeScript SDK. Use snapshot-backed replay instead.",
-      );
-    }
-  }
-
-  // -----------------------------------------------------------------------
-  // Downloads
-  // -----------------------------------------------------------------------
-
-  /**
-   * Get all pre-signed download URLs for a source/market UTC date in one call.
-   */
-  async getSnapshotDownloadUrls(
-    options: SnapshotDownloadManifestOptions,
-  ): Promise<SnapshotDownloadManifest> {
-    const payload = await this._getJson("/download", {
-      params: {
-        source: options.source,
-        market: options.market,
-        date: options.date,
-        mode: "json",
-      },
-      auth: "if-available",
-    });
-
-    return normalizeSnapshotDownloadManifest(payload);
   }
 
   // -----------------------------------------------------------------------
@@ -749,609 +466,61 @@ export class BasePolarisClient {
   }
 
   // -----------------------------------------------------------------------
-  // Internals – snapshot-first local reads
-  // -----------------------------------------------------------------------
-
-  private async _resolveHistoricalRange(
-    options: Pick<HistoricalQueryOptions, "source" | "market" | "from" | "to">,
-  ): Promise<ResolvedHistoricalRange> {
-    if (options.from !== undefined && options.to !== undefined) {
-      const fromMs = toEpochMs(options.from);
-      const toMs = toEpochMs(options.to);
-      assertValidRange(fromMs, toMs);
-      return { fromMs, toMs };
-    }
-
-    const bounds = await this._catalogMarketBounds(options.source, options.market);
-
-    if (bounds.accessStatus === "restricted" && !this._apiKey) {
-      throw new UnauthorizedError(
-        `API key is required to infer a default range for restricted dataset '${options.source}/${options.market}'`,
-      );
-    }
-
-    const lowerBoundMs = bounds.startMs;
-    let upperBoundMs = Math.min(bounds.endMs, Date.now());
-
-    if (!this._apiKey && bounds.publicCutoffMs !== undefined) {
-      upperBoundMs = Math.min(upperBoundMs, bounds.publicCutoffMs);
-    }
-
-    if (lowerBoundMs >= upperBoundMs) {
-      throw new PolarisError(
-        `Catalog reported no queryable historical range for '${options.source}/${options.market}'`,
-      );
-    }
-
-    let fromMs: number;
-    let toMs: number;
-
-    if (options.from === undefined && options.to === undefined) {
-      toMs = upperBoundMs;
-      fromMs = Math.max(lowerBoundMs, toMs - DEFAULT_INFERRED_LOOKBACK_MS);
-    } else if (options.from === undefined) {
-      toMs = Math.min(toEpochMs(options.to as NonNullable<typeof options.to>), upperBoundMs);
-      fromMs = Math.max(lowerBoundMs, toMs - DEFAULT_INFERRED_LOOKBACK_MS);
-    } else {
-      fromMs = Math.max(toEpochMs(options.from), lowerBoundMs);
-      toMs = Math.min(fromMs + DEFAULT_INFERRED_LOOKBACK_MS, upperBoundMs);
-    }
-
-    assertValidRange(fromMs, toMs, "from must resolve to a time before to");
-    return { fromMs, toMs };
-  }
-
-  private async _catalogMarketBounds(
-    source: string,
-    market: string,
-  ): Promise<CatalogMarketBounds> {
-    const payload = await this.catalog({ source, market });
-
-    for (const catalogMarket of payload.markets) {
-      if (catalogMarket.source !== source || catalogMarket.market !== market) {
-        continue;
-      }
-      if (!catalogMarket.start || !catalogMarket.end) {
-        throw new PolarisError(
-          `Catalog entry for '${source}/${market}' did not include valid start/end timestamps`,
-        );
-      }
-
-      const accessStatus = catalogMarket.access?.status?.trim().toLowerCase();
-
-      return {
-        startMs: toEpochMs(catalogMarket.start),
-        endMs: toEpochMs(catalogMarket.end),
-        accessStatus: accessStatus || undefined,
-        publicCutoffMs: endOfPublicCutoffDayMs(
-          catalogMarket.access?.public_cutoff_date,
-        ),
-      };
-    }
-
-    throw new NotFoundError(`Catalog did not include dataset '${source}/${market}'`);
-  }
-
-  /**
-   * Core routine: resolve standardized snapshot coverage for a time range,
-   * materialize missing files locally, and yield matching events one at a time.
-   */
-  private _readSnapshotEvents<T extends Json>(
-    source: string,
-    market: string,
-    fromMs: number,
-    toMs: number,
-    filter: (event: Json) => event is T,
-  ): AsyncGenerator<T>;
-  private _readSnapshotEvents(
-    source: string,
-    market: string,
-    fromMs: number,
-    toMs: number,
-    filter?: (event: Json) => boolean,
-  ): AsyncGenerator<Json>;
-  private async *_readSnapshotEvents(
-    source: string,
-    market: string,
-    fromMs: number,
-    toMs: number,
-    filter?: (event: Json) => boolean,
-  ): AsyncGenerator<Json> {
-    const layout = await this._getLayout();
-    const coverage = await this._resolveSnapshotCoverage(
-      source,
-      market,
-      fromMs,
-      toMs,
-      layout,
-    );
-
-    if (coverage.paths.length === 0 || coverage.gaps.length > 0) {
-      throw new PolarisError(
-        `Requested standardized snapshot range could not be satisfied for '${source}/${market}'`,
-      );
-    }
-
-    const storage = await this._getStorage();
-    for (const filePath of coverage.paths) {
-      const lines = await readSnapshotLines(storage, filePath);
-      const decoded = this._decodeSnapshotLines(lines, filePath);
-      for (let event of decoded) {
-        const ts = sdkTimestamp(event);
-        if (ts === undefined || ts < fromMs || ts >= toMs) continue;
-        if (filter && !filter(event)) continue;
-
-        if ("timestamp" in event && event.timestamp !== ts) {
-          event = { ...event, timestamp: ts };
-        }
-        yield event;
-      }
-    }
-  }
-
-  /** @internal Exposed as a method so cross-runtime contract tests use the production decoder. */
-  private _decodeSnapshotLines(lines: string[], filePath: string): StandardEvent[] {
-    return decodeSnapshotLines(lines, filePath);
-  }
-
-  private async _resolveSnapshotCoverage(
-    source: string,
-    market: string,
-    fromMs: number,
-    toMs: number,
-    layout: StorageLayout,
-  ): Promise<ResolvedSnapshotCoverage> {
-    const requiredDates = datesInRange(fromMs, toMs);
-    const requiredRangesByDay = this._requiredSnapshotRangesByDay(fromMs, toMs);
-
-    const localSnapshots = await this._listLocalSnapshots(
-      layout,
-      source,
-      market,
-      requiredDates,
-    );
-
-    const localByDay = new Map<string, LocalSnapshotFileEntry[]>();
-    for (const entry of localSnapshots) {
-      const dayEntries = localByDay.get(entry.date) ?? [];
-      dayEntries.push(entry);
-      localByDay.set(entry.date, dayEntries);
-    }
-
-    const localPaths: string[] = [];
-    const localGaps: GapInterval[] = [];
-    for (const date of requiredDates) {
-      const range = requiredRangesByDay.get(date);
-      if (!range) continue;
-
-      const selection = this._resolveSnapshotDaySelection(
-        localByDay.get(date) ?? [],
-        range.startMs,
-        range.endMs,
-        utcDayStartMs(date),
-      );
-      localPaths.push(...selection.selected.map((entry) => entry.path));
-      localGaps.push(...selection.gaps);
-    }
-
-    if (localPaths.length > 0 && localGaps.length === 0) {
-      return { paths: localPaths, gaps: [] };
-    }
-
-    const snapshotQueryStartMs = utcDayStartMs(requiredDates[0] ?? epochMsToDate(fromMs));
-    const snapshotQueryEndMs =
-      utcDayStartMs(requiredDates.at(-1) ?? epochMsToDate(toMs - 1)) + 86_400_000;
-    const remoteSnapshots = await this.listSnapshots({
-      source,
-      market,
-      from: snapshotQueryStartMs,
-      to: snapshotQueryEndMs,
-    });
-
-    const remoteByDay = new Map<string, SnapshotEntry[]>();
-    for (const snapshot of remoteSnapshots) {
-      const date = snapshot.date ?? inferredSnapshotDate(snapshot.key);
-      if (!date || !requiredRangesByDay.has(date)) continue;
-      const dayEntries = remoteByDay.get(date) ?? [];
-      dayEntries.push(snapshot);
-      remoteByDay.set(date, dayEntries);
-    }
-
-    const selectedSnapshots: SnapshotEntry[] = [];
-    const gaps: GapInterval[] = [];
-    for (const date of requiredDates) {
-      const range = requiredRangesByDay.get(date);
-      if (!range) continue;
-
-      const selection = this._resolveSnapshotDaySelection(
-        remoteByDay.get(date) ?? [],
-        range.startMs,
-        range.endMs,
-        utcDayStartMs(date),
-      );
-      selectedSnapshots.push(...selection.selected);
-      gaps.push(...selection.gaps);
-    }
-
-    const localByKey = new Map(localSnapshots.map((entry) => [entry.key, entry] as const));
-    const missingSnapshots = selectedSnapshots.filter((snapshot) => {
-      const local = localByKey.get(snapshot.key);
-      return !local;
-    });
-    if (missingSnapshots.length > 0) {
-      const ensured = await this._ensureLocalSnapshots(
-        missingSnapshots,
-        layout,
-      );
-      for (const entry of ensured) {
-        localByKey.set(entry.key, entry);
-      }
-    }
-
-    const paths: string[] = [];
-    for (const snapshot of selectedSnapshots) {
-      const local = localByKey.get(snapshot.key);
-      const storage = await this._getStorage();
-      if (!local || !(await fileExists(storage, local.path))) {
-        throw new PolarisError(
-          "Selected standardized snapshots could not be materialized locally",
-        );
-      }
-      paths.push(local.path);
-    }
-
-    return { paths, gaps };
-  }
-
-  private _requiredSnapshotRangesByDay(
-    fromMs: number,
-    toMs: number,
-  ): Map<string, { startMs: number; endMs: number }> {
-    const ranges = new Map<string, { startMs: number; endMs: number }>();
-    for (const date of datesInRange(fromMs, toMs)) {
-      const dayStartMs = utcDayStartMs(date);
-      ranges.set(date, {
-        startMs: Math.max(fromMs, dayStartMs),
-        endMs: Math.min(toMs, dayStartMs + 86_400_000),
-      });
-    }
-    return ranges;
-  }
-
-  private _resolveSnapshotDaySelection<T extends SnapshotEntry | LocalSnapshotFileEntry>(
-    entries: T[],
-    rangeStartMs: number,
-    rangeEndMs: number,
-    dayStartMs: number,
-  ): { selected: T[]; gaps: GapInterval[] } {
-    if (entries.length === 0) {
-      return {
-        selected: [],
-        gaps: [{ startMs: rangeStartMs, endMs: rangeEndMs }],
-      };
-    }
-
-    const dayEndMs = dayStartMs + 86_400_000;
-    const dailyEntries = entries
-      .filter((entry) => {
-        const bounds = this._snapshotEntryBounds(entry);
-        return bounds.startMs === undefined && bounds.endMs === undefined && entry.hour === undefined;
-      })
-      .sort((a, b) => a.key.localeCompare(b.key));
-    if (dailyEntries.length > 0) {
-      return { selected: [dailyEntries[0]], gaps: [] };
-    }
-
-    const ordered = entries
-      .map((entry) => ({ entry, ...this._snapshotEntryBounds(entry) }))
-      .filter(
-        (
-          item,
-        ): item is { entry: T; startMs: number; endMs?: number } => item.startMs !== undefined,
-      )
-      .sort((a, b) => a.startMs - b.startMs || a.entry.key.localeCompare(b.entry.key));
-
-    const intervals: Array<{ entry: T; startMs: number; endMs: number }> = [];
-    for (let index = 0; index < ordered.length; index += 1) {
-      const current = ordered[index];
-      let resolvedEndMs = current.endMs;
-      if (resolvedEndMs === undefined) {
-        for (let next = index + 1; next < ordered.length; next += 1) {
-          if (ordered[next].startMs > current.startMs) {
-            resolvedEndMs = ordered[next].startMs;
-            break;
-          }
-        }
-      }
-      resolvedEndMs ??= dayEndMs;
-      if (resolvedEndMs <= current.startMs) continue;
-      intervals.push({
-        entry: current.entry,
-        startMs: current.startMs,
-        endMs: resolvedEndMs,
-      });
-    }
-
-    const selected: T[] = [];
-    const coveredRanges: Array<{ startMs: number; endMs: number }> = [];
-    const seen = new Set<string>();
-    for (const interval of intervals) {
-      const overlapStartMs = Math.max(rangeStartMs, interval.startMs);
-      const overlapEndMs = Math.min(rangeEndMs, interval.endMs);
-      if (overlapStartMs >= overlapEndMs) continue;
-
-      if (!seen.has(interval.entry.key)) {
-        selected.push(interval.entry);
-        seen.add(interval.entry.key);
-      }
-      coveredRanges.push({ startMs: overlapStartMs, endMs: overlapEndMs });
-    }
-
-    return {
-      selected,
-      gaps: this._gapIntervalsFromRanges(rangeStartMs, rangeEndMs, coveredRanges),
-    };
-  }
-
-  private _gapIntervalsFromRanges(
-    startMs: number,
-    endMs: number,
-    coveredRanges: Array<{ startMs: number; endMs: number }>,
-  ): GapInterval[] {
-    const gaps: GapInterval[] = [];
-    let cursorMs = startMs;
-
-    for (const range of coveredRanges.sort((a, b) => a.startMs - b.startMs)) {
-      if (range.endMs <= cursorMs) continue;
-      if (range.startMs > cursorMs) {
-        gaps.push({ startMs: cursorMs, endMs: range.startMs });
-      }
-      cursorMs = Math.max(cursorMs, range.endMs);
-    }
-
-    if (cursorMs < endMs) {
-      gaps.push({ startMs: cursorMs, endMs });
-    }
-
-    return gaps;
-  }
-
-  private _snapshotEntryBounds(
-    entry: SnapshotEntry | LocalSnapshotFileEntry,
-  ): { startMs?: number; endMs?: number } {
-    if ("startMs" in entry || "endMs" in entry) {
-      return {
-        startMs: entry.startMs,
-        endMs: entry.endMs,
-      };
-    }
-
-    const startMs = parseSnapshotDateTime(entry.start) ??
-      (entry.date ? inferSnapshotStartMs(entry.key, entry.date) : undefined);
-    const endMs = parseSnapshotDateTime(entry.end) ??
-      (entry.date ? inferSnapshotEndMs(entry.key, entry.date) : undefined);
-
-    if (startMs !== undefined) {
-      return { startMs, endMs };
-    }
-
-    if (entry.date && entry.hour !== undefined) {
-      const fallbackStartMs = utcDayStartMs(entry.date) + entry.hour * 3_600_000;
-      return {
-        startMs: fallbackStartMs,
-        endMs: endMs ?? fallbackStartMs + 3_600_000,
-      };
-    }
-
-    return {};
-  }
-
-  private async _listLocalSnapshots(
-    layout: StorageLayout,
-    source: string,
-    market: string,
-    dates: string[],
-  ): Promise<LocalSnapshotFileEntry[]> {
-    const storage = await this._getStorage();
-    const snapshots: LocalSnapshotFileEntry[] = [];
-
-    for (const date of dates) {
-      const dir = storage.join(layout.dataDir, "standard", source, market, date);
-      let entries;
-      try {
-        entries = await storage.readdir(dir);
-      } catch {
-        continue;
-      }
-
-      for (const entry of entries) {
-        if (!entry.endsWith(".jsonl.zst")) continue;
-
-        const key = entry.slice(0, -".jsonl.zst".length);
-        try {
-          const parsed = parseSnapshotKey(key);
-          if (
-            parsed.tier !== "standard" ||
-            parsed.source !== source ||
-            parsed.market !== market ||
-            parsed.date !== date
-          ) {
-            continue;
-          }
-
-          const path = storage.join(dir, entry);
-          snapshots.push({
-            key,
-            source,
-            market,
-            date,
-            hour: parsed.hour,
-            filename: parsed.filename,
-            path,
-            startMs: inferSnapshotStartMs(key, date),
-            endMs: inferSnapshotEndMs(key, date),
-          });
-        } catch {
-          continue;
-        }
-      }
-    }
-
-    snapshots.sort((a, b) =>
-      (a.startMs ?? Number.MAX_SAFE_INTEGER) - (b.startMs ?? Number.MAX_SAFE_INTEGER) ||
-      a.key.localeCompare(b.key),
-    );
-    return snapshots;
-  }
-
-  private async _ensureLocalSnapshots(
-    snapshots: SnapshotEntry[],
-    layout: StorageLayout,
-  ): Promise<LocalSnapshotFileEntry[]> {
-    if (snapshots.length === 0) return [];
-
-    const grouped = new Map<string, SnapshotEntry[]>();
-    for (const snapshot of snapshots) {
-      const source = snapshot.source ?? inferredSnapshotSource(snapshot.key);
-      const market = snapshot.market ?? inferredSnapshotMarket(snapshot.key);
-      const date = snapshot.date ?? inferredSnapshotDate(snapshot.key);
-      if (!source || !market || !date) {
-        throw new PolarisError(
-          `Snapshot '${snapshot.key}' did not include source, market, or date metadata`,
-        );
-      }
-
-      const groupKey = `${source}\u0000${market}\u0000${date}`;
-      const group = grouped.get(groupKey) ?? [];
-      group.push({ ...snapshot, source, market, date });
-      grouped.set(groupKey, group);
-    }
-
-    const downloadJobs = (
-      await this._mapWithConcurrency(
-        Array.from(grouped.values()),
-        this._snapshotDownloadConcurrency,
-        async (group) => {
-          const first = group[0];
-          const manifest = await this.getSnapshotDownloadUrls({
-            source: first.source as string,
-            market: first.market as string,
-            date: first.date as string,
-          });
-          const manifestUrls = new Map(
-            manifest.snapshots.map((entry) => [entry.key, entry.url] as const),
-          );
-
-          return group.map((snapshot) => {
-            const url = manifestUrls.get(snapshot.key);
-            if (!url) {
-              throw new NotFoundError(
-                `Bulk download manifest did not include selected snapshot '${snapshot.key}'`,
-              );
-            }
-
-            return {
-              url,
-              dataPath: dataFilePath(layout.dataDir, snapshot.key),
-            };
-          });
-        },
-      )
-    ).flat();
-
-    await this._runWithConcurrency(
-      downloadJobs,
-      this._snapshotDownloadConcurrency,
-      async ({ url, dataPath }) => {
-        await this._downloadSnapshotFromUrl(url, dataPath);
-      },
-    );
-
-    const ensured = await this._listLocalSnapshots(
-      layout,
-      snapshots[0]?.source ?? "",
-      snapshots[0]?.market ?? "",
-      Array.from(new Set(snapshots.map((snapshot) => snapshot.date ?? inferredSnapshotDate(snapshot.key)).filter(Boolean) as string[])),
-    );
-    const byKey = new Map(ensured.map((entry) => [entry.key, entry] as const));
-
-    return snapshots.map((snapshot) => {
-      const local = byKey.get(snapshot.key);
-      if (!local) {
-        throw new PolarisError(
-          `Snapshot '${snapshot.key}' could not be materialized locally`,
-        );
-      }
-      return local;
-    });
-  }
-
-  /**
-   * Download a snapshot into the Rust-style `data/` tree.
-   */
-  private async _downloadSnapshotFromUrl(
-    url: string,
-    dataPath: string,
-  ): Promise<void> {
-    const storage = await this._getStorage();
-    if (await fileExists(storage, dataPath)) return;
-
-    const response = await this._request(url, {
-      auth: "none",
-      redirect: "follow",
-    });
-
-    if (!response.ok) {
-      throw new PolarisError(
-        `Failed to download snapshot from ${url}: HTTP ${response.status}`,
-      );
-    }
-
-    const buffer = new Uint8Array(await response.arrayBuffer());
-    await storage.mkdir(storage.dirname(dataPath));
-    await storage.writeFile(dataPath, buffer);
-  }
-
-  private async _runWithConcurrency<T>(
-    items: T[],
-    concurrency: number,
-    worker: (item: T, index: number) => Promise<void>,
-  ): Promise<void> {
-    await this._mapWithConcurrency(items, concurrency, async (item, index) => {
-      await worker(item, index);
-      return undefined;
-    });
-  }
-
-  private async _mapWithConcurrency<T, U>(
-    items: T[],
-    concurrency: number,
-    worker: (item: T, index: number) => Promise<U>,
-  ): Promise<U[]> {
-    if (items.length === 0) return [];
-
-    const limit = Math.max(1, Math.min(concurrency, items.length));
-    const results = new Array<U>(items.length);
-    let cursor = 0;
-
-    const runWorker = async () => {
-      while (true) {
-        const index = cursor;
-        cursor += 1;
-        if (index >= items.length) return;
-        results[index] = await worker(items[index], index);
-      }
-    };
-
-    await Promise.all(
-      Array.from({ length: limit }, () => runWorker()),
-    );
-    return results;
-  }
-
-  // -----------------------------------------------------------------------
   // Internals – HTTP layer
   // -----------------------------------------------------------------------
+
+  private async _historicalRows<T>(
+    path: string,
+    options: HistoricalRowsOptions,
+    isRow: (value: unknown) => value is T,
+    extraFilters: Record<string, string> = {},
+  ): Promise<T[]> {
+    for (const [name, value] of [["start", options.start], ["end", options.end]] as const) {
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+        throw new PolarisError(`${name} must be a non-negative Unix millisecond integer`);
+      }
+    }
+    if (options.start !== undefined && options.end !== undefined && options.start > options.end) {
+      throw new PolarisError("start must be less than or equal to end");
+    }
+    const params: Record<string, string> = { limit: "1000" };
+    if (options.source !== undefined) params.source = options.source;
+    if (options.market !== undefined) params.market = options.market;
+    if (options.start !== undefined) params.start = String(options.start);
+    if (options.end !== undefined) params.end = String(options.end);
+    Object.assign(params, extraFilters);
+
+    return this._pagedRows(path, params, isRow);
+  }
+
+  private async _pagedRows<T>(
+    path: string,
+    params: Record<string, string>,
+    isRow: (value: unknown) => value is T,
+    rowKey: "items" | "data" = "items",
+    authMode: AuthMode = "if-available",
+  ): Promise<T[]> {
+    const rows: T[] = [];
+    let cursor: string | undefined;
+    while (true) {
+      const page = await this._getJson<Record<string, unknown>>(path, {
+        params: cursor ? { ...params, cursor } : params, auth: authMode,
+      });
+      const values = page[rowKey];
+      if (!Array.isArray(values) || typeof page.has_more !== "boolean") {
+        throw new PolarisError(`Invalid ${path} page`);
+      }
+      for (const item of values) {
+        if (!isRow(item)) throw new PolarisError(`Invalid ${path} row`);
+        rows.push(item);
+      }
+      if (!page.has_more) return rows;
+      if (typeof page.next_cursor !== "string" || !page.next_cursor || page.next_cursor === cursor) {
+        throw new PolarisError(`Invalid ${path} next_cursor`);
+      }
+      cursor = page.next_cursor;
+    }
+  }
 
   private async _getJson<T = Json>(
     path: string,
@@ -1450,134 +619,11 @@ export class BasePolarisClient {
   }
 
   // -----------------------------------------------------------------------
-  // Internals – layout lazy init
-  // -----------------------------------------------------------------------
-
-  private async _getLayout(): Promise<StorageLayout> {
-    if (!this._layout) {
-      const storage = await this._getStorage();
-      this._layout = await ensureLayout(storage, this._root);
-    }
-    return this._layout;
-  }
 }
 
 // ===========================================================================
 // Module-level helpers (not exported)
 // ===========================================================================
-
-class VwapAggregator {
-  private readonly _intervalMs: number;
-  private readonly _rows = new Map<
-    number,
-    { timestamp: number; volume: number; quoteVolume: number; trades: number }
-  >();
-
-  constructor(interval: string) {
-    this._intervalMs = intervalToMs(interval);
-  }
-
-  add(timestamp: number, price: number, quantity: number): void {
-    if (!Number.isFinite(timestamp) || quantity <= 0) return;
-
-    const bucket =
-      Math.floor(timestamp / this._intervalMs) * this._intervalMs;
-    const row = this._rows.get(bucket);
-
-    if (!row) {
-      this._rows.set(bucket, {
-        timestamp: bucket,
-        volume: quantity,
-        quoteVolume: price * quantity,
-        trades: 1,
-      });
-      return;
-    }
-
-    row.volume += quantity;
-    row.quoteVolume += price * quantity;
-    row.trades += 1;
-  }
-
-  finish(): VwapBar[] {
-    return Array.from(this._rows.values())
-      .sort((a, b) => a.timestamp - b.timestamp)
-      .map((row) => ({
-        timestamp: row.timestamp,
-        vwap: row.volume > 0 ? row.quoteVolume / row.volume : null,
-        volume: row.volume,
-        quote_volume: row.quoteVolume,
-        trades: row.trades,
-      }));
-  }
-}
-
-class VolatilityAggregator {
-  private readonly _intervalMs: number;
-  private readonly _points: Array<[timestamp: number, price: number]> = [];
-
-  constructor(interval: string) {
-    this._intervalMs = intervalToMs(interval);
-  }
-
-  add(timestamp: number, price: number): void {
-    if (!Number.isFinite(timestamp) || price <= 0) return;
-    this._points.push([timestamp, price]);
-  }
-
-  finish(): VolatilityBar[] {
-    const buckets = new Map<
-      number,
-      {
-        timestamp: number;
-        returns: number;
-        mean: number;
-        m2: number;
-        lastPrice: number | undefined;
-      }
-    >();
-
-    for (const [timestamp, price] of this._points) {
-      const bucket =
-        Math.floor(timestamp / this._intervalMs) * this._intervalMs;
-
-      let state = buckets.get(bucket);
-      if (!state) {
-        state = {
-          timestamp: bucket,
-          returns: 0,
-          mean: 0,
-          m2: 0,
-          lastPrice: undefined,
-        };
-        buckets.set(bucket, state);
-      }
-
-      if (state.lastPrice !== undefined) {
-        const logReturn = Math.log(price / state.lastPrice);
-        state.returns += 1;
-        const delta = logReturn - state.mean;
-        state.mean += delta / state.returns;
-        const delta2 = logReturn - state.mean;
-        state.m2 += delta * delta2;
-      }
-
-      state.lastPrice = price;
-    }
-
-    return Array.from(buckets.values())
-      .sort((a, b) => a.timestamp - b.timestamp)
-      .flatMap((state) => {
-        if (state.returns < 2) return [];
-        const variance = state.m2 / (state.returns - 1);
-        return [{
-          timestamp: state.timestamp,
-          volatility: Math.sqrt(variance),
-          returns: state.returns,
-        }];
-      });
-  }
-}
 
 function normalizeCatalogResponse(payload: {
   updatedAt?: string;
@@ -1696,174 +742,152 @@ function emptyCatalogInstrument(): CatalogInstrument {
   };
 }
 
-function normalizeSnapshotEntry(entry: unknown): SnapshotEntry {
-  if (!isRecord(entry)) {
-    throw new PolarisError("Snapshot entry was not an object");
-  }
-
-  const key = entry.key ?? entry.path ?? entry.name;
-  if (typeof key !== "string" || key.length === 0) {
-    throw new PolarisError("Snapshot entry did not include a valid key");
-  }
-
-  let inferred: ReturnType<typeof parseSnapshotKey> | undefined;
-  try {
-    inferred = parseSnapshotKey(key);
-  } catch {
-    inferred = undefined;
-  }
-
-  const date =
-    typeof entry.date === "string" && entry.date.length > 0
-      ? entry.date
-      : inferred?.date;
-  const source =
-    typeof entry.source === "string" && entry.source.length > 0
-      ? entry.source
-      : inferred?.source;
-  const market =
-    typeof entry.market === "string" && entry.market.length > 0
-      ? entry.market
-      : inferred?.market;
-  const hour =
-    typeof entry.hour === "number" && Number.isInteger(entry.hour) &&
-    entry.hour >= 0 && entry.hour <= 23
-      ? entry.hour
-      : inferred?.hour;
-
-  return {
-    key,
-    source,
-    market,
-    date,
-    start: normalizeSnapshotDateTime(entry.start),
-    end: normalizeSnapshotDateTime(entry.end),
-    hour,
-    filename:
-      typeof entry.filename === "string" && entry.filename.length > 0
-        ? entry.filename
-        : inferred?.filename,
-  };
-}
-
-function normalizeSnapshotDateTime(value: unknown): string | undefined {
-  const parsedMs = parseSnapshotDateTime(value);
-  return parsedMs === undefined ? undefined : new Date(parsedMs).toISOString();
-}
-
-function normalizeSnapshotDownloadManifest(
-  payload: unknown,
-): SnapshotDownloadManifest {
-  if (!isRecord(payload)) {
-    throw new PolarisError("Download manifest response was not an object");
-  }
-
-  const { source, market, date, total, total_bytes, snapshots } = payload;
-  if (typeof source !== "string" || source.length === 0) {
-    throw new PolarisError("Download manifest did not include a valid source");
-  }
-  if (typeof market !== "string" || market.length === 0) {
-    throw new PolarisError("Download manifest did not include a valid market");
-  }
-  if (typeof date !== "string" || date.length === 0) {
-    throw new PolarisError("Download manifest did not include a valid date");
-  }
-  if (typeof total !== "number" || !Number.isFinite(total)) {
-    throw new PolarisError("Download manifest did not include a valid total");
-  }
-  if (typeof total_bytes !== "number" || !Number.isFinite(total_bytes)) {
-    throw new PolarisError("Download manifest did not include valid total_bytes");
-  }
-  if (!Array.isArray(snapshots)) {
-    throw new PolarisError("Download manifest did not include a valid snapshots array");
-  }
-
-  return {
-    source,
-    market,
-    date,
-    total,
-    total_bytes,
-    snapshots: snapshots.map((entry) => normalizeSnapshotDownloadEntry(entry)),
-  };
-}
-
-function normalizeSnapshotDownloadEntry(
-  entry: unknown,
-): SnapshotDownloadManifest["snapshots"][number] {
-  if (!isRecord(entry)) {
-    throw new PolarisError("Download manifest snapshot entry was not an object");
-  }
-
-  const { date, timestamp, key, url, expires_in_seconds } = entry;
-  if (typeof date !== "string" || date.length === 0) {
-    throw new PolarisError("Download manifest snapshot entry did not include a valid date");
-  }
-  if (typeof timestamp !== "string" || timestamp.length === 0) {
-    throw new PolarisError("Download manifest snapshot entry did not include a valid timestamp");
-  }
-  if (typeof key !== "string" || key.length === 0) {
-    throw new PolarisError("Download manifest snapshot entry did not include a valid key");
-  }
-  if (typeof url !== "string" || url.length === 0) {
-    throw new PolarisError("Download manifest snapshot entry did not include a valid url");
-  }
-  if (
-    typeof expires_in_seconds !== "number" ||
-    !Number.isFinite(expires_in_seconds)
-  ) {
-    throw new PolarisError(
-      "Download manifest snapshot entry did not include valid expires_in_seconds",
-    );
-  }
-
-  return {
-    date,
-    timestamp,
-    key,
-    url,
-    expires_in_seconds,
-  };
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function intervalToMs(interval: string): number {
-  const match = interval.match(/^(\d+)(ms|s|m|h)$/);
-  if (!match) {
-    throw new PolarisError(`Invalid interval: ${interval}`);
-  }
+function isOptionContract(value: unknown): value is OptionContract {
+  if (!isRecord(value) ||
+      !["source", "market", "instrument", "status", "option_type", "underlying", "strike"]
+        .every((field) => typeof value[field] === "string") ||
+      !Number.isSafeInteger(value.expiry_timestamp) ||
+      !nullableFields(value, ["contract_size", "exercise_style", "premium_currency",
+        "quantity_unit", "settlement_currency"], "string")) return false;
+  if (value.statistics === undefined || value.statistics === null) return true;
+  const statistics = value.statistics;
+  if (!isRecord(statistics) || typeof statistics.source !== "string" ||
+      typeof statistics.market !== "string" ||
+      !nullableFields(statistics, ["instrument"], "string") ||
+      !isRecord(statistics.fields) || Array.isArray(statistics.fields)) return false;
+  return Object.values(statistics.fields).every((field) =>
+    isRecord(field) && typeof field.value === "string" &&
+    Number.isSafeInteger(field.observed_at) &&
+    nullableFields(field, ["exchange_timestamp"], "number") &&
+    nullableFields(field, ["unit", "convention"], "string"));
+}
 
-  const amount = Number.parseInt(match[1], 10);
-  switch (match[2]) {
-    case "ms":
-      return amount;
-    case "s":
-      return amount * 1_000;
-    case "m":
-      return amount * 60_000;
-    case "h":
-      return amount * 3_600_000;
-    default:
-      throw new PolarisError(`Invalid interval: ${interval}`);
+function isHistoricalIdentity(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) &&
+    ["event_id", "source", "market", "source_capture_id"].every(
+      (field) => typeof value[field] === "string",
+    ) &&
+    Number.isSafeInteger(value.collector_timestamp) &&
+    Number.isSafeInteger(value.schema_version) &&
+    (value.schema_version as number) >= 0;
+}
+
+function nullableFields(
+  value: Record<string, unknown>,
+  fields: readonly string[],
+  type: "string" | "number" | "boolean",
+): boolean {
+  return fields.every((field) => value[field] === undefined || value[field] === null ||
+    (typeof value[field] === type &&
+      (type !== "number" || Number.isSafeInteger(value[field]))));
+}
+
+function isTradeRow(value: unknown): value is TradeRow {
+  return isHistoricalIdentity(value) &&
+    typeof value.price === "number" && Number.isFinite(value.price) &&
+    typeof value.quantity === "number" && Number.isFinite(value.quantity) &&
+    nullableFields(value, ["exchange_timestamp"], "number") &&
+    nullableFields(value, ["instrument", "maker", "order_id", "side", "taker"], "string") &&
+    nullableFields(value, ["liquidation"], "boolean");
+}
+
+function isOptionTickerRow(value: unknown): value is OptionTickerRow {
+  return isHistoricalIdentity(value) && typeof value.instrument === "string" &&
+    nullableFields(value, ["exchange_timestamp", "expiry_timestamp"], "number") &&
+    nullableFields(value, [
+      "ask_iv", "ask_price", "ask_size", "bid_iv", "bid_price", "bid_size",
+      "delta", "forward_price", "gamma", "index_price", "last_price", "mark_iv",
+      "mark_price", "open_interest", "option_type", "premium_currency",
+      "quantity_unit", "rho", "strike", "theta", "turnover_24h", "underlying",
+      "underlying_price", "vega", "volume_24h",
+    ], "string");
+}
+
+function isFundingRateRow(value: unknown): value is FundingRateRow {
+  return isHistoricalIdentity(value) &&
+    nullableFields(value, ["exchange_timestamp", "funding_timestamp"], "number") &&
+    nullableFields(value, [
+      "instrument", "funding_rate", "index_price", "mark_price", "open_interest",
+      "predicted_funding_rate", "premium",
+    ], "string");
+}
+
+function isOhlcvRow(value: unknown): value is OhlcvRow {
+  return isHistoricalIdentity(value) &&
+    typeof value.interval === "string" && Number.isSafeInteger(value.open_timestamp) &&
+    ["open", "high", "low", "close"].every((key) => typeof value[key] === "number" && Number.isFinite(value[key])) &&
+    nullableFields(value, ["exchange_timestamp", "close_timestamp", "trade_count"], "number") &&
+    nullableFields(value, ["instrument"], "string") &&
+    nullableFields(value, ["is_closed"], "boolean") &&
+    ["base_volume", "quote_volume"].every((key) => value[key] === undefined || value[key] === null ||
+      (typeof value[key] === "number" && Number.isFinite(value[key])));
+}
+
+function isOrderbookL2Row(value: unknown): value is OrderbookL2Row {
+  if (!isHistoricalIdentity(value) ||
+      typeof value.source_event_is_snapshot !== "boolean" ||
+      !nullableFields(value, ["instrument"], "string") ||
+      !nullableFields(value, ["exchange_timestamp"], "number") ||
+      !("instrument" in value) || !("exchange_timestamp" in value)) return false;
+  for (let i = 0; i < 25; i++) {
+    const index = String(i).padStart(2, "0");
+    for (const side of ["bid", "ask"]) {
+      for (const kind of ["px", "sz"]) {
+        const field = `${side}_${kind}_${index}`;
+        const level = value[field];
+        if (level !== null && (typeof level !== "number" || !Number.isFinite(level))) return false;
+      }
+    }
+  }
+  return true;
+}
+
+function isIntentRow(value: unknown): value is IntentRow {
+  return isHistoricalIdentity(value) &&
+    nullableFields(value, ["exchange_timestamp", "expires_at", "settled_at"], "number") &&
+    nullableFields(value, ["instrument", "amount_kind", "input_amount", "input_asset_id", "input_chain_id",
+      "intent_id", "output_amount", "output_asset_id", "output_chain_id", "quote_id", "quoted_input_amount",
+      "quoted_output_amount", "rfq_id", "status"], "string");
+}
+
+function isQuoteRow(value: unknown): boolean {
+  return isHistoricalIdentity(value) &&
+    ["instrument", "observation_id", "input_asset_id", "input_chain_id", "input_amount",
+      "output_asset_id", "output_chain_id", "output_amount", "amount_kind", "block_hash",
+      "transaction_hash", "router"].every((key) => typeof value[key] === "string") &&
+    ["input_decimals", "output_decimals", "block_number", "transaction_index"].every(
+      (key) => Number.isSafeInteger(value[key])) &&
+    nullableFields(value, ["exchange_timestamp"], "number") &&
+    nullableFields(value, ["oracle", "pool"], "string");
+}
+
+function isMixedEventRow(value: unknown): value is MixedEventRow {
+  if (!isRecord(value)) return false;
+  switch (value.type) {
+    case "trade": return isTradeRow(value.data);
+    case "l2_update": return isOrderbookL2Row(value.data);
+    case "funding_rate": return isFundingRateRow(value.data);
+    case "intent": return isIntentRow(value.data);
+    case "quote": return isQuoteRow(value.data);
+    case "option_ticker": return isOptionTickerRow(value.data);
+    case "ohlcv": return isOhlcvRow(value.data);
+    default: return false;
   }
 }
 
-function pointSeriesName(event: Json): string | undefined {
-  if (event.type !== "point" || !isRecord(event.data)) {
-    return undefined;
-  }
-  return typeof event.data.series === "string" ? event.data.series : undefined;
-}
-
-function isFundingRateEvent(event: Json): event is FundingRateEvent {
-  return pointSeriesName(event) === "funding_rate";
-}
-
-function isMarkPriceEvent(event: Json): event is MarkPriceEvent {
-  return ["mark_price", "mark_px"].includes(pointSeriesName(event) ?? "");
+function isRawCaptureRow(value: unknown): value is RawCaptureRow {
+  return isRecord(value) &&
+    typeof value.raw_table === "string" &&
+    typeof value.capture_id === "string" &&
+    Number.isSafeInteger(value.collector_timestamp) &&
+    typeof value.recorder_version === "string" &&
+    Number.isSafeInteger(value.ingested_at) &&
+    "additional_context" in value &&
+    typeof value.original_json === "string";
 }
 
 function normalizeInstrumentFilter(instrument: string | undefined): string | undefined {
@@ -1875,503 +899,11 @@ function normalizeInstrumentFilter(instrument: string | undefined): string | und
   return normalized;
 }
 
-const OPTION_TICKER_STRING_FIELDS = [
-  "underlying",
-  "strike",
-  "mark_price",
-  "bid_price",
-  "bid_size",
-  "ask_price",
-  "ask_size",
-  "last_price",
-  "index_price",
-  "underlying_price",
-  "forward_price",
-  "mark_iv",
-  "bid_iv",
-  "ask_iv",
-  "open_interest",
-  "volume_24h",
-  "turnover_24h",
-  "premium_currency",
-  "quantity_unit",
-] as const;
-
-function isOptionTickerData(value: unknown): boolean {
-  if (!isRecord(value)) return false;
-  if (!OPTION_TICKER_STRING_FIELDS.every(
-    (field) => value[field] === undefined || typeof value[field] === "string",
-  )) return false;
-  if (value.expiry_timestamp !== undefined &&
-    (typeof value.expiry_timestamp !== "number" ||
-      !Number.isSafeInteger(value.expiry_timestamp))) return false;
-  if (value.option_type !== undefined &&
-    value.option_type !== "call" && value.option_type !== "put") return false;
-  if (value.greeks !== undefined) {
-    const greeks = value.greeks;
-    if (!isRecord(greeks)) return false;
-    if (!["delta", "gamma", "vega", "theta", "rho"].every(
-      (field) => greeks[field] === undefined || typeof greeks[field] === "string",
-    )) return false;
-  }
-  return true;
-}
-
-function parseOptionTickerEvent(event: Json): OptionTickerEvent {
-  if (
-    event.type !== "option_ticker" ||
-    typeof event.instrument !== "string" ||
-    event.instrument.length === 0 ||
-    !isOptionTickerData(event.data)
-  ) {
-    throw new PolarisError("Invalid option ticker payload");
-  }
-  return event as unknown as OptionTickerEvent;
-}
-
-const PERPETUAL_TICKER_STRING_FIELDS = [
-  "last_price",
-  "mark_price",
-  "index_price",
-  "oracle_price",
-  "mid_price",
-  "open_interest",
-  "funding_rate",
-  "predicted_funding_rate",
-  "premium",
-] as const;
-
-function isPerpetualTickerData(value: unknown): boolean {
-  if (!isRecord(value)) return false;
-  const hasString = PERPETUAL_TICKER_STRING_FIELDS.some(
-    (field) => value[field] !== undefined,
-  );
-  const hasFundingTimestamp = value.funding_timestamp !== undefined;
-  if (!hasString && !hasFundingTimestamp) return false;
-  if (!PERPETUAL_TICKER_STRING_FIELDS.every(
-    (field) => value[field] === undefined || typeof value[field] === "string",
-  )) return false;
-  return value.funding_timestamp === undefined ||
-    (typeof value.funding_timestamp === "number" &&
-      Number.isSafeInteger(value.funding_timestamp));
-}
-
-function parsePerpetualTickerEvent(event: Json): PerpetualTickerEvent {
-  if (
-    event.type !== "perpetual_ticker" ||
-    typeof event.source !== "string" ||
-    event.source.length === 0 ||
-    typeof event.market !== "string" ||
-    event.market.length === 0 ||
-    !isPerpetualTickerData(event.data)
-  ) {
-    throw new PolarisError("Invalid perpetual ticker payload");
-  }
-  return event as unknown as PerpetualTickerEvent;
-}
-
-const AMOUNT_KINDS = new Set(["exact_input", "exact_output"]);
-const INTENT_STATUSES = new Set([
-  "submitted",
-  "open",
-  "partially_filled",
-  "executing",
-  "filled",
-  "settled",
-  "cancelled",
-  "expired",
-  "failed",
-  "unknown",
-]);
-
-function optionalString(value: unknown): boolean {
-  return value === undefined || typeof value === "string";
-}
-
-function isAssetAmount(value: unknown): boolean {
-  return isRecord(value) &&
-    typeof value.asset_id === "string" &&
-    optionalString(value.chain_id) &&
-    optionalString(value.amount) &&
-    optionalString(value.recipient);
-}
-
-function isSettlementTransaction(value: unknown): boolean {
-  return isRecord(value) &&
-    typeof value.transaction_hash === "string" &&
-    optionalString(value.chain_id);
-}
-
-function isIntentData(value: unknown): value is IntentData {
-  if (!isRecord(value)) return false;
-  const strings = ["rfq_id", "intent_id", "requester", "signer"] as const;
-  if (!strings.every((field) => optionalString(value[field]))) return false;
-  if (!Array.isArray(value.inputs) || !value.inputs.every(isAssetAmount)) return false;
-  if (!Array.isArray(value.outputs) || !value.outputs.every(isAssetAmount)) return false;
-  if (!Array.isArray(value.transactions) ||
-    !value.transactions.every(isSettlementTransaction)) return false;
-  if (value.amount_kind !== undefined &&
-    (typeof value.amount_kind !== "string" || !AMOUNT_KINDS.has(value.amount_kind))) return false;
-  if (value.status !== undefined &&
-    (typeof value.status !== "string" || !INTENT_STATUSES.has(value.status))) return false;
-  if (value.expires_at !== undefined &&
-    (typeof value.expires_at !== "number" || !Number.isSafeInteger(value.expires_at))) return false;
-  if (value.settled_at !== undefined &&
-    (typeof value.settled_at !== "number" || !Number.isSafeInteger(value.settled_at))) return false;
-  if (value.quote !== undefined) {
-    if (!isRecord(value.quote) || typeof value.quote.quote_id !== "string" ||
-      !Array.isArray(value.quote.response) || !value.quote.response.every(isAssetAmount)) return false;
-  }
-  return true;
-}
-
-function parseIntentEvent(event: Json): IntentEvent {
-  if (event.type !== "intent" || !isIntentData(event.data)) {
-    throw new PolarisError("Invalid intent payload");
-  }
-  return event as unknown as IntentEvent;
-}
-
-function parsePropammQuoteLadderEvent(
-  event: Json,
-): PropammQuoteLadderEvent | undefined {
-  if (
-    event.type !== "record" ||
-    !isRecord(event.data) ||
-    event.data.series !== "quote_ladder"
-  ) {
-    return undefined;
-  }
-
-  const values = event.data.values;
-  const integerFields = [
-    "chain_id",
-    "block_number",
-    "transaction_index",
-    "token_in_decimals",
-    "token_out_decimals",
-  ] as const;
-  const stringFields = [
-    "event_id",
-    "block_hash",
-    "parent_hash",
-    "transaction_hash",
-    "router",
-    "token_in",
-    "token_out",
-  ] as const;
-  const valid =
-    isRecord(values) &&
-    integerFields.every(
-      (field) =>
-        typeof values[field] === "number" &&
-        Number.isSafeInteger(values[field]) &&
-        (values[field] as number) >= 0,
-    ) &&
-    stringFields.every((field) => typeof values[field] === "string") &&
-    (values.oracle === null || typeof values.oracle === "string") &&
-    (!("pool" in values) || typeof values.pool === "string") &&
-    Array.isArray(values.quotes) &&
-    values.quotes.every(
-      (quote) =>
-        isRecord(quote) &&
-        typeof quote.amount_in === "string" &&
-        typeof quote.amount_out === "string",
-    );
-
-  if (!valid) {
-    throw new PolarisError("Invalid PropAMM quote-ladder payload");
-  }
-  return event as unknown as PropammQuoteLadderEvent;
-}
-
-function isOrderbookEvent(event: Json): event is OrderbookEvent {
-  return (
-    ["orderbook", "orderbook_delta", "orderbook_snapshot", "l2_snapshot"].includes(
-      String(event.type),
-    ) && (isRecord(event.data) || (Array.isArray(event.bids) && Array.isArray(event.asks)))
-  );
-}
-
-async function* materializeEvents(
-  events: AsyncIterable<Json>,
-  enabled: boolean,
-): AsyncGenerator<StandardEvent> {
-  if (!enabled) {
-    for await (const event of events) yield event as StandardEvent;
-    return;
-  }
-  const orderbooks = new OrderbookBuilder();
-  for await (const event of events) {
-    const output = orderbooks.apply(event as StandardEvent);
-    if (output) yield output;
-  }
-}
-
-function coerceNumeric(value: unknown): number | undefined {
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? value : undefined;
-  }
-
-  if (typeof value === "string" && value.trim().length > 0) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  }
-
-  return undefined;
-}
-
-function extractOrderbookSides(
-  row: Json,
-): { bids: unknown[]; asks: unknown[] } | undefined {
-  const candidates: unknown[] = [row];
-  if (isRecord(row.data)) {
-    candidates.push(row.data);
-  }
-
-  for (const candidate of candidates) {
-    if (!isRecord(candidate)) continue;
-
-    const { bids, asks } = candidate;
-    if (Array.isArray(bids) && Array.isArray(asks)) {
-      return { bids, asks };
-    }
-  }
-
-  return undefined;
-}
-
-function parseOrderbookLevel(level: unknown): [number, number] | undefined {
-  let priceRaw: unknown;
-  let quantityRaw: unknown;
-
-  if (isRecord(level)) {
-    priceRaw = level.price;
-    quantityRaw = level.quantity ?? level.size ?? level.amount;
-  } else if (Array.isArray(level) && level.length >= 2) {
-    [priceRaw, quantityRaw] = level;
-  }
-
-  const price = coerceNumeric(priceRaw);
-  const quantity = coerceNumeric(quantityRaw);
-  if (price === undefined || quantity === undefined) {
-    return undefined;
-  }
-
-  return [price, quantity];
-}
-
-function bestOrderbookLevel(
-  levels: unknown[],
-  side: "bid" | "ask",
-): [number, number] | undefined {
-  let bestPrice: number | undefined;
-  let bestQuantity: number | undefined;
-
-  for (const level of levels) {
-    const parsed = parseOrderbookLevel(level);
-    if (!parsed) continue;
-
-    const [price, quantity] = parsed;
-    if (
-      bestPrice === undefined ||
-      (side === "bid" && price > bestPrice) ||
-      (side === "ask" && price < bestPrice)
-    ) {
-      bestPrice = price;
-      bestQuantity = quantity;
-    }
-  }
-
-  if (bestPrice === undefined || bestQuantity === undefined) {
-    return undefined;
-  }
-
-  return [bestPrice, bestQuantity];
-}
-
-function sortedOrderbookLevels(
-  levels: unknown[],
-  side: "bid" | "ask",
-): Array<[number, number]> {
-  const parsed = levels
-    .map((level) => parseOrderbookLevel(level))
-    .filter((level): level is [number, number] => level !== undefined)
-    .filter(([price, quantity]) => price > 0 && quantity > 0);
-
-  parsed.sort((a, b) => (side === "bid" ? b[0] - a[0] : a[0] - b[0]));
-  return parsed;
-}
-
-function deriveBbo(row: Json): BboQuote | undefined {
-  const timestamp = sdkTimestamp(row as StandardEvent);
-  if (timestamp === undefined) return undefined;
-
-  const sides = extractOrderbookSides(row);
-  if (!sides) return undefined;
-
-  const bid = bestOrderbookLevel(sides.bids, "bid");
-  const ask = bestOrderbookLevel(sides.asks, "ask");
-  if (!bid || !ask) return undefined;
-
-  return {
-    timestamp,
-    bid_price: bid[0],
-    bid_quantity: bid[1],
-    ask_price: ask[0],
-    ask_quantity: ask[1],
-  };
-}
-
-function depthNotionalWithinPct(
-  levels: Array<[number, number]>,
-  side: "bid" | "ask",
-  midPrice: number,
-  depthPct: number,
-): number {
-  if (side === "bid") {
-    const cutoff = midPrice * (1 - depthPct);
-    return levels.reduce(
-      (sum, [price, quantity]) =>
-        price >= cutoff ? sum + price * quantity : sum,
-      0,
-    );
-  }
-
-  const cutoff = midPrice * (1 + depthPct);
-  return levels.reduce(
-    (sum, [price, quantity]) =>
-      price <= cutoff ? sum + price * quantity : sum,
-    0,
-  );
-}
-
-function quoteTotalForBaseQuantity(
-  levels: Array<[number, number]>,
-  targetQuantity: number,
-): number | undefined {
-  let remainingQuantity = targetQuantity;
-  let quoteTotal = 0;
-
-  for (const [price, availableQuantity] of levels) {
-    const fillQuantity = Math.min(availableQuantity, remainingQuantity);
-    quoteTotal += fillQuantity * price;
-    remainingQuantity -= fillQuantity;
-    if (remainingQuantity <= 1e-12) {
-      return quoteTotal;
-    }
-  }
-
-  return undefined;
-}
-
-function deriveDepthMetrics(
-  row: Json,
-  depthPct: number,
-  slippageNotional: number,
-): DepthMetricsRow | undefined {
-  const timestamp = sdkTimestamp(row as StandardEvent);
-  if (timestamp === undefined) return undefined;
-
-  const sides = extractOrderbookSides(row);
-  if (!sides) return undefined;
-
-  const bids = sortedOrderbookLevels(sides.bids, "bid");
-  const asks = sortedOrderbookLevels(sides.asks, "ask");
-  if (bids.length === 0 || asks.length === 0) {
-    return undefined;
-  }
-
-  const [bidPrice] = bids[0];
-  const [askPrice] = asks[0];
-  if (askPrice < bidPrice) {
-    return undefined;
-  }
-
-  const midPrice = (bidPrice + askPrice) / 2;
-  const spread = askPrice - bidPrice;
-  const spreadBps = midPrice > 0 ? (spread / midPrice) * 10_000 : null;
-
-  const bidDepthNotional = depthNotionalWithinPct(
-    bids,
-    "bid",
-    midPrice,
-    depthPct,
-  );
-  const askDepthNotional = depthNotionalWithinPct(
-    asks,
-    "ask",
-    midPrice,
-    depthPct,
-  );
-  const totalDepthNotional = bidDepthNotional + askDepthNotional;
-  const depthImbalance =
-    totalDepthNotional > 0
-      ? (bidDepthNotional - askDepthNotional) / totalDepthNotional
-      : null;
-
-  const targetBaseQuantity =
-    midPrice > 0 ? slippageNotional / midPrice : null;
-
-  let buyAveragePrice: number | null = null;
-  let sellAveragePrice: number | null = null;
-  let buySlippage: number | null = null;
-  let sellSlippage: number | null = null;
-  let buySlippageBps: number | null = null;
-  let sellSlippageBps: number | null = null;
-
-  if (targetBaseQuantity !== null && targetBaseQuantity > 0) {
-    const buyQuoteTotal = quoteTotalForBaseQuantity(asks, targetBaseQuantity);
-    const sellQuoteTotal = quoteTotalForBaseQuantity(bids, targetBaseQuantity);
-
-    if (buyQuoteTotal !== undefined) {
-      buyAveragePrice = buyQuoteTotal / targetBaseQuantity;
-      buySlippage = buyQuoteTotal - slippageNotional;
-      buySlippageBps =
-        ((buyAveragePrice - midPrice) / midPrice) * 10_000;
-    }
-
-    if (sellQuoteTotal !== undefined) {
-      sellAveragePrice = sellQuoteTotal / targetBaseQuantity;
-      sellSlippage = slippageNotional - sellQuoteTotal;
-      sellSlippageBps =
-        ((midPrice - sellAveragePrice) / midPrice) * 10_000;
-    }
-  }
-
-  return {
-    timestamp: Math.trunc(timestamp),
-    bid_price: bidPrice,
-    ask_price: askPrice,
-    mid_price: midPrice,
-    bid_ask_spread: spread,
-    bid_ask_spread_bps: spreadBps,
-    depth_pct: depthPct,
-    bid_depth_notional: bidDepthNotional,
-    ask_depth_notional: askDepthNotional,
-    depth_imbalance: depthImbalance,
-    slippage_notional: slippageNotional,
-    target_base_quantity: targetBaseQuantity,
-    buy_average_price: buyAveragePrice,
-    sell_average_price: sellAveragePrice,
-    buy_slippage: buySlippage,
-    sell_slippage: sellSlippage,
-    buy_slippage_bps: buySlippageBps,
-    sell_slippage_bps: sellSlippageBps,
-  };
-}
-
-function buildSnapshotParams(
-  options: ListSnapshotsOptions,
-): Record<string, string> {
-  const p: Record<string, string> = {
-    source: options.source,
-    market: options.market,
-  };
-  if (options.from !== undefined) p.from = toIso8601(options.from);
-  if (options.to !== undefined) p.to = toIso8601(options.to);
-  if (options.limit !== undefined) p.limit = String(options.limit);
-  return p;
+function optionalFilter(name: string, value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim();
+  if (!normalized) throw new PolarisError(`${name} must be non-empty`);
+  return normalized;
 }
 
 function assertOk(response: Response, body: string): void {
@@ -2400,245 +932,4 @@ function assertOk(response: Response, body: string): void {
     default:
       throw new PolarisError(message, response.status, body);
   }
-}
-
-// ---------------------------------------------------------------------------
-// Snapshot file reading (zstd + NDJSON)
-// ---------------------------------------------------------------------------
-
-async function readSnapshotLines(storage: IStorage, filePath: string): Promise<string[]> {
-  const compressed = await storage.readFile(filePath);
-  const decompressed = decompress(compressed);
-  const text = new TextDecoder().decode(decompressed);
-  return text.split("\n").filter((l) => l.trim().length > 0);
-}
-
-function decodeSnapshotLines(lines: string[], filePath: string): StandardEvent[] {
-  if (lines.length === 0) return [];
-  let first: unknown;
-  try {
-    first = JSON.parse(lines[0]);
-  } catch (error) {
-    throw new PolarisError(`Invalid first NDJSON row in '${filePath}': ${String(error)}`);
-  }
-  if (!isRecord(first)) {
-    throw new PolarisError(`Invalid first NDJSON row in '${filePath}': expected an object`);
-  }
-
-  const isV2 = first.type === "metadata";
-  const metadataSource =
-    typeof first.source === "string" && first.source.length > 0
-      ? first.source
-      : undefined;
-  const metadataMarket =
-    typeof first.market === "string" && first.market.length > 0
-      ? first.market
-      : undefined;
-  if (isV2) {
-    const version = isRecord(first.data) ? first.data.schema_version : undefined;
-    if (typeof version !== "string") {
-      throw new PolarisError(`Metadata in '${filePath}' is missing data.schema_version`);
-    }
-    if (version !== "v2") {
-      throw new PolarisError(
-        `Unsupported standard event schema version '${version}' in '${filePath}'`,
-      );
-    }
-  }
-
-  const result: StandardEvent[] = [];
-  for (let index = isV2 ? 1 : 0; index < lines.length; index++) {
-    let value: unknown;
-    try {
-      value = JSON.parse(lines[index]);
-    } catch (error) {
-      if (!isV2) continue;
-      throw new PolarisError(`Invalid v2 NDJSON row in '${filePath}': ${String(error)}`);
-    }
-    if (!isRecord(value)) {
-      if (!isV2) continue;
-      throw new PolarisError(`Invalid v2 NDJSON row in '${filePath}': expected an object`);
-    }
-    if (isV2) {
-      const event = {
-        ...value,
-        ...((typeof value.source !== "string" || value.source.length === 0) && metadataSource
-          ? { source: metadataSource }
-          : {}),
-        ...((typeof value.market !== "string" || value.market.length === 0) && metadataMarket
-          ? { market: metadataMarket }
-          : {}),
-      };
-      validateV2Event(event, filePath);
-      result.push(event as StandardEvent);
-    } else {
-      const timestamp = normalizeTimestampMs(value.timestamp);
-      if (timestamp === undefined) continue;
-      result.push({ ...value, timestamp } as StandardEvent);
-    }
-  }
-  return result;
-}
-
-function validateV2Event(value: Json, filePath: string): asserts value is StandardEvent {
-  const exchangeTimestampValid = value.exchange_timestamp === null ||
-    (typeof value.exchange_timestamp === "number" && Number.isFinite(value.exchange_timestamp));
-  const exchangeSequenceValid = value.exchange_sequence === null ||
-    typeof value.exchange_sequence === "string";
-  if (
-    value.type === "metadata" ||
-    typeof value.collector_timestamp !== "number" ||
-    !Number.isFinite(value.collector_timestamp) ||
-    typeof value.collector_sequence !== "number" ||
-    !Number.isSafeInteger(value.collector_sequence) ||
-    value.collector_sequence < 0 ||
-    !("exchange_timestamp" in value) ||
-    !exchangeTimestampValid ||
-    !("exchange_sequence" in value) ||
-    !exchangeSequenceValid ||
-    typeof value.source !== "string" ||
-    typeof value.market !== "string" ||
-    typeof value.type !== "string" ||
-    !isRecord(value.data)
-  ) {
-    throw new PolarisError(`Invalid v2 standard event in '${filePath}'`);
-  }
-  const data = value.data;
-  if (value.type === "trade") {
-    const orderIdValid = "order_id" in data &&
-      (data.order_id === null || typeof data.order_id === "string");
-    const sideValid = "side" in data &&
-      (data.side === null || data.side === "buy" || data.side === "sell");
-    const makerValid = data.maker === undefined || typeof data.maker === "string";
-    const takerValid = data.taker === undefined || typeof data.taker === "string";
-    if (
-      !orderIdValid || !sideValid || !makerValid || !takerValid ||
-      typeof data.price !== "number" ||
-      typeof data.quantity !== "number"
-    ) {
-      throw new PolarisError(`Invalid v2 trade payload in '${filePath}'`);
-    }
-  } else if (value.type === "orderbook") {
-    if (
-      typeof data.is_snapshot !== "boolean" || !Array.isArray(data.bids) ||
-      !Array.isArray(data.asks)
-    ) {
-      throw new PolarisError(`Invalid v2 orderbook payload in '${filePath}'`);
-    }
-  } else if (value.type === "point") {
-    if (typeof data.series !== "string" || typeof data.value !== "string") {
-      throw new PolarisError(`Invalid v2 point payload in '${filePath}'`);
-    }
-  } else if (value.type === "record") {
-    if (typeof data.series !== "string" || !isRecord(data.values)) {
-      throw new PolarisError(`Invalid v2 record payload in '${filePath}'`);
-    }
-  } else if (value.type === "option_ticker") {
-    if (
-      typeof value.instrument !== "string" ||
-      value.instrument.length === 0 ||
-      !isOptionTickerData(data)
-    ) {
-      throw new PolarisError(`Invalid v2 option ticker payload in '${filePath}'`);
-    }
-  } else if (value.type === "perpetual_ticker") {
-    if (!isPerpetualTickerData(data)) {
-      throw new PolarisError(`Invalid v2 perpetual ticker payload in '${filePath}'`);
-    }
-  } else if (value.type === "intent") {
-    if (!isIntentData(data)) {
-      throw new PolarisError(`Invalid v2 intent payload in '${filePath}'`);
-    }
-  } else {
-    throw new PolarisError(`Unsupported v2 standard event type '${value.type}' in '${filePath}'`);
-  }
-}
-
-function sdkTimestamp(event: StandardEvent): number | undefined {
-  return "collector_timestamp" in event
-    ? normalizeTimestampMs(event.collector_timestamp)
-    : normalizeTimestampMs(event.timestamp);
-}
-
-function normalizeTimestampMs(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  const timestamp = Math.trunc(value);
-  return Math.abs(timestamp) >= 100_000_000_000_000
-    ? Math.trunc(timestamp / 1_000)
-    : timestamp;
-}
-
-function parseSnapshotDateTime(value: unknown): number | undefined {
-  if (typeof value === "string" && value.length > 0) {
-    const parsed = new Date(value).getTime();
-    return Number.isNaN(parsed) ? undefined : parsed;
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return normalizeTimestampMs(value);
-  }
-  return undefined;
-}
-
-function utcDayStartMs(date: string): number {
-  const parsed = new Date(`${date}T00:00:00Z`).getTime();
-  if (Number.isNaN(parsed)) {
-    throw new PolarisError(`Invalid UTC date: ${date}`);
-  }
-  return parsed;
-}
-
-function epochMsToDate(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10);
-}
-
-function inferredSnapshotSource(key: string): string | undefined {
-  try {
-    return parseSnapshotKey(key).source;
-  } catch {
-    return undefined;
-  }
-}
-
-function inferredSnapshotMarket(key: string): string | undefined {
-  try {
-    return parseSnapshotKey(key).market;
-  } catch {
-    return undefined;
-  }
-}
-
-function inferredSnapshotDate(key: string): string | undefined {
-  try {
-    return parseSnapshotKey(key).date;
-  } catch {
-    return undefined;
-  }
-}
-
-function assertValidRange(
-  fromMs: number,
-  toMs: number,
-  message = "from must be before to",
-): void {
-  if (fromMs >= toMs) {
-    throw new PolarisError(message);
-  }
-}
-
-function endOfPublicCutoffDayMs(
-  dateText: string | null | undefined,
-): number | undefined {
-  if (!dateText) return undefined;
-
-  const startMs = Date.parse(`${dateText}T00:00:00Z`);
-  if (Number.isNaN(startMs)) return undefined;
-
-  return startMs + 24 * 60 * 60 * 1000;
-}
-
-function normalizePositiveInteger(value: number | undefined): number | undefined {
-  if (value === undefined || !Number.isFinite(value)) return undefined;
-
-  const normalized = Math.floor(value);
-  return normalized > 0 ? normalized : undefined;
 }

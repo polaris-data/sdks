@@ -1,6 +1,6 @@
 {
   "name": "polaris-data",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "TypeScript SDK for the Polaris market data API (Node.js and browser)",
   "license": "MIT",
   "author": "Polaris <hello@polaris.supply>",
@@ -68,7 +68,6 @@
     "client-side"
   ],
   "dependencies": {
-    "fzstd": "^0.1.1",
     "ws": "^8.18.3"
   }
 }

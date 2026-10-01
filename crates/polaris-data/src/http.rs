@@ -54,40 +54,6 @@ impl HttpClient {
         })
     }
 
-    pub(crate) async fn download_absolute_bytes(&self, url: &str) -> Result<Vec<u8>, PolarisError> {
-        let url = Url::parse(url).map_err(|err| {
-            PolarisError::InvalidResponse(format!("invalid download url '{url}': {err}"))
-        })?;
-        let response = self.client.get(url).send().await?;
-        let status = response.status();
-        let body = response.bytes().await?;
-        if !status.is_success() {
-            let text = String::from_utf8_lossy(&body).to_string();
-            return Err(self.map_error(status, text));
-        }
-        Ok(body.to_vec())
-    }
-
-    pub(crate) async fn get_bytes(
-        &self,
-        path: &str,
-        params: &[(String, String)],
-        auth_mode: AuthMode,
-    ) -> Result<(Option<String>, Vec<u8>), PolarisError> {
-        let response = self.request(path, params, auth_mode).await?;
-        let status = response.status();
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(ToOwned::to_owned);
-        let body = response.bytes().await?.to_vec();
-        if !status.is_success() {
-            return Err(self.map_error(status, String::from_utf8_lossy(&body).to_string()));
-        }
-        Ok((content_type, body))
-    }
-
     async fn request(
         &self,
         path: &str,
@@ -111,7 +77,7 @@ impl HttpClient {
                     .api_key
                     .as_ref()
                     .ok_or_else(|| PolarisError::Unauthorized {
-                        message: "API key is required for this endpoint".to_owned(),
+                        message: "a Polaris API key is required for this endpoint".to_owned(),
                         status_code: None,
                         body: None,
                     })?;

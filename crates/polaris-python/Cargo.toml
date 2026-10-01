@@ -1,6 +1,6 @@
 [package]
 name = "polaris-python"
-version = "0.16.0"
+version = "0.17.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "Native Python bindings for the Polaris market data SDK."
@@ -14,11 +14,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 polaris-data = { path = "../polaris-data" }
-arrow-array = "58"
-arrow-pyarrow = "58"
-arrow-schema = "58"
-chrono.workspace = true
-futures-util.workspace = true
 pyo3 = { version = "0.28", features = ["abi3-py39", "extension-module"] }
 pythonize = "0.28"
 serde.workspace = true

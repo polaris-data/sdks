@@ -6,8 +6,7 @@ import importlib
 import json
 import os
 import warnings
-from datetime import datetime
-from pathlib import Path
+from itertools import islice
 from typing import TYPE_CHECKING, Any, Iterator, Literal, Sequence, overload
 
 from . import _native
@@ -22,15 +21,20 @@ from .errors import (
     UnauthorizedError,
 )
 from .models import (
-    IntentEvent,
     CatalogCount,
     CatalogResponse,
+    MetaResponse,
+    InstrumentsResponse,
+    FundingRateRow,
+    MixedEventRow,
+    MixedEventType,
+    OhlcvRow,
+    IntentRow,
     JSONDict,
-    OptionTickerEvent,
-    PerpetualTickerEvent,
-    PropammQuoteLadderEvent,
-    SnapshotEntry,
-    TradeEvent,
+    OptionTickerRow,
+    OrderbookL2Row,
+    RawCaptureRow,
+    TradeRow,
 )
 from .utils import TimeInput, to_iso8601
 
@@ -42,15 +46,6 @@ DEFAULT_BASE_URL = "https://api.polaris.supply"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_BATCH_SIZE = 65_536
 OutputFormat = Literal["iterator", "batches", "dataframe"]
-AggregateOutputFormat = Literal["records", "dataframe"]
-
-AGGREGATE_COLUMNS: dict[str, tuple[str, ...]] = {
-    "ohlcv": ("timestamp", "open", "high", "low", "close", "volume", "trades"),
-    "volume": ("timestamp", "volume"),
-    "vwap": ("timestamp", "vwap", "volume", "quote_volume", "trades"),
-    "volatility": ("timestamp", "volatility", "returns"),
-}
-AGGREGATE_COUNT_COLUMNS = frozenset({"trades", "returns"})
 
 
 class OrderbookBuilder:
@@ -130,9 +125,6 @@ class PolarisClient:
         api_key: str | None = None,
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = DEFAULT_TIMEOUT,
-        dataset_root: str | os.PathLike[str] | None = None,
-        replay_cache_enabled: bool = True,
-        replay_cache_dir: str | os.PathLike[str] | None = None,
         stream_url: str | None = None,
     ) -> None:
         self.api_key = api_key or os.getenv("POLARIS_API_KEY")
@@ -142,15 +134,7 @@ class PolarisClient:
             self.api_key,
             self.base_url,
             timeout,
-            Path(dataset_root).expanduser() if dataset_root is not None else None,
             stream_url,
-        )
-        self.dataset_root = Path(self._native.dataset_root)
-        self.replay_cache_enabled = replay_cache_enabled
-        self.replay_cache_dir = (
-            Path(replay_cache_dir).expanduser()
-            if replay_cache_dir is not None
-            else Path(self._native.replay_cache_dir)
         )
         self._closed = False
         self._streams: set[RealtimeStream] = set()
@@ -171,6 +155,14 @@ class PolarisClient:
     @staticmethod
     def _time(value: TimeInput | None) -> str | None:
         return None if value is None else to_iso8601(value)
+
+    @staticmethod
+    def _validate_l2_bounds(start: int, end: int) -> None:
+        for name, value in (("start", start), ("end", end)):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise TypeError(f"{name} must be an integer Unix millisecond timestamp")
+        if start < 0 or end < start:
+            raise ValueError("start and end must be non-negative inclusive milliseconds with start <= end")
 
     def _emit_diagnostics(self) -> None:
         for message in self._native.take_diagnostics():
@@ -227,11 +219,6 @@ class PolarisClient:
                 body,
                 code if isinstance(code, str) else None,
             )
-        if kind == "coverage_gap":
-            label = operation or "replay"
-            return PolarisError(
-                f"Requested {label} range could not be satisfied from standardized snapshots"
-            )
         return PolarisError(message, status_code, body)
 
     def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
@@ -249,25 +236,6 @@ class PolarisClient:
         iterator: Iterator[JSONDict],
         operation: str | None = None,
     ) -> Iterator[JSONDict]:
-        try:
-            while True:
-                try:
-                    yield next(iterator)
-                except StopIteration:
-                    return
-                except _native.NativeError as error:
-                    raise self._translate_native_error(error, operation) from None
-        finally:
-            close = getattr(iterator, "close", None)
-            if close is not None:
-                close()
-            self._emit_diagnostics()
-
-    def _iterate_batches(
-        self,
-        iterator: Iterator[Any],
-        operation: str,
-    ) -> Iterator[pyarrow.RecordBatch]:
         try:
             while True:
                 try:
@@ -303,26 +271,103 @@ class PolarisClient:
                 f"polaris-data[{extra}]"
             ) from None
 
-    def _columnar_result(
-        self,
-        iterator: Any,
-        operation: str,
-        output: Literal["batches", "dataframe"],
-        pyarrow_module: Any,
-    ) -> Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        batches = self._iterate_batches(iterator, operation)
-        if output == "batches":
-            return batches
+    @staticmethod
+    def _direct_row_schema(method: str, pa: Any) -> Any:
+        fields = [
+            pa.field("event_id", pa.string(), nullable=False),
+            pa.field("source", pa.string(), nullable=False),
+            pa.field("market", pa.string(), nullable=False),
+            pa.field("collector_timestamp", pa.int64(), nullable=False),
+            pa.field("source_capture_id", pa.string(), nullable=False),
+            pa.field("schema_version", pa.int32(), nullable=False),
+        ]
+        if method == "trades":
+            fields += [
+                pa.field("price", pa.float64(), nullable=False),
+                pa.field("quantity", pa.float64(), nullable=False),
+                pa.field("exchange_timestamp", pa.int64()),
+                pa.field("instrument", pa.string()),
+                pa.field("liquidation", pa.bool_()),
+                pa.field("maker", pa.string()),
+                pa.field("order_id", pa.string()),
+                pa.field("side", pa.string()),
+                pa.field("taker", pa.string()),
+            ]
+        elif method == "funding_rates":
+            fields += [
+                pa.field("exchange_timestamp", pa.int64()),
+                pa.field("funding_timestamp", pa.int64()),
+            ]
+            fields += [pa.field(name, pa.string()) for name in (
+                "instrument", "funding_rate", "index_price", "mark_price",
+                "open_interest", "predicted_funding_rate", "premium",
+            )]
+        elif method == "ohlcv":
+            fields += [
+                pa.field("interval", pa.string(), nullable=False),
+                pa.field("open_timestamp", pa.int64(), nullable=False),
+                *[pa.field(name, pa.float64(), nullable=False) for name in (
+                    "open", "high", "low", "close",
+                )],
+                pa.field("exchange_timestamp", pa.int64()),
+                pa.field("instrument", pa.string()),
+                pa.field("close_timestamp", pa.int64()),
+                pa.field("base_volume", pa.float64()),
+                pa.field("quote_volume", pa.float64()),
+                pa.field("trade_count", pa.int64()),
+                pa.field("is_closed", pa.bool_()),
+            ]
+        return pa.schema(fields)
 
-        self._require_optional_module("pandas", "dataframe")
-        schema = iterator.schema
-        materialized = list(batches)
-        table = pyarrow_module.Table.from_batches(materialized, schema=schema)
-        materialized.clear()
-        return table.to_pandas(split_blocks=True, self_destruct=True)
+    def _direct_row_output(
+        self,
+        method: Literal["trades", "funding_rates", "ohlcv"],
+        source: str | None,
+        market: str | None,
+        start: int | None,
+        end: int | None,
+        output: OutputFormat,
+        batch_size: int,
+        instrument: str | None = None,
+        interval: str | None = None,
+    ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
+        self._validate_columnar_output(output, batch_size)
+        for name, value in (("start", start), ("end", end)):
+            if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+                raise TypeError(f"{name} must be an integer Unix millisecond timestamp")
+        pa = None
+        schema = None
+        if output != "iterator":
+            if output == "dataframe":
+                self._require_optional_module("pandas", "dataframe")
+            pa = self._require_optional_module(
+                "pyarrow", "dataframe" if output == "dataframe" else "arrow"
+            )
+            schema = self._direct_row_schema(method, pa)
+        if method == "ohlcv":
+            native_iterator = self._call(method, source, market, instrument, interval, start, end)
+        elif method == "trades":
+            native_iterator = self._call(method, source, market, start, end, instrument)
+        else:
+            native_iterator = self._call(method, source, market, start, end)
+        iterator = self._iterate(native_iterator, method)
+        if output == "iterator":
+            return iterator
+
+        def batches() -> Iterator[pyarrow.RecordBatch]:
+            while rows := list(islice(iterator, batch_size)):
+                yield pa.RecordBatch.from_pylist(rows, schema=schema)
+
+        if output == "batches":
+            return batches()
+        return pa.Table.from_batches(list(batches()), schema=schema).to_pandas()
 
     def health(self) -> JSONDict:
         return self._call("health")
+
+    def meta(self) -> MetaResponse:
+        """Return API documentation and machine-readable resource links."""
+        return self._call("meta")
 
     def stream(
         self,
@@ -356,358 +401,124 @@ class PolarisClient:
     ) -> CatalogResponse | JSONDict:
         return self._call("catalog", source, market, q)
 
-    def count(self) -> CatalogCount:
-        return self._call("count")
-
-    def list_snapshots(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput,
-        to: TimeInput,
-        limit: int = 1000,
-    ) -> list[SnapshotEntry]:
-        if limit <= 0:
-            raise ValueError("limit must be > 0")
-        rows = self._call(
-            "list_snapshots",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            limit,
-        )
-        return [
-            SnapshotEntry(
-                key=row["key"],
-                source=row.get("source"),
-                market=row.get("market"),
-                date=row.get("date"),
-                start=(
-                    datetime.fromisoformat(row["start"].replace("Z", "+00:00"))
-                    if row.get("start")
-                    else None
-                ),
-                end=(
-                    datetime.fromisoformat(row["end"].replace("Z", "+00:00"))
-                    if row.get("end")
-                    else None
-                ),
-                hour=row.get("hour"),
-            )
-            for row in rows
-        ]
-
-    @overload
-    def replay(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        standard: bool = True,
-        allow_gaps: bool = False,
-        parallel: bool | int = False,
-        materialize_orderbooks: bool = True,
-        output: Literal["iterator"] = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict]: ...
-
-    @overload
-    def replay(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        standard: Literal[True] = True,
-        allow_gaps: bool = False,
-        parallel: bool | int = False,
-        materialize_orderbooks: bool = True,
-        output: Literal["batches"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[pyarrow.RecordBatch]: ...
-
-    @overload
-    def replay(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        standard: Literal[True] = True,
-        allow_gaps: bool = False,
-        parallel: bool | int = False,
-        materialize_orderbooks: bool = True,
-        output: Literal["dataframe"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> pandas.DataFrame: ...
-
-    def replay(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        standard: bool = True,
-        allow_gaps: bool = False,
-        parallel: bool | int = False,
-        materialize_orderbooks: bool = True,
-        output: OutputFormat = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        self._validate_columnar_output(output, batch_size)
-        from_text = self._time(from_)
-        to_text = self._time(to)
-        if parallel and (from_text is None or to_text is None):
-            raise ValueError("from_ and to are required when parallel=True")
-
-        if output != "iterator":
-            if not standard:
-                raise ValueError("columnar output is only available for standardized replay")
-            extra = "dataframe" if output == "dataframe" else "arrow"
-            pyarrow_module = self._require_optional_module("pyarrow", extra)
-            if output == "dataframe":
-                self._require_optional_module("pandas", "dataframe")
-            iterator = self._call(
-                "events_columnar",
-                source,
-                market,
-                from_text,
-                to_text,
-                allow_gaps,
-                materialize_orderbooks,
-                batch_size,
-            )
-            return self._columnar_result(iterator, "replay", output, pyarrow_module)
-
-        if standard:
-            iterator = self._call(
-                "replay",
-                source,
-                market,
-                from_text,
-                to_text,
-                allow_gaps,
-                materialize_orderbooks,
-            )
-        elif from_text is not None and to_text is not None:
-            method = "raw_replay_chunked" if parallel else "raw_replay_cached"
-            iterator = self._call(
-                method,
-                source,
-                market,
-                from_text,
-                to_text,
-                1000,
-                self.replay_cache_enabled,
-                self.replay_cache_dir,
-            )
-        else:
-            iterator = self._call(
-                "raw_replay", source, market, from_text, to_text, 1000
-            )
-        return self._iterate(iterator, "replay")
-
-    @overload
-    def events(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        materialize_orderbooks: bool = True,
-        output: Literal["iterator"] = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict]: ...
-
-    @overload
-    def events(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        materialize_orderbooks: bool = True,
-        output: Literal["batches"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[pyarrow.RecordBatch]: ...
-
-    @overload
-    def events(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        materialize_orderbooks: bool = True,
-        output: Literal["dataframe"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> pandas.DataFrame: ...
-
-    def events(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        materialize_orderbooks: bool = True,
-        output: OutputFormat = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        self._validate_columnar_output(output, batch_size)
-        if output != "iterator":
-            extra = "dataframe" if output == "dataframe" else "arrow"
-            pyarrow_module = self._require_optional_module("pyarrow", extra)
-            if output == "dataframe":
-                self._require_optional_module("pandas", "dataframe")
-            iterator = self._call(
-                "events_columnar",
-                source,
-                market,
-                self._time(from_),
-                self._time(to),
-                allow_gaps,
-                materialize_orderbooks,
-                batch_size,
-            )
-            return self._columnar_result(iterator, "events", output, pyarrow_module)
-        iterator = self._call(
-            "events",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            allow_gaps,
-            materialize_orderbooks,
-        )
-        return self._iterate(iterator, "events")
-
-    @overload
-    def trades(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        output: Literal["iterator"] = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[TradeEvent]: ...
-
-    @overload
-    def trades(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        output: Literal["batches"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[pyarrow.RecordBatch]: ...
-
-    @overload
-    def trades(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        output: Literal["dataframe"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> pandas.DataFrame: ...
-
-    def trades(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        output: OutputFormat = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[TradeEvent] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        self._validate_columnar_output(output, batch_size)
-        if output != "iterator":
-            extra = "dataframe" if output == "dataframe" else "arrow"
-            pyarrow_module = self._require_optional_module("pyarrow", extra)
-            if output == "dataframe":
-                self._require_optional_module("pandas", "dataframe")
-            iterator = self._call(
-                "trades_columnar",
-                source,
-                market,
-                self._time(from_),
-                self._time(to),
-                allow_gaps,
-                batch_size,
-            )
-            return self._columnar_result(
-                iterator,
-                "trades",
-                output,
-                pyarrow_module,
-            )
-        iterator = self._call(
-            "trades",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            allow_gaps,
-        )
-        return self._iterate(iterator, "trades")
-
-    def intents(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-    ) -> Iterator[IntentEvent]:
-        """Iterate canonical RFQ, quote, and executable-intent observations."""
-        iterator = self._call(
-            "intents",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            allow_gaps,
-        )
-        return self._iterate(iterator, "intents")
-
-    def option_tickers(
+    def instruments(
         self,
         *,
         source: str,
         market: str,
         instrument: str | None = None,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-    ) -> Iterator[OptionTickerEvent]:
-        """Iterate option tickers for a whole chain or one exact contract."""
+        expiry: int | None = None,
+        option_type: Literal["call", "put"] | None = None,
+        q: str | None = None,
+    ) -> InstrumentsResponse:
+        """Discover venue-native option contracts for one underlying market."""
+        return self._call("instruments", source, market, instrument, expiry, option_type, q)
+
+    def count(self) -> CatalogCount:
+        return self._call("count")
+
+    @overload
+    def trades(
+        self,
+        *,
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        output: Literal["iterator"] = "iterator",
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> Iterator[TradeRow]: ...
+
+    @overload
+    def trades(
+        self,
+        *,
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        output: Literal["batches"],
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> Iterator[pyarrow.RecordBatch]: ...
+
+    @overload
+    def trades(
+        self,
+        *,
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        output: Literal["dataframe"],
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> pandas.DataFrame: ...
+
+    def trades(
+        self,
+        *,
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        output: OutputFormat = "iterator",
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> Iterator[TradeRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
+        """Read flat trade rows from the direct historical API."""
+        if instrument is not None and not instrument.strip():
+            raise ValueError("instrument must be non-empty")
+        return self._direct_row_output(
+            "trades", source, market, start, end, output, batch_size, instrument
+        )
+
+    def events(
+        self,
+        *,
+        start: int,
+        end: int,
+        types: Sequence[MixedEventType] | None = None,
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+    ) -> Iterator[MixedEventRow]:
+        """Iterate authenticated mixed flat rows in collector-time order."""
+        if isinstance(start, bool) or isinstance(end, bool) or not isinstance(start, int) or not isinstance(end, int) or start < 0 or end < start:
+            raise ValueError("start and end must be non-negative inclusive milliseconds with start <= end")
+        if types is not None and (not types or any(
+            value not in {"trade", "l2_update", "funding_rate", "intent", "quote", "option_ticker", "ohlcv"}
+            for value in types
+        )):
+            raise ValueError("types must contain valid event types")
+        iterator = self._call("events", start, end, list(types) if types is not None else None, source, market, instrument)
+        return self._iterate(iterator, "events")
+
+    def intents(
+        self,
+        *,
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+        intent_id: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+    ) -> Iterator[IntentRow]:
+        """Iterate pair-shaped intent observations from the direct API."""
+        iterator = self._call("intents", source, market, instrument, intent_id, start, end)
+        return self._iterate(iterator, "intents")
+
+    def option_tickers(
+        self,
+        *,
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+    ) -> Iterator[OptionTickerRow]:
+        """Read flat option ticker rows for a chain or exact contract."""
         if instrument is not None and not instrument.strip():
             raise ValueError("instrument must be non-empty")
         iterator = self._call(
@@ -715,41 +526,34 @@ class PolarisClient:
             source,
             market,
             instrument,
-            self._time(from_),
-            self._time(to),
-            allow_gaps,
+            start,
+            end,
         )
         return self._iterate(iterator, "option_tickers")
 
     def perpetual_tickers(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-    ) -> Iterator[PerpetualTickerEvent]:
-        """Iterate partial venue-published perpetual market-state updates."""
-        iterator = self._call(
-            "perpetual_tickers",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            allow_gaps,
-        )
+        source: str | None = None,
+        market: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+    ) -> Iterator[FundingRateRow]:
+        """Iterate funding-bearing perpetual ticker observations."""
+        iterator = self._call("perpetual_tickers", source, market, start, end)
         return self._iterate(iterator, "perpetual_tickers")
 
     def raw(
         self,
         *,
         source: str,
-        market: str,
+        market: str | None = None,
         from_: TimeInput | None = None,
         to: TimeInput | None = None,
         limit: int = 1000,
+        channel: str | None = None,
     ) -> list[JSONDict]:
+        """Read paged raw captures with optional exact market and channel filters."""
         if limit <= 0:
             raise ValueError("limit must be > 0")
         return self._call(
@@ -759,71 +563,79 @@ class PolarisClient:
             self._time(from_),
             self._time(to),
             limit,
+            channel,
         )
+
+    def raw_channel(
+        self,
+        *,
+        exchange: str,
+        event: str,
+        start: int,
+        end: int,
+        market: str | None = None,
+    ) -> Iterator[RawCaptureRow]:
+        """Iterate exact raw captures for one venue-native channel via `/raw`."""
+        if not exchange.strip() or not event.strip() or exchange in {".", ".."} or event in {".", ".."}:
+            raise ValueError("exchange and event must be non-empty channel identifiers")
+        for name, value in (("start", start), ("end", end)):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise TypeError(f"{name} must be an integer Unix millisecond timestamp")
+        if start < 0 or end < start:
+            raise ValueError("start and end must be non-negative inclusive milliseconds with start <= end")
+        iterator = self._call("raw_channel", exchange, event, start, end, market)
+        return self._iterate(iterator, "raw_channel")
 
     def l2_snapshots(
         self,
         *,
         source: str,
         market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        materialize_orderbooks: bool = True,
-    ) -> Iterator[JSONDict]:
-        iterator = self._call(
-            "l2_snapshots",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            allow_gaps,
-            materialize_orderbooks,
-        )
+        start: int,
+        end: int,
+        instrument: str | None = None,
+    ) -> Iterator[OrderbookL2Row]:
+        """Read reconstructed top-25 books after each L2 event."""
+        self._validate_l2_bounds(start, end)
+        iterator = self._call("l2_snapshots", source, market, start, end, instrument)
         return self._iterate(iterator, "l2_snapshots")
 
     def l2_updates(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-    ) -> Iterator[JSONDict]:
-        """Iterate raw orderbook snapshots and deltas without reconstruction."""
-        iterator = self._call(
-            "l2_updates",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            allow_gaps,
-        )
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+    ) -> Iterator[OrderbookL2Row]:
+        """Read flat source snapshots and sparse L2 deltas without reconstruction."""
+        for name, value in (("start", start), ("end", end)):
+            if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+                raise TypeError(f"{name} must be an integer Unix millisecond timestamp")
+        iterator = self._call("l2_updates", source, market, instrument, start, end)
         return self._iterate(iterator, "l2_updates")
 
     @overload
     def funding_rates(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
+        source: str | None = None,
+        market: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
         output: Literal["iterator"] = "iterator",
         batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict]: ...
+    ) -> Iterator[FundingRateRow]: ...
 
     @overload
     def funding_rates(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
+        source: str | None = None,
+        market: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
         output: Literal["batches"],
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> Iterator[pyarrow.RecordBatch]: ...
@@ -832,11 +644,10 @@ class PolarisClient:
     def funding_rates(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
+        source: str | None = None,
+        market: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
         output: Literal["dataframe"],
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> pandas.DataFrame: ...
@@ -844,626 +655,74 @@ class PolarisClient:
     def funding_rates(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
+        source: str | None = None,
+        market: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
         output: OutputFormat = "iterator",
         batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        return self._typed_historical(
-            "funding_rates",
-            source,
-            market,
-            from_,
-            to,
-            allow_gaps,
-            output,
-            batch_size,
+    ) -> Iterator[FundingRateRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
+        """Read partial flat funding observations from the direct historical API."""
+        return self._direct_row_output(
+            "funding_rates", source, market, start, end, output, batch_size
         )
-
-    @overload
-    def mark_prices(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        output: Literal["iterator"] = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict]: ...
-
-    @overload
-    def mark_prices(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        output: Literal["batches"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[pyarrow.RecordBatch]: ...
-
-    @overload
-    def mark_prices(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        output: Literal["dataframe"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> pandas.DataFrame: ...
-
-    def mark_prices(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        output: OutputFormat = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        return self._typed_historical(
-            "mark_prices",
-            source,
-            market,
-            from_,
-            to,
-            allow_gaps,
-            output,
-            batch_size,
-        )
-
-    @overload
-    def propamm_quote_ladders(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        output: Literal["iterator"] = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[PropammQuoteLadderEvent]: ...
-
-    @overload
-    def propamm_quote_ladders(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        output: Literal["batches"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[pyarrow.RecordBatch]: ...
-
-    @overload
-    def propamm_quote_ladders(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        output: Literal["dataframe"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> pandas.DataFrame: ...
-
-    def propamm_quote_ladders(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        allow_gaps: bool = False,
-        output: OutputFormat = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> (
-        Iterator[PropammQuoteLadderEvent]
-        | Iterator[pyarrow.RecordBatch]
-        | pandas.DataFrame
-    ):
-        return self._typed_historical(
-            "propamm_quote_ladders",
-            source,
-            market,
-            from_,
-            to,
-            allow_gaps,
-            output,
-            batch_size,
-        )
-
-    @overload
-    def bbo(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str | None = None,
-        allow_gaps: bool = False,
-        changes_only: bool = False,
-        output: Literal["iterator"] = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict]: ...
-
-    @overload
-    def bbo(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str | None = None,
-        allow_gaps: bool = False,
-        changes_only: bool = False,
-        output: Literal["batches"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[pyarrow.RecordBatch]: ...
-
-    @overload
-    def bbo(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str | None = None,
-        allow_gaps: bool = False,
-        changes_only: bool = False,
-        output: Literal["dataframe"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> pandas.DataFrame: ...
-
-    def bbo(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str | None = None,
-        allow_gaps: bool = False,
-        changes_only: bool = False,
-        output: OutputFormat = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        self._validate_columnar_output(output, batch_size)
-        if output != "iterator":
-            extra = "dataframe" if output == "dataframe" else "arrow"
-            pyarrow_module = self._require_optional_module("pyarrow", extra)
-            if output == "dataframe":
-                self._require_optional_module("pandas", "dataframe")
-            iterator = self._call(
-                "bbo_columnar",
-                source,
-                market,
-                self._time(from_),
-                self._time(to),
-                interval,
-                allow_gaps,
-                changes_only,
-                batch_size,
-            )
-            return self._columnar_result(iterator, "bbo", output, pyarrow_module)
-        iterator = self._call(
-            "bbo",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            interval,
-            allow_gaps,
-            changes_only,
-        )
-        return self._iterate(iterator, "bbo")
-
-    def _historical(
-        self,
-        method: str,
-        source: str,
-        market: str,
-        from_: TimeInput | None,
-        to: TimeInput | None,
-        allow_gaps: bool,
-    ) -> Iterator[JSONDict]:
-        iterator = self._call(
-            method,
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            allow_gaps,
-        )
-        return self._iterate(iterator, method)
-
-    def _typed_historical(
-        self,
-        method: Literal["funding_rates", "mark_prices", "propamm_quote_ladders"],
-        source: str,
-        market: str,
-        from_: TimeInput | None,
-        to: TimeInput | None,
-        allow_gaps: bool,
-        output: OutputFormat,
-        batch_size: int,
-    ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        self._validate_columnar_output(output, batch_size)
-        if output == "iterator":
-            return self._historical(method, source, market, from_, to, allow_gaps)
-        extra = "dataframe" if output == "dataframe" else "arrow"
-        pyarrow_module = self._require_optional_module("pyarrow", extra)
-        if output == "dataframe":
-            self._require_optional_module("pandas", "dataframe")
-        iterator = self._call(
-            f"{method}_columnar",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            allow_gaps,
-            batch_size,
-        )
-        return self._columnar_result(iterator, method, output, pyarrow_module)
 
     @overload
     def ohlcv(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        format: str | None = None,
-        allow_gaps: bool = False,
-        output: Literal["records"] = "records",
-    ) -> list[JSONDict] | JSONDict: ...
-
-    @overload
-    def ohlcv(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        format: None = None,
-        allow_gaps: bool = False,
-        output: Literal["dataframe"],
-    ) -> pandas.DataFrame: ...
-
-    def ohlcv(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        format: str | None = None,
-        allow_gaps: bool = False,
-        output: AggregateOutputFormat = "records",
-    ) -> list[JSONDict] | JSONDict | pandas.DataFrame:
-        if output == "dataframe" and format is not None:
-            raise ValueError(
-                "output='dataframe' is only available when format is None"
-            )
-        pandas_module = self._prepare_aggregate_output(output)
-        result = self._call(
-            "ohlcv",
-            source,
-            market,
-            interval,
-            self._time(from_),
-            self._time(to),
-            format,
-            allow_gaps,
-        )
-        if output == "records":
-            return result
-        return self._aggregate_dataframe(
-            result,
-            AGGREGATE_COLUMNS["ohlcv"],
-            pandas_module,
-        )
-
-    @overload
-    def volume(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        allow_gaps: bool = False,
-        output: Literal["records"] = "records",
-    ) -> list[JSONDict]: ...
-
-    @overload
-    def volume(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        allow_gaps: bool = False,
-        output: Literal["dataframe"],
-    ) -> pandas.DataFrame: ...
-
-    def volume(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        allow_gaps: bool = False,
-        output: AggregateOutputFormat = "records",
-    ) -> list[JSONDict] | pandas.DataFrame:
-        return self._aggregate(
-            "volume", source, market, from_, to, interval, allow_gaps, output
-        )
-
-    @overload
-    def vwap(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        allow_gaps: bool = False,
-        output: Literal["records"] = "records",
-    ) -> list[JSONDict]: ...
-
-    @overload
-    def vwap(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        allow_gaps: bool = False,
-        output: Literal["dataframe"],
-    ) -> pandas.DataFrame: ...
-
-    def vwap(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        allow_gaps: bool = False,
-        output: AggregateOutputFormat = "records",
-    ) -> list[JSONDict] | pandas.DataFrame:
-        return self._aggregate(
-            "vwap", source, market, from_, to, interval, allow_gaps, output
-        )
-
-    @overload
-    def volatility(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        method: str = "log_returns",
-        allow_gaps: bool = False,
-        output: Literal["records"] = "records",
-    ) -> list[JSONDict]: ...
-
-    @overload
-    def volatility(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        method: str = "log_returns",
-        allow_gaps: bool = False,
-        output: Literal["dataframe"],
-    ) -> pandas.DataFrame: ...
-
-    def volatility(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        interval: str,
-        method: str = "log_returns",
-        allow_gaps: bool = False,
-        output: AggregateOutputFormat = "records",
-    ) -> list[JSONDict] | pandas.DataFrame:
-        if method != "log_returns":
-            raise ValueError("method must be 'log_returns'")
-        return self._aggregate(
-            "volatility", source, market, from_, to, interval, allow_gaps, output
-        )
-
-    def _prepare_aggregate_output(
-        self,
-        output: str,
-    ) -> Any | None:
-        if output not in {"records", "dataframe"}:
-            raise ValueError("output must be one of: 'records', 'dataframe'")
-        if output == "dataframe":
-            return self._require_optional_module("pandas", "dataframe")
-        return None
-
-    @staticmethod
-    def _aggregate_dataframe(
-        rows: list[JSONDict],
-        columns: tuple[str, ...],
-        pandas_module: Any,
-    ) -> pandas.DataFrame:
-        frame = pandas_module.DataFrame.from_records(rows, columns=columns)
-        frame["timestamp"] = pandas_module.Series(
-            pandas_module.to_datetime(frame["timestamp"], unit="ms", utc=True),
-            dtype="datetime64[ms, UTC]",
-        )
-        for column in columns[1:]:
-            dtype = "uint64" if column in AGGREGATE_COUNT_COLUMNS else "float64"
-            frame[column] = frame[column].astype(dtype)
-        return frame
-
-    def _aggregate(
-        self,
-        method: str,
-        source: str,
-        market: str,
-        from_: TimeInput | None,
-        to: TimeInput | None,
-        interval: str,
-        allow_gaps: bool,
-        output: AggregateOutputFormat,
-    ) -> list[JSONDict] | pandas.DataFrame:
-        pandas_module = self._prepare_aggregate_output(output)
-        rows = self._call(
-            method,
-            source,
-            market,
-            interval,
-            self._time(from_),
-            self._time(to),
-            allow_gaps,
-        )
-        if output == "records":
-            return rows
-        return self._aggregate_dataframe(
-            rows,
-            AGGREGATE_COLUMNS[method],
-            pandas_module,
-        )
-
-    @overload
-    def depth_metrics(
-        self,
-        *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        depth_pct: float = 0.01,
-        slippage_notional: float = 10_000.0,
-        allow_gaps: bool = False,
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+        interval: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
         output: Literal["iterator"] = "iterator",
         batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict]: ...
+    ) -> Iterator[OhlcvRow]: ...
 
     @overload
-    def depth_metrics(
+    def ohlcv(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        depth_pct: float = 0.01,
-        slippage_notional: float = 10_000.0,
-        allow_gaps: bool = False,
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+        interval: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
         output: Literal["batches"],
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> Iterator[pyarrow.RecordBatch]: ...
 
     @overload
-    def depth_metrics(
+    def ohlcv(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        depth_pct: float = 0.01,
-        slippage_notional: float = 10_000.0,
-        allow_gaps: bool = False,
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+        interval: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
         output: Literal["dataframe"],
         batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> pandas.DataFrame: ...
 
-    def depth_metrics(
+    def ohlcv(
         self,
         *,
-        source: str,
-        market: str,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        depth_pct: float = 0.01,
-        slippage_notional: float = 10_000.0,
-        allow_gaps: bool = False,
+        source: str | None = None,
+        market: str | None = None,
+        instrument: str | None = None,
+        interval: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
         output: OutputFormat = "iterator",
         batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        if depth_pct <= 0:
-            raise ValueError("depth_pct must be greater than 0")
-        if slippage_notional <= 0:
-            raise ValueError("slippage_notional must be greater than 0")
-        self._validate_columnar_output(output, batch_size)
-        if output != "iterator":
-            extra = "dataframe" if output == "dataframe" else "arrow"
-            pyarrow_module = self._require_optional_module("pyarrow", extra)
-            if output == "dataframe":
-                self._require_optional_module("pandas", "dataframe")
-            iterator = self._call(
-                "depth_metrics_columnar",
-                source,
-                market,
-                self._time(from_),
-                self._time(to),
-                depth_pct,
-                slippage_notional,
-                allow_gaps,
-                batch_size,
-            )
-            return self._columnar_result(
-                iterator,
-                "depth_metrics",
-                output,
-                pyarrow_module,
-            )
-        iterator = self._call(
-            "depth_metrics",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            depth_pct,
-            slippage_notional,
-            allow_gaps,
+    ) -> Iterator[OhlcvRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
+        """Read every venue-published candle update as a flat row."""
+        return self._direct_row_output(
+            "ohlcv", source, market, start, end, output, batch_size,
+            instrument, interval,
         )
-        return self._iterate(iterator, "depth_metrics")

@@ -9,32 +9,21 @@ with PolarisClient(api_key="pk_live_your_key") as client:
 
     row_count = sum(
         1
-        for _ in client.replay(
+        for _ in client.trades(
             source="binance",
             market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
+            start=1_704_067_200_000,
+            end=1_704_070_800_000,
         )
     )
-    print(f"Replayed {row_count} rows")
+    print(f"Loaded {row_count} trade rows")
 
-    row_count = sum(
-        1
-        for _ in client.events(
-            source="binance",
-            market="BTC-USDT",
-            from_="2024-01-01T00:00:00Z",
-            to="2024-01-01T01:00:00Z",
-        )
-    )
-    print(f"Loaded {row_count} event rows")
-
-    bars = client.ohlcv(
+    candles = client.ohlcv(
         source="binance",
         market="BTC-USDT",
-        from_="2024-01-01T00:00:00Z",
-        to="2024-01-01T01:00:00Z",
+        start=1_704_067_200_000,
+        end=1_704_070_800_000,
         interval="1m",
     )
 
-    print(f"Downloaded {len(bars)} bars")
+    print(f"Downloaded {sum(1 for _ in candles)} candle updates")

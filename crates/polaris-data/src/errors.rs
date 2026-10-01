@@ -29,14 +29,6 @@ pub enum PolarisError {
     },
     #[error("invalid response: {0}")]
     InvalidResponse(String),
-    #[error("snapshot coverage gap for {dataset_source}/{market}: {intervals:?}")]
-    CoverageGap {
-        dataset_source: String,
-        market: String,
-        intervals: Vec<String>,
-    },
-    #[error("i/o error: {0}")]
-    Io(#[from] std::io::Error),
     #[error("decode error: {0}")]
     Decode(String),
     #[error("request failed: {0}")]

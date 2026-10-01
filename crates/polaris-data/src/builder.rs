@@ -1,11 +1,6 @@
-use std::{path::PathBuf, time::Duration};
+use std::time::Duration;
 
-use crate::{
-    client::PolarisClient,
-    errors::PolarisError,
-    http::HttpClient,
-    storage::{ensure_layout, resolve_root},
-};
+use crate::{client::PolarisClient, errors::PolarisError, http::HttpClient};
 
 #[derive(Clone, Debug)]
 pub struct PolarisClientBuilder {
@@ -13,7 +8,6 @@ pub struct PolarisClientBuilder {
     base_url: String,
     stream_url: Option<String>,
     timeout: Duration,
-    dataset_root: Option<PathBuf>,
 }
 
 impl Default for PolarisClientBuilder {
@@ -23,7 +17,6 @@ impl Default for PolarisClientBuilder {
             base_url: "https://api.polaris.supply".to_owned(),
             stream_url: None,
             timeout: Duration::from_secs(30),
-            dataset_root: None,
         }
     }
 }
@@ -53,19 +46,12 @@ impl PolarisClientBuilder {
         self
     }
 
-    pub fn dataset_root(mut self, value: impl Into<PathBuf>) -> Self {
-        self.dataset_root = Some(value.into());
-        self
-    }
-
     pub fn build(self) -> Result<PolarisClient, PolarisError> {
         let api_key = self
             .api_key
             .or_else(|| std::env::var("POLARIS_API_KEY").ok());
-        let root = resolve_root(self.dataset_root)?;
-        let layout = ensure_layout(root)?;
         let stream_url = crate::realtime::resolve_stream_url(&self.base_url, self.stream_url)?;
         let http = HttpClient::new(self.base_url, self.timeout, api_key.clone())?;
-        Ok(PolarisClient::from_parts(api_key, layout, http, stream_url))
+        Ok(PolarisClient::from_parts(api_key, http, stream_url))
     }
 }

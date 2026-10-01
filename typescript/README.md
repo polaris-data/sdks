@@ -1,25 +1,9 @@
 # polaris-data
 
-TypeScript SDK for the Polaris market data API, optimised for server-side workflows, trading scripts, and TypeScript projects.
+TypeScript client for the Polaris market data API in Node.js and browsers.
 
-Documentation can be found at [polaris.supply/docs](https://polaris.supply/docs).
-
-## Install
-
-```sh
+```bash
 npm install polaris-data
-```
-
-```sh
-pnpm add polaris-data
-```
-
-```sh
-yarn add polaris-data
-```
-
-```sh
-bun add polaris-data
 ```
 
 ## Quickstart
@@ -28,480 +12,49 @@ bun add polaris-data
 import { PolarisClient } from "polaris-data";
 
 const client = new PolarisClient({ apiKey: "polaris_key_your_key" });
-
 try {
-  const rows = await client.events({
-    source: "binance",
-    market: "BTC-USDT",
-    from: "2024-01-01T00:00:00Z",
-    to: "2024-01-01T01:00:00Z",
-  });
-  console.log(`Fetched ${rows.length} events`);
+  const trades = await client.trades({ source: "binance", market: "BTC-USDT" });
+  console.log(trades[0]);
 } finally {
   client.close();
 }
 ```
 
-The `apiKey` is optional — omit it to use public endpoints, or set the `POLARIS_API_KEY` environment variable.
+Direct historical methods return arrays and follow every cursor page. `start` and `end` are inclusive Unix milliseconds. Optional bounds use the API default window when the route allows it.
 
-### Async disposal (Node ≥ 18 / TypeScript ≥ 5.2)
-
-```ts
-import { PolarisClient } from "polaris-data";
-
-await using client = new PolarisClient({ apiKey: "polaris_key_your_key" });
-
-const rows = await client.events({
-  source: "binance",
-  market: "BTC-USDT",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-01T01:00:00Z",
-});
-console.log(`Fetched ${rows.length} events`);
-```
-
-## `PolarisClient`
-
-```ts
-new PolarisClient({
-  apiKey?: string,       // optional — omit for public access, or set POLARIS_API_KEY
-  baseUrl?: string,       // defaults to "https://api.polaris.supply"
-  streamUrl?: string,     // defaults to wss://<API origin>/stream
-  timeout?: number,       // request timeout in ms (default 30 000)
-  fetch?: FetchLike,      // custom fetch for testing / proxies
-  datasetRoot?: string,   // override local dataset root
-});
-```
-
-Use it to inspect available data, query historical market data, and open realtime streams.
-
-### Discovery
-
-| Method | Returns | Use case |
+| Method | Route | Result |
 | --- | --- | --- |
-| `health()` | API health/status payload | Connectivity checks and startup validation |
-| `catalog(opts?)` | Source/market metadata | Discover supported datasets, markets, and time coverage |
-| `listSnapshots(opts)` | List of snapshot file entries | Inspect snapshot availability before downloading or replaying |
+| `trades` | `/trades` | Flat trades; optional exact `instrument` |
+| `optionTickers` | `/options-ticker` | Flat option observations; exact `instrument` filter |
+| `fundingRates` | `/funding-rates` | Partial funding observations with nullable fields |
+| `perpetualTickers` | `/perpetual-ticker` | Funding-bearing observations |
+| `intents` | `/intents` | Single input/output asset observations |
+| `l2Updates` | `/l2-updates` | Source snapshots and sparse deltas as flat rows |
+| `events` | `/events` | Authenticated mixed `{type, data}` flat rows in collector-time order |
+| `l2Snapshots` | `/l2-orderbooks` | Reconstructed top-25 books after each update |
+| `ohlcv` | `/ohlcv` | Every venue-published candle update as a flat row |
+| `raw` | `/raw` | Exact captures for a source; optional `market` and `channel` |
+| `rawChannel` | `/raw` with `channel` | Exact captures from one native channel; optional `market` |
 
-### Access patterns
+`catalog`, `count`, `instruments`, `health`, `meta`, and realtime `stream` are also available. `meta` returns public documentation, OpenAPI, skill, health, and stream links. `l2Snapshots` requires `source`, `market`, `start`, and `end`; it is unrelated to the removed `/snapshots` route. `raw` requires `source`, `start`, and `end` and accepts optional `market` and `channel`. `rawChannel` maps `exchange` and `event` to `source` and `channel` and also accepts `market`. Both convert inclusive millisecond bounds to RFC 3339 query parameters. The `market` filter matches the capture's recorded `additional_context.market` exactly; it does not search `original_json`. Raw rows include `raw_table`. `OrderbookBuilder` still handles realtime orderbook event envelopes.
 
-| Method | Returns | Use case |
-| --- | --- | --- |
-| `replay(opts)` | Async iterator of historical events | Backfills and replay-style processing without materializing everything up front |
-| `stream(opts)` | Closeable async iterable of realtime events | Open-ended normalized market data for one source and up to 1,000 markets |
-| `getSnapshotDownloadUrls(opts)` | Daily bulk manifest with pre-signed snapshot URLs | Bulk historical downloads for a single `source` / `market` / UTC `date` |
+`ohlcv` accepts optional `source`, `market`, `instrument`, `interval`, `start`, and `end` filters. Inclusive bounds refer to candle open time. It preserves every candle revision. `ohlcvTradingView` remains available as a derived latest-revision view.
 
-### Standardized Data Schemas
+## Breaking changes
 
-| Method | Returns | Use case |
-| --- | --- | --- |
-| `events(opts)` | Array of standardised historical events | General-purpose historical analysis when you want the normalized event stream in memory |
-| `trades(opts)` | Array of standardised trade events | Trade-level analytics, execution studies, and derived bar calculations |
-| `intents(opts)` | Array of typed intent events | Process canonical RFQ, quote, and executable-intent observations |
-| `optionTickers(opts)` | Array of typed option ticker events | Read an underlying's whole option chain or filter one exact contract with `instrument` |
-| `perpetualTickers(opts)` | Array of typed perpetual ticker events | Read partial venue-published prices, open interest, premium, and funding state |
-| `l2Snapshots(opts)` | Array of standardised orderbook snapshot rows | Order book reconstruction and microstructure analysis |
-| `l2Updates(opts)` | Array of raw orderbook snapshots and deltas | High-throughput application-managed books |
-| `fundingRates(opts)` | Array of funding-rate point series rows | Perpetual funding studies and carry modeling |
-| `markPrices(opts)` | Array of mark-price point series rows | Basis analysis, mark tracking, and liquidation-related research |
-| `propammQuoteLadders(opts)` | Array of typed PropAMM quote-ladder events | Full-precision Ethereum execution-quote analysis |
-| `ohlcv(opts)` | Aggregated OHLCV bars | Charting, bar-based strategies, and downstream TA workflows |
-| `ohlcvTradingView(opts)` | TradingView-shaped OHLCV payload | Feeding TradingView-compatible chart consumers directly |
-| `volume(opts)` | Bucketed trade volume series | Volume profiling and participation analysis |
-| `vwap(opts)` | Bucketed VWAP series | Execution benchmarking and price smoothing |
-| `volatility(opts)` | Bucketed realized volatility series | Risk modeling and intraperiod volatility analysis |
-| `bbo(opts)` | Best bid/offer quote series | Spread tracking, quote analytics, and top-of-book monitoring |
-| `depthMetrics(opts)` | Derived depth, spread, imbalance, and slippage metrics | Liquidity analysis and market impact estimation |
+`replay`, `listSnapshots`, `getSnapshotDownloadUrls`, and `propammQuoteLadders` are removed. Use direct data methods and `raw` or `rawChannel` for exact raw captures. The new `events` method requires an API key and inclusive `start` and `end` collector timestamps in Unix milliseconds; it returns mixed flat rows instead of the former snapshot event envelopes. The API also has `/quotes`, which the client does not yet wrap. The client no longer requests `/snapshots` or `/download`.
 
-All snapshot-based methods accept `from` and `to` as ISO 8601 strings, `Date`, or epoch microseconds. If one or both bounds are omitted, the client infers a bounded range from catalog metadata.
-`replay({ standard: false })` is not supported in the TypeScript SDK.
+The API moved data routes from `/historical/*` to top-level paths. The old routes no longer work. It also replaced `/raw/{exchange}/{event}` with `/raw?source=...&channel=...`.
 
-UniswapX, LI.FI, and CoW Swap expose RFQs, quotes, and executable orders with
-the same canonical `IntentEvent` shape. `intents()` returns the individual
-stored observations in order rather than lifecycle-reduced snapshots:
+The client also removes `bbo`, `depthMetrics`, `intentRows`, `ohlcvRows`, `quoteRows`, `volume`, `vwap`, `volatility`, and `markPrices`. These methods may return in a later release.
 
-```ts
-for (const source of ["uniswapx", "lifi", "cowswap"]) {
-  const observations = await client.intents({ source, market: "intents" });
-  for (const { data } of observations) {
-    console.log(source, data.rfq_id, data.intent_id, data.status);
-  }
-}
+`ohlcv` now returns flat `OhlcvRow[]` instead of collapsed bars and accepts inclusive Unix-millisecond `start` and `end` bounds. Existing code expecting one bar per candle must handle revisions explicitly.
+
+The `datasetRoot`, `storage`, and `snapshotDownloadConcurrency` constructor options are removed with local snapshot storage.
+
+## Development
+
+```bash
+npm run typecheck
+npm test
 ```
-
-When present, `observation.raw` contains the exact captured upstream JSON next
-to the canonical `observation.data` payload.
-
-### Realtime stream
-
-```ts
-import { PolarisClient } from "polaris-data";
-
-const client = new PolarisClient({ apiKey: "polaris_key_your_key" });
-const events = client.stream({
-  source: "binance",
-  markets: ["BTC-USDT", "ETH-USDT"],
-});
-
-try {
-  for await (const event of events) {
-    console.log(event);
-  }
-} finally {
-  events.close();
-  client.close();
-}
-```
-
-For option sources, pass the normalized underlying in `markets` and optionally
-set `instrument` to one non-empty exact option contract. Omitting `instrument`
-subscribes to the complete option chain. Historical option tickers use the same
-identity split:
-
-```ts
-const chain = await client.optionTickers({ source: "deribit", market: "BTC" });
-const contract = await client.optionTickers({
-  source: "deribit",
-  market: "BTC",
-  instrument: "BTC-29MAR24-50000-C",
-});
-
-const perpetuals = await client.perpetualTickers({
-  source: "hyperliquid",
-  market: "BTC",
-});
-console.log(perpetuals[0]?.data.mark_price, perpetuals[0]?.data.funding_rate);
-```
-
-Perpetual ticker decimal values remain strings, and each row is a partial
-venue update rather than an accumulated snapshot. Trade data exposes optional
-`maker` and `taker` identifiers when supplied by the venue.
-
-The browser build uses the native browser WebSocket implementation; Node uses
-the bundled Node transport. Streams reconnect automatically after transport
-failures. Because the live protocol has no resume cursor, reconnects can contain
-gaps or duplicate events. Reconstructed books are cleared on reconnect, and
-deltas are suppressed until a new snapshot arrives. Authentication and protocol
-errors are terminal.
-
-Standardized orderbooks are materialized by default for `stream`, `replay`,
-`events`, and `l2Snapshots`. Snapshots replace the book, deltas update listed
-prices, and zero quantities delete prices. Use `l2Updates` to receive raw
-snapshots and deltas. `OrderbookBuilder` exposes the same state machine for
-application-managed event flows. Its `update` method mutates state without
-constructing a complete book; call `snapshot` only when sorted levels are
-needed. The existing `apply` method retains its combined behavior.
-
-## Examples
-
-### Catalog
-
-```ts
-import { PolarisClient } from "polaris-data";
-
-const client = new PolarisClient({ apiKey: "polaris_key_your_key" });
-
-const catalog = await client.catalog();
-console.log(catalog);
-
-const markets = await client.catalog({ source: "hyperliquid" });
-console.log(markets.markets.map((m) => m.market));
-```
-
-### Events & trades (from local snapshots)
-
-```ts
-import { PolarisClient } from "polaris-data";
-
-const client = new PolarisClient({ apiKey: "polaris_key_your_key" });
-
-// First call downloads the required standardized snapshot files; subsequent calls read locally
-const rows = await client.events({
-  source: "binance",
-  market: "BTC-USDT",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-01T01:00:00Z",
-});
-console.log(rows.length);
-
-const trades = await client.trades({
-  source: "binance",
-  market: "BTC-USDT",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-01T01:00:00Z",
-});
-console.log(trades.length);
-
-const quotes = await client.bbo({
-  source: "binance",
-  market: "BTC-USDT",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-01T01:00:00Z",
-});
-console.log(quotes[0]);
-
-const depth = await client.depthMetrics({
-  source: "binance",
-  market: "BTC-USDT",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-01T01:00:00Z",
-});
-console.log(depth[0]);
-```
-
-### Point-series schemas (from local snapshots)
-
-```ts
-import { PolarisClient } from "polaris-data";
-
-const client = new PolarisClient({ apiKey: "polaris_key_your_key" });
-
-const funding = await client.fundingRates({
-  source: "hyperliquid",
-  market: "BTC",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-02T00:00:00Z",
-});
-
-const marks = await client.markPrices({
-  source: "hyperliquid",
-  market: "BTC",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-02T00:00:00Z",
-});
-
-console.log(funding.length, marks.length);
-```
-
-### PropAMM quote ladders
-
-```ts
-const ladders = await client.propammQuoteLadders({
-  source: "metric",
-  market: "ethereum",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-01T01:00:00Z",
-});
-
-console.log(ladders[0].data.values.quotes);
-```
-
-Quote amounts remain decimal strings so the full Ethereum `uint256` range is
-preserved. `oracle` is nullable and Metric records include the optional `pool`
-address.
-
-### Replay (streaming from local snapshots)
-
-```ts
-import { PolarisClient } from "polaris-data";
-
-const client = new PolarisClient({ apiKey: "polaris_key_your_key" });
-
-let count = 0;
-for await (const row of client.replay({
-  source: "binance",
-  market: "BTC-USDT",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-01T01:00:00Z",
-})) {
-  count++;
-}
-console.log(`Replayed ${count} rows`);
-```
-
-### OHLCV (aggregated from local snapshots)
-
-```ts
-import { PolarisClient } from "polaris-data";
-
-const client = new PolarisClient({ apiKey: "polaris_key_your_key" });
-
-// Array of bars
-const bars = await client.ohlcv({
-  source: "hyperliquid",
-  market: "BTC",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-02T00:00:00Z",
-  interval: "1m",
-});
-
-// TradingView format
-const tv = await client.ohlcvTradingView({
-  source: "hyperliquid",
-  market: "BTC",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-02T00:00:00Z",
-  interval: "1m",
-});
-```
-
-Supported intervals: `100ms`, `1s`, `10s`, `1m`, `5m`, `15m`, `1h`.
-
-### Volume, VWAP, and volatility
-
-```ts
-import { PolarisClient } from "polaris-data";
-
-const client = new PolarisClient({ apiKey: "polaris_key_your_key" });
-
-const volume = await client.volume({
-  source: "hyperliquid",
-  market: "BTC",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-02T00:00:00Z",
-  interval: "1m",
-});
-
-const vwap = await client.vwap({
-  source: "hyperliquid",
-  market: "BTC",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-02T00:00:00Z",
-  interval: "1m",
-});
-
-const volatility = await client.volatility({
-  source: "hyperliquid",
-  market: "BTC",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-02T00:00:00Z",
-  interval: "1m",
-});
-
-console.log(volume[0], vwap[0], volatility[0]);
-```
-
-### Snapshots
-
-```ts
-import { PolarisClient } from "polaris-data";
-
-const client = new PolarisClient({ apiKey: "polaris_key_your_key" });
-
-// List available snapshots
-const snapshots = await client.listSnapshots({
-  source: "hyperliquid",
-  market: "BTC-USD",
-  from: "2024-01-01T00:00:00Z",
-  to: "2024-01-07T00:00:00Z",
-});
-for (const s of snapshots) {
-  console.log(s.date, s.hour, s.key);
-}
-
-// Get the daily bulk manifest
-const manifest = await client.getSnapshotDownloadUrls({
-  source: "hyperliquid",
-  market: "BTC-USD",
-  date: "2024-01-01",
-});
-
-for (const snapshot of manifest.snapshots) {
-  console.log(snapshot.timestamp, snapshot.url);
-}
-```
-
-## Error handling
-
-```ts
-import {
-  PolarisClient,
-  PolarisError,
-  RateLimitedError,
-  UnauthorizedError,
-} from "polaris-data";
-
-const client = new PolarisClient({ apiKey: "polaris_key_your_key" });
-
-try {
-  await client.events({
-    source: "binance",
-    market: "BTC-USDT",
-    from: "2024-01-01T00:00:00Z",
-    to: "2024-01-01T01:00:00Z",
-  });
-} catch (err) {
-  if (err instanceof UnauthorizedError) {
-    console.error("API key is required");
-  } else if (err instanceof RateLimitedError) {
-    console.error(`Rate limited. Reset at: ${err.resetAt}`);
-  } else if (err instanceof PolarisError) {
-    console.error(`Polaris error: ${err.message} (status=${err.statusCode})`);
-  }
-}
-```
-
-### Error classes
-
-| Class | HTTP status | When |
-| --- | --- | --- |
-| `UnauthorizedError` | 401 | Missing or invalid API key |
-| `NotFoundError` | 404 | Resource not found |
-| `RateLimitedError` | 429 | Too many requests; check `resetAt` |
-| `StreamDecodeError` | — | Failed to decode a streamed response |
-
-All errors extend `PolarisError` which extends `Error`.
-
-## Types
-
-The SDK ships with full TypeScript definitions. Key types:
-
-```ts
-import type {
-  // Events
-  StandardEvent,
-  TradeEvent,
-  TradeData,
-
-  // OHLCV
-  OhlcvBar,
-  OhlcvInterval,
-
-  // Snapshots
-  SnapshotEntry,
-  SnapshotsResponse,
-
-  // Catalog
-  CatalogResponse,
-  CatalogMarket,
-} from "polaris-data";
-```
-
-## Snapshot-first architecture
-
-Standardised historical data (`events`, `trades`, `intents`, `optionTickers`, `perpetualTickers`, `l2Snapshots`, `l2Updates`, `fundingRates`, `markPrices`, `propammQuoteLadders`, `bbo`, `depthMetrics`, `ohlcv`, `volume`, `vwap`, `volatility`, and `replay`) uses a **snapshot-first** approach:
-
-1. Hourly `.jsonl.zst` snapshot files are discovered via `GET /snapshots` and downloaded via `GET /download` on first access.
-2. Subsequent calls for the same date range read from the local cache — no network round-trips.
-3. If a requested hour has no available snapshot, the SDK raises a `PolarisError` rather than silently falling back.
-
-### Local dataset root
-
-The default root follows the platform convention so the CLI and SDK share the same files:
-
-| Platform | Default root |
-| --- | --- |
-| macOS | `~/Library/Application Support/polaris` |
-| Linux | `$XDG_DATA_HOME/polaris` or `~/.local/share/polaris` |
-| Windows | `%APPDATA%\polaris` |
-
-Inside the root:
-
-```text
-<root>/
-  data/       # Rust-style snapshots: <tier>/<source>/<market>/<date>/<opaque-key>.jsonl.zst
-  tmp/        # Temporary download parts
-  cache/
-```
-
-Override with the `datasetRoot` constructor option or the `POLARIS_ROOT` environment variable.
-
-## Runtime dependencies
-
-- **`fzstd`** — Pure JavaScript zstd decompression for `.jsonl.zst` snapshot files.
-
-No other runtime dependencies. HTTP is handled by the native `fetch` API (Node.js 18+, Deno, Bun).
-
-## License
-
-MIT
