@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
-from typing import Any, Literal, get_args, get_type_hints
+from typing import Any, Literal, Optional, get_args, get_type_hints
 
 import pytest
 import polaris_data
@@ -368,7 +368,7 @@ def test_documented_result_annotations_and_models_are_stable() -> None:
     }
     assert get_type_hints(TradeRow)["price"] is float
     assert get_type_hints(OptionTickerRow)["instrument"] is str
-    assert get_type_hints(FundingRateRow)["funding_rate"] == str | None
+    assert get_type_hints(FundingRateRow)["funding_rate"] == Optional[str]
     assert get_type_hints(RawCaptureRow)["original_json"] is str
     assert get_type_hints(RawCaptureRow)["raw_table"] is str
     assert get_type_hints(OptionTickerData)["option_type"] == Literal["call", "put"]
