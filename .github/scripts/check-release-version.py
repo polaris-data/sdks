@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 TAG_PATTERN = re.compile(
-    r"^(?P<ecosystem>python|rust|typescript)-v(?P<major>0|[1-9]\d*)"
+    r"^(?P<ecosystem>python|rust|typescript|zig)-v(?P<major>0|[1-9]\d*)"
     r"\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$"
 )
 TOML_SECTION_PATTERN = re.compile(r"^\s*\[([^\]]+)\]\s*(?:#.*)?$")
@@ -82,6 +82,12 @@ def json_string(path: str, *keys: str) -> str:
 
 
 def version_sources(ecosystem: str) -> dict[str, str]:
+    if ecosystem == "zig":
+        text = (ROOT / "build.zig.zon").read_text()
+        match = re.search(r'\.version = "([^"]+)"', text)
+        if not match:
+            raise ValueError("could not find a Zig SDK version in build.zig.zon")
+        return {"build.zig.zon": match[1]}
     if ecosystem == "python":
         return {
             "pyproject.toml [project]": toml_string(
@@ -116,7 +122,7 @@ def main() -> int:
     if len(sys.argv) != 2:
         print(
             f"usage: {Path(sys.argv[0]).name} "
-            "(python-vX.Y.Z|rust-vX.Y.Z|typescript-vX.Y.Z)",
+            "(python-vX.Y.Z|rust-vX.Y.Z|typescript-vX.Y.Z|zig-vX.Y.Z)",
             file=sys.stderr,
         )
         return 2
@@ -126,7 +132,7 @@ def main() -> int:
     if match is None:
         print(
             f"invalid release tag {tag!r}; expected "
-            "python-vX.Y.Z, rust-vX.Y.Z, or typescript-vX.Y.Z",
+            "python-vX.Y.Z, rust-vX.Y.Z, typescript-vX.Y.Z, or zig-vX.Y.Z",
             file=sys.stderr,
         )
         return 2

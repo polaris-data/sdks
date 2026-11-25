@@ -1,0 +1,68 @@
+name: Check SDK release candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  archives:
+    uses: ./.github/workflows/build-zig-archives.yml
+    with:
+      ref: ${{ github.sha }}
+
+  verify:
+    needs: archives
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: sdk-release-smoke
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: polaris-zig-archives
+          path: crates/polaris-data/prebuilt
+      - run: python tools/install-toolchain.py --binaryen
+      - run: python tools/generate.py --check
+      - run: python tools/package-zig.py source-archive --check
+      - run: python tools/package-zig.py stage-source
+      - run: cargo package -p polaris-data --locked
+      - run: python tools/check-rust-dist.py target/package/polaris-data-*.crate
+      - run: uvx --from maturin==1.14.1 maturin build --release --locked --out dist
+      - run: uvx --from maturin==1.14.1 maturin sdist --out dist
+      - run: python tools/check-python-dist.py dist/*.whl
+      - run: python tools/check-python-dist.py dist/polaris_data-*.tar.gz
+      - run: npm ci --prefix typescript
+      - run: npx --prefix typescript playwright install --with-deps chromium
+      - run: npm test --prefix typescript
+        env:
+          POLARIS_TEST_BROWSER: "1"
+      - run: |
+          npm pack ./typescript --pack-destination dist
+          node tools/check-npm-dist.mjs dist/polaris-data-*.tgz
+      - run: |
+          python -m venv "$RUNNER_TEMP/polaris-smoke"
+          "$RUNNER_TEMP/polaris-smoke/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/polaris-smoke/bin/python" tools/smoke-production.py --authenticated
+        env:
+          POLARIS_SDK_SMOKE_API_KEY: ${{ secrets.POLARIS_SDK_SMOKE_API_KEY }}
+          POLARIS_SMOKE_CANDLE_QUERY: ${{ vars.POLARIS_SMOKE_CANDLE_QUERY }}
+          POLARIS_SMOKE_STREAM_SUBSCRIPTION: ${{ vars.POLARIS_SMOKE_STREAM_SUBSCRIPTION }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polaris-sdk-release-candidate
+          path: |
+            dist/*.tar.gz
+            dist/*.tgz
+            dist/*.whl
+            target/package/polaris-data-*.crate

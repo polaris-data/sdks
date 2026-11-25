@@ -1,6 +1,6 @@
 {
   "name": "polaris-data",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "TypeScript SDK for the Polaris market data API (Node.js and browser)",
   "license": "MIT",
   "author": "Polaris <hello@polaris.supply>",
@@ -38,16 +38,18 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "build": "tsup",
-    "dev": "tsup --watch",
+    "build": "npm run build:core && tsup",
+    "dev": "npm run build:core && tsup --watch",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run clean && npm run build",
     "typecheck": "tsc --noEmit",
-    "test": "npm run clean && npm run build && node --test test/*.test.mjs"
+    "test": "npm run clean && npm run build && node --test test/*.test.mjs",
+    "build:core": "python3 ../tools/build-wasm.py"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/ws": "^8.18.1",
+    "playwright": "1.65.1",
     "tsup": "^8.0.0",
     "typescript": "^5.5.0",
     "webpack": "^5.99.9"
@@ -68,6 +70,7 @@
     "client-side"
   ],
   "dependencies": {
+    "lossless-json": "4.3.4",
     "ws": "^8.18.3"
   }
 }

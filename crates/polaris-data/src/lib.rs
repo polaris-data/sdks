@@ -1,32 +1,18 @@
 pub mod blocking;
-mod builder;
 mod client;
 mod errors;
-mod http;
+mod ffi;
+mod generated;
 mod models;
 mod orderbook;
-mod realtime;
-mod time;
 
-pub use builder::PolarisClientBuilder;
-pub use client::PolarisClient;
-pub use errors::PolarisError;
+pub(crate) use client::Client;
+pub use client::Client as PolarisClient;
+pub use client::{HistoricalStream, PolarisClientBuilder, RealtimeStream, Row, StreamQuery};
+pub use errors::{Fault, PolarisError};
+pub use generated::*;
 pub use models::{
-    AmountKind, AssetAmount, BboQuery, BboQuote, CatalogAccess, CatalogCount, CatalogInstrument,
-    CatalogMarket, CatalogQuery, CatalogResponse, DepthMetricsRow, Diagnostic, EventsQuery,
-    FundingRateRow, HistoricalRowsQuery, HistoricalStream, InstrumentsQuery, InstrumentsResponse,
-    IntentData, IntentEvent, IntentEventV2, IntentQuote, IntentRow, IntentRowsQuery, IntentStatus,
-    L2OrderbooksQuery, L2UpdatesQuery, LegacyIntentEvent, LegacyOptionTickerEvent,
-    LegacyOrderbookEvent, LegacyPerpetualTickerEvent, LegacyPointSeriesEvent, LegacyStandardEvent,
-    LegacyTradeData, LegacyTradeEvent, MetaResponse, MixedEventRow, MixedEventType,
-    ObservedStatistic, OhlcvInterval, OhlcvRow, OhlcvRowsQuery, OptionContract,
-    OptionContractStatistics, OptionGreeks, OptionTickerData, OptionTickerEvent,
-    OptionTickerEventV2, OptionTickerRow, OptionTickerRowsQuery, OrderbookData, OrderbookDataV2,
-    OrderbookEvent, OrderbookEventV2, OrderbookL2Row, OrderbookLevel, PerpetualTickerData,
-    PerpetualTickerEvent, PerpetualTickerEventV2, PointSeriesData, PointSeriesEvent,
-    PointSeriesEventV2, PropammQuote, PropammQuoteLadderData, PropammQuoteLadderEvent,
-    PropammQuoteLadderValues, QuoteRow, QuoteRowsQuery, RawCaptureRow, RawChannelQuery, RawQuery,
-    RealtimeStream, SettlementTransaction, StandardEvent, StandardEventV2, StreamQuery, TimeInput,
-    TradeDataV2, TradeEvent, TradeEventV2, TradeRow, TradeRowsQuery,
+    LegacyOrderbookEvent, LegacyStandardEvent, OrderbookData, OrderbookDataV2, OrderbookEvent,
+    OrderbookEventV2, OrderbookLevel, StandardEvent, StandardEventV2,
 };
 pub use orderbook::OrderbookBuilder;

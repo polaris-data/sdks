@@ -47,11 +47,19 @@ jobs:
           git fetch --no-tags origin main
           tag_commit=$(git rev-parse "${RELEASE_TAG}^{commit}")
           git merge-base --is-ancestor "$tag_commit" origin/main
+      - run: python ../tools/install-toolchain.py --binaryen
       - run: npm ci
-      - run: npm run typecheck
+      - run: npx playwright install --with-deps chromium
       - run: npm test
-      - name: Inspect package contents
-        run: npm pack --dry-run
+        env:
+          POLARIS_TEST_BROWSER: "1"
+      - run: npm run typecheck
+      - run: npm pack
+      - run: node ../tools/check-npm-dist.mjs polaris-data-*.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polaris-npm-tarball
+          path: typescript/polaris-data-*.tgz
 
   publish:
     needs: validate
@@ -76,8 +84,11 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
       - run: npm install --global "npm@${NPM_VERSION}"
-      - run: npm ci
-      - run: npm publish --access public
+      - uses: actions/download-artifact@v4
+        with:
+          name: polaris-npm-tarball
+          path: typescript
+      - run: npm publish polaris-data-*.tgz --access public
 
   create-release:
     needs: publish
@@ -110,7 +121,7 @@ jobs:
               git log "$previous_tag..$RELEASE_TAG" \
                 --pretty=format:"- %s (%h)" \
                 --no-merges -- \
-                typescript \
+                typescript zig schema tools build.zig build.zig.zon \
                 .github/workflows/ci.yml \
                 .github/workflows/release-typescript.yml \
                 .github/scripts/check-release-version.py

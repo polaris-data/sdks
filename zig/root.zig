@@ -1,0 +1,23 @@
+const native = @import("native.zig");
+const generated = @import("generated.zig");
+
+pub const Client = generated.Client;
+pub const Options = native.Options;
+pub const Reply = native.Reply;
+pub const Json = generated.Json;
+pub const DataTime = native.DataTime;
+pub const CoverageQuery = generated.CoverageQuery;
+pub const DataQuery = generated.DataQuery;
+pub const SqlQuery = generated.SqlQuery;
+pub const CandlesQuery = generated.CandlesQuery;
+pub const HealthResponse = generated.HealthResponse;
+pub const CoverageColumn = generated.CoverageColumn;
+pub const CoverageTable = generated.CoverageTable;
+pub const CoverageResponse = generated.CoverageResponse;
+pub const DataResponse = generated.DataResponse;
+pub const SqlColumn = generated.SqlColumn;
+pub const SqlResponse = generated.SqlResponse;
+pub const TableDataMessage = generated.TableDataMessage;
+pub const SubscriptionRequest = generated.SubscriptionRequest;
+pub const StreamQuery = native.StreamQuery;
+pub const Stream = native.Stream;

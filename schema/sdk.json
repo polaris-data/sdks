@@ -1,0 +1,11 @@
+{
+  "operations": [
+    {"name":"health","path":"/health","response":"HealthResponse"},
+    {"name":"openapi","path":"/openapi.json","response":"Json"},
+    {"name":"coverage","path":"/coverage","query":"CoverageQuery","response":"CoverageResponse"},
+    {"name":"data","path":"/data/{table}","query":"DataQuery","response":"DataResponse"},
+    {"name":"sql","path":"/sql","query":"SqlQuery","response":"SqlResponse"},
+    {"name":"candles","path":"/candles/{source}","query":"CandlesQuery","response":"DataResponse"}
+  ],
+  "models": ["HealthResponse", "CoverageColumn", "CoverageTable", "CoverageResponse", "DataResponse", "SqlColumn", "SqlResponse", "SubscriptionRequest", "TableDataMessage"]
+}

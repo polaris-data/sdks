@@ -3,12 +3,19 @@ name: Release Rust
 on:
   push:
     tags: ["rust-v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  archives:
+    uses: ./.github/workflows/build-zig-archives.yml
+    with:
+      ref: ${{ github.ref }}
+
   validate:
+    needs: archives
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -24,15 +31,27 @@ jobs:
       - name: Validate lockfile
         run: cargo metadata --locked --no-deps --format-version 1 > /dev/null
       - name: Require a commit from main
+        if: github.ref_type == 'tag'
         run: |
           git fetch --no-tags origin main
           tag_commit=$(git rev-parse "${GITHUB_SHA}^{commit}")
           git merge-base --is-ancestor "$tag_commit" origin/main
+      - uses: actions/download-artifact@v4
+        with:
+          name: polaris-zig-archives
+          path: crates/polaris-data/prebuilt
+      - run: python tools/package-zig.py stage-source
       - run: cargo test -p polaris-data --locked
-      - run: cargo publish -p polaris-data --locked --dry-run
+      - run: cargo package -p polaris-data --locked
+      - run: python tools/check-rust-dist.py target/package/polaris-data-*.crate
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polaris-rust-crate
+          path: target/package/polaris-data-*.crate
 
   publish:
-    needs: validate
+    if: github.ref_type == 'tag'
+    needs: [archives, validate]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:

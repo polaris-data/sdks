@@ -8,6 +8,9 @@ export class PolarisError extends Error {
   /** HTTP status code, if the error originated from an API response. */
   readonly statusCode: number | undefined;
 
+  readonly code?: string;
+  readonly resolution?: string;
+
   /** Raw response body string. */
   readonly body: string | undefined;
 
@@ -35,6 +38,10 @@ export class UnauthorizedError extends PolarisError {
 // ---------------------------------------------------------------------------
 // 404
 // ---------------------------------------------------------------------------
+
+export class AccessDeniedError extends PolarisError {
+  override readonly name: string = "AccessDeniedError";
+}
 
 export class NotFoundError extends PolarisError {
   override readonly name: string = "NotFoundError";
@@ -75,7 +82,7 @@ export class StreamConnectionError extends PolarisError {
 
 export class StreamProtocolError extends PolarisError {
   override readonly name: string = "StreamProtocolError";
-  readonly code: string | undefined;
+  declare readonly code: string | undefined;
 
   constructor(message: string, code?: string) {
     super(message);

@@ -6,53 +6,75 @@ on:
     branches: [main]
 
 jobs:
+  zig:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: python tools/install-toolchain.py
+      - run: python tools/generate.py --check
+      - run: zig fmt --check build.zig build.zig.zon zig tests/zig-consumer
+      - run: zig build test
+      - run: python tools/package-zig.py source-archive --check
+
   rust:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - run: python tools/install-toolchain.py
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --locked
 
   python:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.9", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python }}
       - uses: dtolnay/rust-toolchain@stable
-      - run: uv sync
-      - run: uv run pytest
-      - run: uv run python -c "from polaris_data import _native; assert _native.__native__"
+      - run: python tools/install-toolchain.py
+      - run: uv sync --locked
+      - run: uv run --no-sync pytest
 
-  wheel-smoke:
+  python-artifacts:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
       - uses: dtolnay/rust-toolchain@stable
-      - uses: PyO3/maturin-action@v1
-        with:
-          command: build
-          args: --release --out dist
-          manylinux: auto
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.9"
-      - run: pip install dist/*.whl
-      - run: python -c "from polaris_data import PolarisClient, _native; assert _native.__native__; print(PolarisClient)"
+      - uses: astral-sh/setup-uv@v6
+      - run: python tools/install-toolchain.py
+      - run: python tools/package-zig.py archives --target x86_64-unknown-linux-gnu
+      - run: python tools/package-zig.py stage-source
+      - run: uvx --from maturin==1.14.1 maturin build --release --locked --out dist
+      - run: uvx --from maturin==1.14.1 maturin sdist --out dist
+      - run: python tools/check-python-dist.py dist/*.whl
+      - run: python tools/check-python-dist.py dist/*.tar.gz
 
   typescript:
     runs-on: ubuntu-latest
@@ -61,20 +83,25 @@ jobs:
       fail-fast: false
       matrix:
         node: [18, 20, 22, 24]
-    defaults:
-      run:
-        working-directory: typescript
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: typescript/package-lock.json
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
-      - name: Smoke test CommonJS package entry point
-        run: node -e "require('polaris-data')"
-      - name: Smoke test ESM package entry point
-        run: node --input-type=module -e "import 'polaris-data'"
+      - run: python tools/install-toolchain.py --binaryen
+      - run: npm ci --prefix typescript
+      - if: matrix.node == 24
+        run: npx --prefix typescript playwright install --with-deps chromium
+      - run: npm test --prefix typescript
+        env:
+          POLARIS_TEST_BROWSER: ${{ matrix.node == 24 && '1' || '' }}
+      - run: npm run typecheck --prefix typescript
+      - if: matrix.node == 24
+        run: |
+          npm pack ./typescript --pack-destination .
+          node tools/check-npm-dist.mjs polaris-data-*.tgz

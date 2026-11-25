@@ -1,18 +1,16 @@
 # Browser usage
 
-The browser entry uses `fetch` for historical queries and the browser's `WebSocket` for realtime streams. The SDK no longer stores historical snapshots in IndexedDB.
+Bundlers select the browser entry for `polaris-data`. It uses browser `fetch` and `WebSocket`, with an optional custom `fetch` in the client options. The Zig core loads on the first request. Browsers that block Wasm under their Content Security Policy use JavaScript generated from the same core.
 
-```ts
+```typescript
 import { PolarisClient } from "polaris-data";
 
-const client = new PolarisClient({ apiKey: "polaris_key_your_key" });
-const rows = await client.trades({ source: "binance", market: "BTC-USDT" });
-console.log(rows);
-client.close();
+const client = new PolarisClient();
+try {
+  console.log(await client.coverage({ database: "standard", table: "trades" }));
+} finally {
+  client.close();
+}
 ```
 
-Historical methods return flat API rows as arrays and follow cursor pages. Use inclusive Unix-millisecond `start` and `end` bounds where needed. `rawChannel` queries one source and native channel through `/raw`; the client converts its millisecond bounds to ISO date-times. `l2Snapshots` returns reconstructed top-25 books.
-
-`replay`, `listSnapshots`, `getSnapshotDownloadUrls`, and `propammQuoteLadders` are no longer available. `events` reads mixed flat rows from `/events`. `OrderbookBuilder` remains available for realtime event envelopes.
-
-Browser API keys are visible to the browser user. Configure CORS and key scope for your application accordingly.
+Browser API keys are visible to the browser user. Use an appropriately scoped key when authenticating and configure CORS for requests to your own proxy or API origin.

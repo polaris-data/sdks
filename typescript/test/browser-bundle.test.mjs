@@ -80,3 +80,64 @@ test("browser dist bundles cleanly in webpack", async () => {
     await rm(outputPath, { recursive: true, force: true });
   }
 });
+
+test("installed browser bundle can page and resume with or without Wasm",
+  { timeout: 20_000, skip: !process.env.POLARIS_TEST_BROWSER }, async () => {
+    const { chromium } = await import("playwright");
+    const { createServer } = await import("node:http");
+    const { startFixture } = await import("./fixture.mjs");
+    const outputPath = await mkdtemp(path.join(tmpdir(), "polaris-data-browser-"));
+    let browser;
+    let fixture;
+    let server;
+    try {
+      await runWebpackBundle(outputPath);
+      const scripts = new Map();
+      for (const file of await collectFiles(outputPath)) {
+        if (file.endsWith(".js")) scripts.set("/" + path.relative(outputPath, file), await readFile(file));
+      }
+      fixture = await startFixture();
+      browser = await chromium.launch({ executablePath: process.env.POLARIS_BROWSER_EXECUTABLE });
+      server = createServer((req, res) => {
+        const script = scripts.get(req.url);
+        if (script) {
+          res.writeHead(200, { "Content-Type": "text/javascript" }).end(script);
+          return;
+        }
+        res.writeHead(200, {
+          "Content-Type": "text/html",
+          "Content-Security-Policy": `script-src 'self'${req.url === "/wasm" ? " 'wasm-unsafe-eval'" : ""}`,
+        }).end('<!doctype html><title>Polaris SDK fixture</title><script defer src="/bundle.js"></script>');
+      });
+      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const page = await browser.newPage();
+      for (const mode of ["wasm", "csp"]) {
+        await page.goto(`http://127.0.0.1:${server.address().port}/${mode}`);
+        await page.waitForFunction(() => typeof globalThis.runPolarisFixture === "function");
+        const wasmAllowed = await page.evaluate(async () => {
+          try {
+            await WebAssembly.compile(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+            return true;
+          } catch {
+            return false;
+          }
+        });
+        assert.equal(wasmAllowed, mode === "wasm");
+        assert.deepEqual(await page.evaluate((url) => globalThis.runPolarisFixture(url), fixture.url), {
+          health: { ok: true },
+          ids: ["18446744073709551614", "18446744073709551615"],
+          cursors: ["stream:1", "stream:2"],
+          bars: [
+            { timestamp: 0, open: 100, high: 100, low: 100, close: 100, volume: 1, trades: 1 },
+            { timestamp: 60_000, open: 100, high: 101, low: 101, close: 101, volume: 2, trades: 1 },
+          ],
+        });
+      }
+    } finally {
+      await browser?.close();
+      fixture?.close();
+      if (server?.listening) await new Promise((resolve) => server.close(resolve));
+      await rm(outputPath, { recursive: true, force: true });
+    }
+  },
+);

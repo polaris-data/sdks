@@ -1,0 +1,8 @@
+.{
+    .name = .polaris_data,
+    .fingerprint = 0x5769c0ade4e4755e,
+
+    .version = "0.1.0",
+    .minimum_zig_version = "0.17.1",
+    .paths = .{ "build.zig", "build.zig.zon", "zig", "include", "README.md" },
+}

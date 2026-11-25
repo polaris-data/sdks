@@ -29,3 +29,9 @@ htmlcov/
 
 # macOS metadata
 .DS_Store
+
+# Zig build outputs
+.zig-cache/
+zig-out/
+crates/polaris-data/prebuilt/
+crates/polaris-data/zig-source/

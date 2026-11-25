@@ -1,0 +1,3404 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "Polaris API",
+        "description": "Historical and realtime market data from Polaris.",
+        "license": {
+            "name": ""
+        },
+        "version": "1.0.0"
+    },
+    "servers": [
+        {
+            "url": "https://api.polaris.supply",
+            "description": "Production"
+        }
+    ],
+    "paths": {
+        "/candles/{source}": {
+            "get": {
+                "tags": [
+                    "Data"
+                ],
+                "summary": "Read execution-price candles for a DEX pool",
+                "description": "Requires a Polaris API key and an explicitly published candle source. Sparse UTC windows use token0 as base and token1 as quote. Prices are decimal strings rounded to 38 significant digits; volumes and price ratios retain exact values in candle_json. Intervals 5m, 15m, 1h and 1d are computed from current minute candles. start/end are aligned Unix milliseconds, with end exclusive. Requests are limited to one day and 1000 output windows. Empty windows are absent. Coverage is observed unless independently reconciled; window closure does not assert chain finality. Query and response-byte allowances are shared with /data. Multiple read pages are not a database snapshot.",
+                "operationId": "queryDexCandles",
+                "parameters": [
+                    {
+                        "name": "source",
+                        "in": "path",
+                        "description": "Published source: uniswap-v2, uniswap-v3 or uniswap-v4",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "chain_id",
+                        "in": "query",
+                        "required": true,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                        }
+                    },
+                    {
+                        "name": "pool",
+                        "in": "query",
+                        "description": "Pool address, or V4 PoolId",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "manager",
+                        "in": "query",
+                        "description": "Required PoolManager address for V4",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "interval",
+                        "in": "query",
+                        "description": "1s, 1m, 5m, 15m, 1h or 1d",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "start",
+                        "in": "query",
+                        "description": "Inclusive aligned UTC window start in milliseconds",
+                        "required": true,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int64"
+                        }
+                    },
+                    {
+                        "name": "end",
+                        "in": "query",
+                        "description": "Exclusive aligned UTC window end in milliseconds",
+                        "required": true,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int64"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DataResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "405": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "Retry-After": {
+                                "$ref": "#/components/headers/RetryAfter"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/coverage": {
+            "get": {
+                "tags": [
+                    "Discovery"
+                ],
+                "summary": "List stored tables, schemas, and time bounds",
+                "description": "Return a cached inventory of every table and view in the configured standard database on the primary and metadata nodes, plus registered public source databases on the primary node. Includes empty tables, column names and types, physical row counts where available, and timestamp bounds from part indexes or ordered boundary reads. Exact optional filters are combined with AND. No event-table aggregation is performed. Bounds are null for empty tables or when unavailable. Table objects contain only database, table, row_count, start, end, and columns; column objects contain only name and type. Standard metadata observation times are not event-history coverage. Internal and canary databases and hidden sources are excluded. Tables at the two node locations remain separate. No API key is required.",
+                "operationId": "listCoverage",
+                "parameters": [
+                    {
+                        "name": "database",
+                        "in": "query",
+                        "description": "Exact database name",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "table",
+                        "in": "query",
+                        "description": "Exact table name",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Table inventory, refreshed every 10 minutes by default",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/CoverageResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid query parameters",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Coverage inventory has not loaded",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "The per-client request quota was exceeded",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "Retry-After": {
+                                "$ref": "#/components/headers/RetryAfter"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/data/{table}": {
+            "get": {
+                "tags": [
+                    "Data"
+                ],
+                "summary": "Read filtered rows from a public table",
+                "description": "Requires a Polaris API key. The table path is database.table, for example standard.trades or hyperliquid.raw__trades. Uses the SQL public table allowlist, not the full coverage inventory. Filters use column=value or column.eq=value, column.gte=value, and column.lte=value, combined with AND. Equality supports scalar strings, numbers, booleans and dates; inclusive ranges support numeric and date/time columns. Nullable and LowCardinality scalar types are supported. Nested JSON paths, null predicates and SQL expressions are unsupported. Reserved controls are start, end, limit and cursor; use column.eq for reserved column names. start/end accept RFC 3339 or Unix milliseconds and filter collector_timestamp, observed_at for market_metadata, or window_start_ms for source-owned candles. Omitted bounds impose no time restriction. Conflicting shortcuts, duplicate predicates, unknown columns and reversed bounds return 400. Reads use FINAL, or a current-window view for source-owned candles, and return stored columns with ClickHouse lossless JSON encoding, including quoted 64-bit integers and decimals. Raw and event results are ordered by collector time and stable identifiers; metadata by source/market. Cursor requests must repeat the same normalized filters. Cursors are not snapshot locks. Each successful response consumes the existing monthly delivered-byte allowance. Results have a 16 MiB limit; query execution and admission limits are shared with SQL. Always available with provisioned restricted readers; there is no data feature flag. HEAD never executes a query.",
+                "operationId": "queryTableData",
+                "parameters": [
+                    {
+                        "name": "table",
+                        "in": "path",
+                        "description": "Exact database.table identifier",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "start",
+                        "in": "query",
+                        "description": "Inclusive collector/observation start: RFC 3339 or Unix milliseconds",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "end",
+                        "in": "query",
+                        "description": "Inclusive collector/observation end: RFC 3339 or Unix milliseconds",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "description": "Page size; default 200",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int32",
+                            "maximum": 1000,
+                            "minimum": 1
+                        }
+                    },
+                    {
+                        "name": "cursor",
+                        "in": "query",
+                        "description": "Opaque continuation cursor; repeat the original filters",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DataResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "405": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "414": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "Retry-After": {
+                                "$ref": "#/components/headers/RetryAfter"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/health": {
+            "get": {
+                "tags": [
+                    "Discovery"
+                ],
+                "summary": "Check API availability",
+                "description": "Report whether the Polaris API backend is available to serve requests.",
+                "operationId": "getHealth",
+                "responses": {
+                    "200": {
+                        "description": "Service is available",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HealthResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "The per-client request quota was exceeded",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "Retry-After": {
+                                "$ref": "#/components/headers/RetryAfter"
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "The API or its rate limiter is temporarily unavailable",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/openapi.json": {
+            "get": {
+                "tags": [
+                    "Discovery"
+                ],
+                "summary": "Get the OpenAPI document",
+                "description": "Return the authoritative OpenAPI 3.1 contract for the public Polaris API.",
+                "operationId": "getOpenApiDocument",
+                "responses": {
+                    "200": {
+                        "description": "OpenAPI 3.1 document",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "The per-client request quota was exceeded",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "Retry-After": {
+                                "$ref": "#/components/headers/RetryAfter"
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "The API or its rate limiter is temporarily unavailable",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/sql": {
+            "get": {
+                "tags": [
+                    "SQL"
+                ],
+                "summary": "Run a bounded read-only ClickHouse SELECT query",
+                "description": "API keys are optional. Anonymous reads are restricted on every underlying event/raw table to the inclusive collector_timestamp interval [request time minus seven days, request time]; joins, CTEs, subqueries and aggregates cannot bypass this filter. standard.market_metadata has no time restriction. Supplied credentials must be valid API keys; authenticated reads have unrestricted history and are billed, anonymous responses are not billed. Missing LIMIT defaults to 100 result rows; simple single-table event/raw row reads default to collector_timestamp DESC unless ORDER BY is supplied. Aggregate, distinct, join and set queries retain their ordering semantics. Explicit LIMIT and ORDER BY are respected within the existing result cap. Queries published standard tables (including market_metadata) and registered production raw__ tables. Unqualified names resolve to standard. Supports joins, CTEs, unions, windows, and FINAL; stored rows are not automatically deduplicated. Only reviewed built-in functions are supported. SETTINGS, FORMAT, table functions, external sources, and output destinations are rejected. For authenticated requests, the complete JSON envelope is charged to the existing monthly response-byte quota. Results are limited to 1,000 rows and 16 MiB; failures return no partial data and consume no response-byte allowance. Execution is limited to 25 seconds and 64 GiB scanned. Disabled until the separate SQL deployment is provisioned.",
+                "operationId": "querySql",
+                "parameters": [
+                    {
+                        "name": "query",
+                        "in": "query",
+                        "description": "One SELECT statement, at most 4 KiB UTF-8; total URL-encoded request target at most 8 KiB",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SqlResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid SQL or query parameters",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "A Polaris API key is required",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Unauthorized SQL relation or function",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "405": {
+                        "description": "Only GET is supported; HEAD does not execute SQL",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "414": {
+                        "description": "Encoded request target exceeds 8 KiB",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Query work or result limit exceeded",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "Monthly allowance, rate limit, or SQL concurrency exceeded",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "Retry-After": {
+                                "$ref": "#/components/headers/RetryAfter"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "SQL disabled or a dependency is unavailable",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "RateLimit-Policy": {
+                                "$ref": "#/components/headers/RateLimitPolicy"
+                            },
+                            "RateLimit": {
+                                "$ref": "#/components/headers/RateLimit"
+                            },
+                            "RateLimit-Limit": {
+                                "$ref": "#/components/headers/RateLimitLimit"
+                            },
+                            "RateLimit-Remaining": {
+                                "$ref": "#/components/headers/RateLimitRemaining"
+                            },
+                            "RateLimit-Reset": {
+                                "$ref": "#/components/headers/RateLimitReset"
+                            },
+                            "X-Polaris-Monthly-Usage-Limit": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageLimit"
+                            },
+                            "X-Polaris-Monthly-Usage-Remaining": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageRemaining"
+                            },
+                            "X-Polaris-Monthly-Usage-Reset": {
+                                "$ref": "#/components/headers/PolarisMonthlyUsageReset"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {},
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/stream": {
+            "get": {
+                "tags": [
+                    "Realtime data"
+                ],
+                "summary": "Stream realtime market data",
+                "description": "Upgrade to the Polaris WebSocket feed for realtime market-data subscriptions. Client and server message schemas are defined by the x-websocket extension.",
+                "operationId": "streamMarketData",
+                "responses": {
+                    "101": {
+                        "description": "WebSocket protocol upgrade"
+                    }
+                },
+                "deprecated": false,
+                "x-websocket": {
+                    "url": "wss://api.polaris.supply/stream",
+                    "documentation": "https://polaris.supply/docs",
+                    "authentication": {
+                        "location": "subscribe message token field",
+                        "required": false,
+                        "scheme": "bearer",
+                        "requiredScope": "stream:read"
+                    },
+                    "clientMessages": {
+                        "oneOf": [
+                            {
+                                "$ref": "#/components/schemas/SubscribeCommand"
+                            },
+                            {
+                                "$ref": "#/components/schemas/UnsubscribeCommand"
+                            },
+                            {
+                                "$ref": "#/components/schemas/UnsubscribeAllCommand"
+                            },
+                            {
+                                "$ref": "#/components/schemas/PingCommand"
+                            }
+                        ]
+                    },
+                    "serverMessages": {
+                        "oneOf": [
+                            {
+                                "$ref": "#/components/schemas/AckMessage"
+                            },
+                            {
+                                "$ref": "#/components/schemas/PongMessage"
+                            },
+                            {
+                                "$ref": "#/components/schemas/WebSocketErrorMessage"
+                            },
+                            {
+                                "$ref": "#/components/schemas/TableDataMessage"
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "AckMessage": {
+                "type": "object",
+                "required": [
+                    "type",
+                    "action",
+                    "changed",
+                    "active_subscriptions"
+                ],
+                "properties": {
+                    "action": {
+                        "type": "string"
+                    },
+                    "active_subscriptions": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "changed": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "request_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "type": {
+                        "type": "string",
+                        "example": "ack"
+                    }
+                }
+            },
+            "AmountKind": {
+                "type": "string",
+                "enum": [
+                    "exact_input",
+                    "exact_output"
+                ]
+            },
+            "AssetAmount": {
+                "type": "object",
+                "required": [
+                    "asset_id"
+                ],
+                "properties": {
+                    "amount": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "asset_id": {
+                        "type": "string"
+                    },
+                    "chain_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "recipient": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                }
+            },
+            "CoverageColumn": {
+                "type": "object",
+                "required": [
+                    "name",
+                    "type"
+                ],
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "type": "string"
+                    }
+                }
+            },
+            "CoverageResponse": {
+                "type": "object",
+                "required": [
+                    "updatedAt",
+                    "total",
+                    "tables"
+                ],
+                "properties": {
+                    "tables": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/CoverageTable"
+                        }
+                    },
+                    "total": {
+                        "type": "integer",
+                        "description": "Number of tables after filtering. Empty tables and views are included.",
+                        "minimum": 0
+                    },
+                    "updatedAt": {
+                        "type": "string",
+                        "format": "date-time"
+                    }
+                }
+            },
+            "CoverageTable": {
+                "type": "object",
+                "required": [
+                    "database",
+                    "table",
+                    "row_count",
+                    "start",
+                    "end",
+                    "columns"
+                ],
+                "properties": {
+                    "columns": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/CoverageColumn"
+                        }
+                    },
+                    "database": {
+                        "type": "string"
+                    },
+                    "end": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "row_count": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Physical rows before pending deduplication; null if unavailable.",
+                        "minimum": 0
+                    },
+                    "start": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time",
+                        "description": "Part-index bounds, not a guarantee of uninterrupted history."
+                    },
+                    "table": {
+                        "type": "string"
+                    }
+                }
+            },
+            "DataResponse": {
+                "type": "object",
+                "required": [
+                    "data",
+                    "has_more"
+                ],
+                "properties": {
+                    "data": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": {},
+                            "propertyNames": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "has_more": {
+                        "type": "boolean"
+                    },
+                    "next_cursor": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                }
+            },
+            "ErrorBody": {
+                "type": "object",
+                "required": [
+                    "code",
+                    "message",
+                    "resolution"
+                ],
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "Stable, machine-readable snake-case error code."
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable description of the failure."
+                    },
+                    "resolution": {
+                        "type": "string",
+                        "description": "Action the caller can take to resolve or recover from the failure."
+                    }
+                }
+            },
+            "ErrorResponse": {
+                "type": "object",
+                "required": [
+                    "error"
+                ],
+                "properties": {
+                    "error": {
+                        "$ref": "#/components/schemas/ErrorBody"
+                    }
+                }
+            },
+            "HealthResponse": {
+                "type": "object",
+                "required": [
+                    "ok"
+                ],
+                "properties": {
+                    "ok": {
+                        "type": "boolean"
+                    }
+                }
+            },
+            "IntentData": {
+                "type": "object",
+                "required": [
+                    "inputs",
+                    "outputs",
+                    "transactions"
+                ],
+                "properties": {
+                    "amount_kind": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/AmountKind"
+                            }
+                        ]
+                    },
+                    "expires_at": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Intent expiry time in Unix epoch milliseconds."
+                    },
+                    "inputs": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/AssetAmount"
+                        }
+                    },
+                    "intent_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "outputs": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/AssetAmount"
+                        }
+                    },
+                    "quote": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/IntentQuote"
+                            }
+                        ]
+                    },
+                    "requester": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "rfq_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "settled_at": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Settlement time in Unix epoch milliseconds."
+                    },
+                    "signer": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "status": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/IntentStatus"
+                            }
+                        ]
+                    },
+                    "transactions": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/SettlementTransaction"
+                        }
+                    }
+                }
+            },
+            "IntentEvent": {
+                "type": "object",
+                "required": [
+                    "collector_timestamp",
+                    "collector_sequence",
+                    "type",
+                    "data"
+                ],
+                "properties": {
+                    "collector_sequence": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "collector_timestamp": {
+                        "type": "integer",
+                        "format": "int64"
+                    },
+                    "data": {
+                        "$ref": "#/components/schemas/IntentData"
+                    },
+                    "exchange_sequence": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "exchange_timestamp": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64"
+                    },
+                    "market": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "raw": {},
+                    "raw_reference_sequence": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Collector sequence of the sibling row containing the exact raw payload.",
+                        "minimum": 0
+                    },
+                    "source": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "type": {
+                        "type": "string",
+                        "example": "intent"
+                    }
+                }
+            },
+            "IntentQuote": {
+                "type": "object",
+                "required": [
+                    "quote_id",
+                    "response"
+                ],
+                "properties": {
+                    "quote_id": {
+                        "type": "string"
+                    },
+                    "response": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/AssetAmount"
+                        }
+                    }
+                }
+            },
+            "IntentStatus": {
+                "type": "string",
+                "enum": [
+                    "submitted",
+                    "open",
+                    "partially_filled",
+                    "executing",
+                    "filled",
+                    "settled",
+                    "cancelled",
+                    "expired",
+                    "failed",
+                    "unknown"
+                ]
+            },
+            "MarketDataKind": {
+                "type": "object",
+                "required": [
+                    "type",
+                    "stream"
+                ],
+                "properties": {
+                    "event": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/StandardEvent",
+                                "description": "Present on standardized-stream messages."
+                            }
+                        ]
+                    },
+                    "raw": {
+                        "description": "Present on raw-stream messages."
+                    },
+                    "sequence": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "stream": {
+                        "$ref": "#/components/schemas/PersistenceStream"
+                    },
+                    "type": {
+                        "type": "string",
+                        "example": "data"
+                    }
+                }
+            },
+            "MarketDataMessage": {
+                "type": "object",
+                "required": [
+                    "market",
+                    "timestamp",
+                    "kind"
+                ],
+                "properties": {
+                    "kind": {
+                        "$ref": "#/components/schemas/MarketDataKind"
+                    },
+                    "market": {
+                        "type": "string"
+                    },
+                    "source": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "timestamp": {
+                        "type": "string",
+                        "format": "date-time"
+                    }
+                }
+            },
+            "MarketStateData": {
+                "type": "object",
+                "required": [
+                    "fields"
+                ],
+                "properties": {
+                    "fields": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/ObservedStatistic"
+                        },
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "MarketStateEvent": {
+                "type": "object",
+                "required": [
+                    "collector_timestamp",
+                    "collector_sequence",
+                    "source",
+                    "market",
+                    "type",
+                    "data"
+                ],
+                "properties": {
+                    "collector_sequence": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "collector_timestamp": {
+                        "type": "integer",
+                        "format": "int64"
+                    },
+                    "data": {
+                        "$ref": "#/components/schemas/MarketStateData"
+                    },
+                    "exchange_timestamp": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Always null: a baseline is synthetic, not a new venue observation."
+                    },
+                    "market": {
+                        "type": "string"
+                    },
+                    "source": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "type": "string",
+                        "example": "market_state"
+                    }
+                }
+            },
+            "MarketStatisticsData": {
+                "type": "object",
+                "required": [
+                    "fields"
+                ],
+                "properties": {
+                    "fields": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "$ref": "#/components/schemas/Statistic"
+                        },
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "MarketStatisticsEvent": {
+                "type": "object",
+                "required": [
+                    "collector_timestamp",
+                    "collector_sequence",
+                    "source",
+                    "market",
+                    "type",
+                    "data"
+                ],
+                "properties": {
+                    "collector_sequence": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "collector_timestamp": {
+                        "type": "integer",
+                        "format": "int64"
+                    },
+                    "data": {
+                        "$ref": "#/components/schemas/MarketStatisticsData"
+                    },
+                    "exchange_timestamp": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64"
+                    },
+                    "market": {
+                        "type": "string"
+                    },
+                    "raw": {},
+                    "raw_reference_sequence": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "source": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "type": "string",
+                        "example": "market_statistics"
+                    }
+                }
+            },
+            "ObservedStatistic": {
+                "type": "object",
+                "required": [
+                    "value",
+                    "observed_at"
+                ],
+                "properties": {
+                    "convention": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "exchange_timestamp": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64"
+                    },
+                    "observed_at": {
+                        "type": "integer",
+                        "format": "int64"
+                    },
+                    "unit": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Concrete asset/currency symbol when known (for example `BTC`, `USDC`,\nor `USD`); dimensionless values use names such as `percent`."
+                    },
+                    "value": {
+                        "type": "string"
+                    }
+                }
+            },
+            "OptionGreeks": {
+                "type": "object",
+                "properties": {
+                    "delta": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "gamma": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "rho": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "theta": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "vega": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                }
+            },
+            "OptionTickerData": {
+                "type": "object",
+                "properties": {
+                    "ask_iv": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "ask_price": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "ask_size": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "bid_iv": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "bid_price": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "bid_size": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "expiry_timestamp": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64"
+                    },
+                    "forward_price": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "greeks": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/OptionGreeks"
+                            }
+                        ]
+                    },
+                    "index_price": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "last_price": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "mark_iv": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "mark_price": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "open_interest": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "option_type": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "premium_currency": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "quantity_unit": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "strike": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "turnover_24h": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "underlying": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "underlying_price": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "volume_24h": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                }
+            },
+            "OptionTickerEvent": {
+                "type": "object",
+                "required": [
+                    "collector_timestamp",
+                    "collector_sequence",
+                    "type",
+                    "data"
+                ],
+                "properties": {
+                    "collector_sequence": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "collector_timestamp": {
+                        "type": "integer",
+                        "format": "int64"
+                    },
+                    "data": {
+                        "$ref": "#/components/schemas/OptionTickerData"
+                    },
+                    "exchange_sequence": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "exchange_timestamp": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64"
+                    },
+                    "market": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "raw": {},
+                    "raw_reference_sequence": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Collector sequence of the sibling row containing the exact raw payload.",
+                        "minimum": 0
+                    },
+                    "source": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "type": {
+                        "type": "string",
+                        "example": "option_ticker"
+                    }
+                }
+            },
+            "OrderLevel": {
+                "type": "object",
+                "required": [
+                    "price",
+                    "quantity"
+                ],
+                "properties": {
+                    "price": {
+                        "type": "number",
+                        "format": "double"
+                    },
+                    "quantity": {
+                        "type": "number",
+                        "format": "double"
+                    }
+                }
+            },
+            "OrderbookData": {
+                "type": "object",
+                "required": [
+                    "is_snapshot",
+                    "bids",
+                    "asks"
+                ],
+                "properties": {
+                    "asks": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/OrderLevel"
+                        }
+                    },
+                    "bids": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/OrderLevel"
+                        }
+                    },
+                    "is_snapshot": {
+                        "type": "boolean"
+                    }
+                }
+            },
+            "OrderbookEvent": {
+                "type": "object",
+                "required": [
+                    "collector_timestamp",
+                    "collector_sequence",
+                    "type",
+                    "data"
+                ],
+                "properties": {
+                    "collector_sequence": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Collector-assigned ordering key.",
+                        "minimum": 0
+                    },
+                    "collector_timestamp": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Collector-arrival time in Unix epoch milliseconds."
+                    },
+                    "data": {
+                        "$ref": "#/components/schemas/OrderbookData"
+                    },
+                    "exchange_sequence": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Exact venue-provided sequence identifier."
+                    },
+                    "exchange_timestamp": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Venue-provided event time in Unix epoch milliseconds."
+                    },
+                    "market": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "raw": {
+                        "description": "Exact upstream JSON payload; omitted for synthesized full books."
+                    },
+                    "raw_reference_sequence": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Collector sequence of the sibling row containing the exact raw payload.",
+                        "minimum": 0
+                    },
+                    "source": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "type": {
+                        "type": "string",
+                        "description": "`orderbook`; inspect `data.is_snapshot` to distinguish snapshots from deltas."
+                    }
+                }
+            },
+            "PerpetualTickerData": {
+                "type": "object",
+                "properties": {
+                    "funding_rate": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Venue-published rate or estimate for the closest upcoming settlement."
+                    },
+                    "funding_timestamp": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Closest upcoming settlement time in Unix epoch milliseconds."
+                    },
+                    "index_price": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "last_price": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "mark_price": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "mid_price": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "open_interest": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "oracle_price": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "predicted_funding_rate": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Venue-published forecast for the settlement after the closest one."
+                    },
+                    "premium": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                }
+            },
+            "PerpetualTickerEvent": {
+                "type": "object",
+                "required": [
+                    "collector_timestamp",
+                    "collector_sequence",
+                    "source",
+                    "market",
+                    "type",
+                    "data"
+                ],
+                "properties": {
+                    "collector_sequence": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "collector_timestamp": {
+                        "type": "integer",
+                        "format": "int64"
+                    },
+                    "data": {
+                        "$ref": "#/components/schemas/PerpetualTickerData"
+                    },
+                    "exchange_sequence": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "exchange_timestamp": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64"
+                    },
+                    "market": {
+                        "type": "string"
+                    },
+                    "raw": {},
+                    "raw_reference_sequence": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Collector sequence of the sibling row containing the exact raw payload.",
+                        "minimum": 0
+                    },
+                    "source": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "type": "string",
+                        "example": "perpetual_ticker"
+                    }
+                }
+            },
+            "PersistenceCheckpointKind": {
+                "type": "object",
+                "required": [
+                    "type",
+                    "stream",
+                    "reason",
+                    "persisted_through_timestamp"
+                ],
+                "properties": {
+                    "persisted_through_sequence": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "persisted_through_timestamp": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "`periodic_flush`, `rotation`, `shutdown`, or `manual`."
+                    },
+                    "stream": {
+                        "$ref": "#/components/schemas/PersistenceStream"
+                    },
+                    "type": {
+                        "type": "string",
+                        "example": "persistence_checkpoint"
+                    }
+                }
+            },
+            "PersistenceCheckpointMessage": {
+                "type": "object",
+                "required": [
+                    "market",
+                    "timestamp",
+                    "kind"
+                ],
+                "properties": {
+                    "kind": {
+                        "$ref": "#/components/schemas/PersistenceCheckpointKind"
+                    },
+                    "market": {
+                        "type": "string"
+                    },
+                    "source": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "timestamp": {
+                        "type": "string",
+                        "format": "date-time"
+                    }
+                }
+            },
+            "PersistenceStream": {
+                "type": "string",
+                "enum": [
+                    "raw",
+                    "standard"
+                ]
+            },
+            "PingCommand": {
+                "type": "object",
+                "required": [
+                    "action"
+                ],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "example": "ping",
+                        "pattern": "^ping$"
+                    },
+                    "request_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                },
+                "additionalProperties": false
+            },
+            "PointData": {
+                "type": "object",
+                "required": [
+                    "series",
+                    "value"
+                ],
+                "properties": {
+                    "series": {
+                        "type": "string"
+                    },
+                    "value": {
+                        "type": "string"
+                    }
+                }
+            },
+            "PointEvent": {
+                "type": "object",
+                "required": [
+                    "collector_timestamp",
+                    "collector_sequence",
+                    "type",
+                    "data"
+                ],
+                "properties": {
+                    "collector_sequence": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Collector-assigned ordering key.",
+                        "minimum": 0
+                    },
+                    "collector_timestamp": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Collector-arrival time in Unix epoch milliseconds."
+                    },
+                    "data": {
+                        "$ref": "#/components/schemas/PointData"
+                    },
+                    "exchange_sequence": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Exact venue-provided sequence identifier."
+                    },
+                    "exchange_timestamp": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Venue-provided event time in Unix epoch milliseconds."
+                    },
+                    "market": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "raw": {
+                        "description": "Exact upstream JSON payload, when this row was directly derived from one."
+                    },
+                    "raw_reference_sequence": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Collector sequence of the sibling row containing the exact raw payload.",
+                        "minimum": 0
+                    },
+                    "source": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "type": {
+                        "type": "string",
+                        "example": "point"
+                    }
+                }
+            },
+            "PongMessage": {
+                "type": "object",
+                "required": [
+                    "type"
+                ],
+                "properties": {
+                    "request_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "type": {
+                        "type": "string",
+                        "example": "pong"
+                    }
+                }
+            },
+            "SettlementTransaction": {
+                "type": "object",
+                "required": [
+                    "transaction_hash"
+                ],
+                "properties": {
+                    "chain_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "transaction_hash": {
+                        "type": "string"
+                    }
+                }
+            },
+            "SqlColumn": {
+                "type": "object",
+                "required": [
+                    "name",
+                    "type"
+                ],
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "type": "string"
+                    }
+                }
+            },
+            "SqlResponse": {
+                "type": "object",
+                "required": [
+                    "query_id",
+                    "columns",
+                    "data",
+                    "rows"
+                ],
+                "properties": {
+                    "columns": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/SqlColumn"
+                        }
+                    },
+                    "data": {
+                        "type": "array",
+                        "items": {
+                            "type": "array",
+                            "items": {}
+                        },
+                        "description": "Values use ClickHouse JSON encodings; each row follows `columns` order."
+                    },
+                    "query_id": {
+                        "type": "string"
+                    },
+                    "rows": {
+                        "type": "integer",
+                        "minimum": 0
+                    }
+                }
+            },
+            "StandardEvent": {
+                "oneOf": [
+                    {
+                        "$ref": "#/components/schemas/TradeEvent"
+                    },
+                    {
+                        "$ref": "#/components/schemas/OrderbookEvent"
+                    },
+                    {
+                        "$ref": "#/components/schemas/PointEvent"
+                    },
+                    {
+                        "$ref": "#/components/schemas/OptionTickerEvent"
+                    },
+                    {
+                        "$ref": "#/components/schemas/PerpetualTickerEvent"
+                    },
+                    {
+                        "$ref": "#/components/schemas/MarketStatisticsEvent"
+                    },
+                    {
+                        "$ref": "#/components/schemas/MarketStateEvent"
+                    },
+                    {
+                        "$ref": "#/components/schemas/IntentEvent"
+                    }
+                ]
+            },
+            "Statistic": {
+                "type": "object",
+                "required": [
+                    "value"
+                ],
+                "properties": {
+                    "convention": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "unit": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "value": {
+                        "type": "string"
+                    }
+                }
+            },
+            "SubscribeCommand": {
+                "type": "object",
+                "required": [
+                    "action",
+                    "subscriptions"
+                ],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "example": "subscribe",
+                        "pattern": "^subscribe$"
+                    },
+                    "request_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "subscriptions": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/SubscriptionRequest"
+                        },
+                        "maxItems": 1000,
+                        "minItems": 1
+                    },
+                    "token": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Optional Privy access token or Polaris API key; requires `stream:read`.",
+                        "maxLength": 16384,
+                        "minLength": 1
+                    }
+                },
+                "additionalProperties": false
+            },
+            "SubscriptionRequest": {
+                "type": "object",
+                "description": "One exact persisted table/filter subscription and optional resume position.",
+                "required": [
+                    "table"
+                ],
+                "properties": {
+                    "cursor": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Opaque cursor from a previously delivered data page; subscribe only."
+                    },
+                    "filters": {
+                        "type": [
+                            "object",
+                            "null"
+                        ],
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    },
+                    "table": {
+                        "type": "string",
+                        "example": "hyperliquid.trades"
+                    }
+                },
+                "additionalProperties": false
+            },
+            "TableDataMessage": {
+                "type": "object",
+                "required": [
+                    "type",
+                    "table",
+                    "filters",
+                    "data",
+                    "cursor",
+                    "caught_up"
+                ],
+                "properties": {
+                    "caught_up": {
+                        "type": "boolean"
+                    },
+                    "cursor": {
+                        "type": "string",
+                        "description": "Save only after processing every row in this page. Reconnect may replay overlap."
+                    },
+                    "data": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": {},
+                            "propertyNames": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "filters": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    },
+                    "table": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "type": "string",
+                        "example": "data"
+                    }
+                }
+            },
+            "TradeData": {
+                "type": "object",
+                "required": [
+                    "price",
+                    "quantity"
+                ],
+                "properties": {
+                    "maker": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Maker account or address identifier, when published by the venue."
+                    },
+                    "order_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "price": {
+                        "type": "number",
+                        "format": "double"
+                    },
+                    "quantity": {
+                        "type": "number",
+                        "format": "double"
+                    },
+                    "side": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "`buy` or `sell`."
+                    },
+                    "taker": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Taker account or address identifier, when published by the venue."
+                    }
+                }
+            },
+            "TradeEvent": {
+                "type": "object",
+                "required": [
+                    "collector_timestamp",
+                    "collector_sequence",
+                    "type",
+                    "data"
+                ],
+                "properties": {
+                    "collector_sequence": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Collector-assigned ordering key.",
+                        "minimum": 0
+                    },
+                    "collector_timestamp": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Collector-arrival time in Unix epoch milliseconds."
+                    },
+                    "data": {
+                        "$ref": "#/components/schemas/TradeData"
+                    },
+                    "exchange_sequence": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Exact venue-provided sequence identifier."
+                    },
+                    "exchange_timestamp": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Venue-provided event time in Unix epoch milliseconds."
+                    },
+                    "market": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "raw": {
+                        "description": "Exact upstream JSON payload, when this row was directly derived from one."
+                    },
+                    "raw_reference_sequence": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Collector sequence of the sibling row containing the exact raw payload.",
+                        "minimum": 0
+                    },
+                    "source": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "type": {
+                        "type": "string",
+                        "example": "trade"
+                    }
+                }
+            },
+            "UnsubscribeAllCommand": {
+                "type": "object",
+                "required": [
+                    "action"
+                ],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "example": "unsubscribe_all",
+                        "pattern": "^unsubscribe_all$"
+                    },
+                    "request_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                },
+                "additionalProperties": false
+            },
+            "UnsubscribeCommand": {
+                "type": "object",
+                "required": [
+                    "action",
+                    "subscriptions"
+                ],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "example": "unsubscribe",
+                        "pattern": "^unsubscribe$"
+                    },
+                    "request_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "subscriptions": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/SubscriptionRequest"
+                        },
+                        "maxItems": 1000,
+                        "minItems": 1
+                    }
+                },
+                "additionalProperties": false
+            },
+            "WebSocketErrorMessage": {
+                "type": "object",
+                "required": [
+                    "type",
+                    "code",
+                    "message"
+                ],
+                "properties": {
+                    "code": {
+                        "type": "string"
+                    },
+                    "message": {
+                        "type": "string"
+                    },
+                    "request_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "type": {
+                        "type": "string",
+                        "example": "error"
+                    }
+                }
+            }
+        },
+        "securitySchemes": {
+            "bearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "description": "Privy access token or Polaris API key"
+            }
+        },
+        "headers": {
+            "RateLimitPolicy": {
+                "description": "The quota policy applied to this request, expressed as an IETF structured field.",
+                "schema": {
+                    "type": "string"
+                },
+                "example": "\"data\";q=100;w=1"
+            },
+            "RateLimit": {
+                "description": "The remaining quota and effective reset window for this request.",
+                "schema": {
+                    "type": "string"
+                },
+                "example": "\"data\";r=99;t=1"
+            },
+            "RateLimitLimit": {
+                "description": "Compatibility field containing the request quota for the current window.",
+                "schema": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                }
+            },
+            "RateLimitRemaining": {
+                "description": "Compatibility field containing the unused request quota in the current window.",
+                "schema": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                }
+            },
+            "RateLimitReset": {
+                "description": "Compatibility field containing whole seconds until the current window resets.",
+                "schema": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 1
+                }
+            },
+            "RetryAfter": {
+                "description": "Whole seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 1
+                }
+            },
+            "PolarisMonthlyUsageLimit": {
+                "description": "Billable response-byte allowance for the current subscription period.",
+                "schema": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 1
+                }
+            },
+            "PolarisMonthlyUsageRemaining": {
+                "description": "Billable response bytes remaining in the current subscription period.",
+                "schema": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                }
+            },
+            "PolarisMonthlyUsageReset": {
+                "description": "Unix timestamp in seconds when the subscription usage period resets.",
+                "schema": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 1
+                }
+            }
+        }
+    },
+    "tags": [
+        {
+            "name": "Discovery",
+            "description": "API discovery and availability"
+        },
+        {
+            "name": "Data",
+            "description": "Authenticated filtered reads of public tables"
+        },
+        {
+            "name": "Realtime data",
+            "description": "WebSocket market-data streaming"
+        }
+    ]
+}

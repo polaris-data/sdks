@@ -1,3 +1,4 @@
+import { getSyncCore } from "./core";
 import type { OhlcvBar, OhlcvInterval } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -53,6 +54,9 @@ export class OhlcvAggregator {
 
   /** Ingest a single trade event. */
   add(timestamp: number, price: number, quantity: number): void {
+    if (![timestamp, price, quantity].every(Number.isFinite)) {
+      throw new RangeError("OHLCV observations must be finite");
+    }
     const bucketTs =
       Math.floor(timestamp / this._intervalMs) * this._intervalMs;
 
@@ -84,22 +88,6 @@ export class OhlcvAggregator {
    * previous bar, matching the convention used by the Python SDK.
    */
   finish(): OhlcvBar[] {
-    const bars = Array.from(this._bars.values()).sort(
-      (a, b) => a.ts - b.ts,
-    );
-
-    for (let i = 1; i < bars.length; i++) {
-      bars[i].open = bars[i - 1].close;
-    }
-
-    return bars.map((b) => ({
-      timestamp: b.ts,
-      open: b.open,
-      high: b.high,
-      low: b.low,
-      close: b.close,
-      volume: b.volScaled / 1e12,
-      trades: b.trades,
-    }));
+    return getSyncCore().finishOhlcv(Array.from(this._bars.values()));
   }
 }
