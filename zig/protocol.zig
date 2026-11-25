@@ -1,10 +1,22 @@
 const std = @import("std");
-const routes = @import("routes.zig");
+const routes = @import("generated/routes.zig");
 
 pub const A = std.mem.Allocator;
 pub const Value = std.json.Value;
 pub const Operation = routes.Operation;
 pub const max_body = 16 * 1024 * 1024 + 4096;
+
+pub const DataTime = union(enum) {
+    text: []const u8,
+    millis: i64,
+
+    pub fn jsonStringify(self: DataTime, writer: *std.json.Stringify) !void {
+        switch (self) {
+            .text => |value| try writer.write(value),
+            .millis => |value| try writer.write(value),
+        }
+    }
+};
 
 pub const Fault = struct {
     kind: []const u8,

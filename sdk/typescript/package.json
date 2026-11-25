@@ -8,7 +8,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/polaris-data/sdks",
-    "directory": "typescript"
+    "directory": "sdk/typescript"
   },
   "type": "module",
   "main": "./dist/node/index.cjs",
@@ -42,9 +42,9 @@
     "dev": "npm run build:core && tsup --watch",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run clean && npm run build",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "npm run build:core && tsc --noEmit",
     "test": "npm run clean && npm run build && node --test test/*.test.mjs",
-    "build:core": "python3 ../tools/build-wasm.py"
+    "build:core": "python3 ../../tools/generate.py --target zig --target typescript && python3 ../../tools/build-wasm.py"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

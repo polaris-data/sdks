@@ -21,10 +21,24 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - run: python tools/install-toolchain.py
+      - run: python tools/generate.py
       - run: python tools/package-zig.py archives
       - uses: actions/upload-artifact@v4
         with:
           name: polaris-zig-archives
-          path: crates/polaris-data/prebuilt/
+          path: sdk/rust/prebuilt/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polaris-generated-sdk-sources
+          path: |
+            zig/generated/*.zig
+            sdk/zig/generated.zig
+            sdk/rust/src/generated.rs
+            sdk/python/python/polaris_data/models.py
+            sdk/typescript/src/generated.ts
           if-no-files-found: error

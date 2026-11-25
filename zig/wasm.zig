@@ -1,5 +1,7 @@
 const std = @import("std");
 const p = @import("protocol.zig");
+const Orderbooks = @import("orderbook.zig").Orderbooks;
+const Ohlcv = @import("ohlcv.zig").Ohlcv;
 const a = std.heap.wasm_allocator;
 var result_len: usize = 0;
 
@@ -90,11 +92,38 @@ export fn polaris_v1_session_destroy(session: *p.Session) void {
     a.destroy(session);
 }
 
-export fn polaris_v1_ohlcv_finish(ptr: [*]const u8, len: usize) [*]u8 {
+export fn polaris_v1_orderbook_create() ?*Orderbooks {
+    return Orderbooks.create(a) catch null;
+}
+
+export fn polaris_v1_orderbook_call(books: *Orderbooks, ptr: [*]const u8, len: usize) [*]u8 {
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
-    const bars = @import("ohlcv.zig").finish(arena.allocator(), ptr[0..len]) catch return output(fail());
-    const bytes = std.json.Stringify.valueAlloc(a, .{ .ok = bars }, .{}) catch @panic("out of memory");
+    return output(books.call(arena.allocator(), ptr[0..len]) catch fail());
+}
+
+export fn polaris_v1_orderbook_destroy(books: *Orderbooks) void {
+    books.destroy();
+}
+
+export fn polaris_v1_ohlcv_create(ptr: [*]const u8, len: usize) ?*Ohlcv {
+    return Ohlcv.create(a, ptr[0..len]) catch null;
+}
+
+export fn polaris_v1_ohlcv_add(bars: *Ohlcv, timestamp: f64, price: f64, quantity: f64) bool {
+    bars.add(timestamp, price, quantity) catch return false;
+    return true;
+}
+
+export fn polaris_v1_ohlcv_finish(bars: *const Ohlcv) [*]u8 {
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const values = bars.finish(arena.allocator()) catch return output(fail());
+    const bytes = std.json.Stringify.valueAlloc(a, .{ .ok = values }, .{}) catch @panic("out of memory");
     result_len = bytes.len;
     return bytes.ptr;
+}
+
+export fn polaris_v1_ohlcv_destroy(bars: *Ohlcv) void {
+    bars.destroy();
 }

@@ -99,23 +99,23 @@ with PolarisClient() as client:
         print(page["data"], page["cursor"])
 ```
 
-See the [migration guide](MIGRATION.md) for replacements for retired routes and the [browser guide](typescript/docs/BROWSER_USAGE.md) for browser setup. The [pinned notebooks](notebooks/README.md) show historical analyses and saved outputs.
+See the [browser guide](sdk/typescript/docs/BROWSER_USAGE.md) for browser setup. The [pinned notebooks](notebooks/README.md) show historical analyses and saved outputs.
 
 ## Development and release
 
-Install Zig 0.17.1 and Binaryen 133, or run `python3 tools/install-toolchain.py --binaryen` and add the printed paths to your shell.
+Install Zig 0.17.1 and Binaryen 133, or run `python3 tools/install-toolchain.py --binaryen` and add the printed paths to your shell. Install Rust with `rustfmt` to generate the Rust bindings.
 
 ```sh
-python3 tools/generate.py --check
+python3 tools/generate.py
 zig build test
 python3 tools/package-zig.py source-archive --check
 cargo test --workspace --locked
 uv sync --locked
 uv run --no-sync pytest
-npm ci --prefix typescript
-npm test --prefix typescript
+npm ci --prefix sdk/typescript
+npm test --prefix sdk/typescript
 ```
 
-Edit the checked-in [OpenAPI snapshot](schema/openapi.json) and [SDK overlay](schema/sdk.json) when the contract changes. Run `python3 tools/generate.py` and commit the generated bindings alongside their inputs. Rust and Python builds from a source checkout use Zig. Published artifacts bundle the native core for standard targets. The npm build produces one Wasm image and a JavaScript fallback from that image.
+The shared implementation lives in `zig/`. The four SDKs live in `sdk/`. Edit the checked-in [OpenAPI snapshot](schema/openapi.json) and [SDK overlay](schema/sdk.json) when the contract changes, then regenerate the bindings locally. Run the generator before building Zig, Rust, or Python from a source checkout, including when using a local Zig path dependency. Pass `--target` one or more times to generate only the SDKs you need. The npm build generates its bindings and builds one Wasm image and a JavaScript fallback from that image. Published archives include their generated sources or compiled bindings, and standard Rust and Python targets bundle the native core.
 
 Run **Check SDK release candidate** on the commit intended for release. Its `sdk-release-smoke` environment uses `POLARIS_SDK_SMOKE_API_KEY`, `POLARIS_SMOKE_CANDLE_QUERY`, and `POLARIS_SMOKE_STREAM_SUBSCRIPTION`. Set the last two as JSON objects using a known production pool and a subscription that will deliver a page during the smoke test. After the workflow passes, the separate `rust-v*`, `python-v*`, `typescript-v*`, and `zig-v*` tags identify the registry packages or Zig release archive.

@@ -1,6 +1,8 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const p = @import("protocol.zig");
-const generated = @import("generated.zig");
+pub const models = @import("generated/models.zig");
+pub const DataTime = p.DataTime;
 const Io = std.Io;
 const a = std.heap.c_allocator;
 
@@ -20,18 +22,6 @@ pub const Options = struct {
     stream_url: ?[]const u8 = null,
     api_key: ?[]const u8 = null,
     timeout_ms: u32 = 30_000,
-};
-
-pub const DataTime = union(enum) {
-    text: []const u8,
-    millis: i64,
-
-    pub fn jsonStringify(self: DataTime, writer: *std.json.Stringify) !void {
-        switch (self) {
-            .text => |value| try writer.write(value),
-            .millis => |value| try writer.write(value),
-        }
-    }
 };
 
 pub fn Reply(T: type) type {
@@ -69,6 +59,18 @@ pub fn requestAs(T: type, allocator: p.A, options: Options, operation: p.Operati
 
 fn duration(ms: u32) Io.Timeout {
     return .{ .duration = .{ .clock = .awake, .raw = .fromMilliseconds(ms) } };
+}
+
+fn websocketRandom(io: Io, data: []u8) !void {
+    io.randomSecure(data) catch |err| {
+        if (builtin.os.tag != .linux or err != error.EntropyUnavailable) return err;
+        // The Linux archive targeting glibc 2.17 can fail Zig's entropy probe.
+        // Read from the kernel's random device through regular file I/O.
+        const random = try Io.Dir.openFileAbsolute(io, "/dev/urandom", .{});
+        defer random.close(io);
+        var reader = random.readerStreaming(io, &.{});
+        try reader.interface.readSliceAll(data);
+    };
 }
 
 fn within(io: Io, comptime work: anytype, args: std.meta.ArgsTuple(@TypeOf(work)), timeout_ms: u32, closed: ?*Io.Event) @typeInfo(@TypeOf(work)).@"fn".return_type.? {
@@ -167,7 +169,7 @@ fn sameOrigin(left: std.Uri, right: std.Uri) !bool {
 }
 
 pub const StreamQuery = struct {
-    subscriptions: []const generated.SubscriptionRequest,
+    subscriptions: []const models.SubscriptionRequest,
 };
 
 pub fn openStream(client: anytype, query: StreamQuery) !*Stream {
@@ -180,8 +182,8 @@ pub const DataRows = struct {
     options: Options,
     allocator: p.A,
     cursors: p.CursorSet,
-    query: generated.DataQuery,
-    current: ?Reply(generated.DataResponse) = null,
+    query: models.DataQuery,
+    current: ?Reply(models.DataResponse) = null,
     index: usize = 0,
     done: bool = false,
 
@@ -201,7 +203,7 @@ pub const DataRows = struct {
             }
         }
         while (true) {
-            var response = try requestAs(generated.DataResponse, self.allocator, self.options, .data, self.query);
+            var response = try requestAs(models.DataResponse, self.allocator, self.options, .data, self.query);
             if (response.result == .fault) {
                 self.done = true;
                 if (self.current) |*current| current.deinit();
@@ -237,7 +239,7 @@ pub const DataRows = struct {
     }
 };
 
-pub fn dataRows(client: anytype, allocator: p.A, query: generated.DataQuery) !DataRows {
+pub fn dataRows(client: anytype, allocator: p.A, query: models.DataQuery) !DataRows {
     var cursor_set: p.CursorSet = .{ .allocator = allocator };
     errdefer cursor_set.deinit();
     if (query.cursor) |cursor| _ = try cursor_set.remember(cursor);
@@ -305,7 +307,7 @@ pub const Stream = struct {
 
     fn connect(self: *Stream) anyerror!void {
         var random: [16]u8 = undefined;
-        try self.io.randomSecure(&random);
+        try websocketRandom(self.io, &random);
         var buf: [24]u8 = undefined;
         const key = std.base64.standard.Encoder.encode(&buf, &random);
         const uri = try std.Uri.parse(self.endpoint);
@@ -371,7 +373,7 @@ pub const Stream = struct {
             try writer.writeInt(u64, payload.len, .big);
         }
         var mask: [4]u8 = undefined;
-        try self.io.randomSecure(&mask);
+        try websocketRandom(self.io, &mask);
         try writer.writeAll(&mask);
         var scratch: [1024]u8 = undefined;
         var i: usize = 0;
@@ -550,10 +552,10 @@ pub const Stream = struct {
         return .{ .ok = .null };
     }
 
-    pub fn next(self: *Stream, allocator: p.A) !Reply(?generated.TableDataMessage) {
+    pub fn next(self: *Stream, allocator: p.A) !Reply(?models.TableDataMessage) {
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
         const result = try self.nextResult(arena.allocator());
-        return convert(?generated.TableDataMessage, &arena, result);
+        return convert(?models.TableDataMessage, &arena, result);
     }
 };

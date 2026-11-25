@@ -19,7 +19,6 @@ name = "polaris_data"
 [dependencies]
 async-stream = "0.3"
 futures-core = "0.3"
-ordered-float.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

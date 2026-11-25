@@ -26,6 +26,7 @@ fn main() {
             "build.zig",
             "build.zig.zon",
             "zig",
+            "sdk/zig",
             "include",
             ".zigversion",
         ] {

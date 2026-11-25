@@ -61,7 +61,7 @@ impl From<Fault> for PolarisError {
             "not_found" => Self::NotFound(Box::new(fault)),
             "rate_limited" => Self::RateLimited(Box::new(fault)),
             "invalid_response" => Self::InvalidResponse(fault.message),
-            "stream_decode" => Self::Decode(fault.message),
+            "stream_decode" | "orderbook" => Self::Decode(fault.message),
             "stream_connection" => Self::StreamConnection(fault.message),
             "stream_protocol" => Self::StreamProtocol {
                 code: fault.code,

@@ -9,6 +9,7 @@ import webpack from "webpack";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, "..");
+const consumer = process.env.POLARIS_BROWSER_CONSUMER;
 
 async function collectFiles(dir) {
   const entries = await readdir(dir, { withFileTypes: true });
@@ -25,14 +26,16 @@ async function collectFiles(dir) {
 async function runWebpackBundle(outputPath) {
   const compiler = webpack({
     mode: "production",
-    context: repoRoot,
+    context: consumer ?? repoRoot,
     target: ["web", "es2020"],
-    entry: path.join(testDir, "fixtures", "browser-entry.js"),
+    entry: consumer
+      ? path.join(consumer, "browser-entry.js")
+      : path.join(testDir, "fixtures", "browser-entry.js"),
     output: {
       path: outputPath,
       filename: "bundle.js",
     },
-    resolve: {
+    resolve: consumer ? undefined : {
       alias: {
         "polaris-data$": path.join(repoRoot, "dist", "browser", "index.js"),
       },
@@ -131,6 +134,10 @@ test("installed browser bundle can page and resume with or without Wasm",
             { timestamp: 0, open: 100, high: 100, low: 100, close: 100, volume: 1, trades: 1 },
             { timestamp: 60_000, open: 100, high: 101, low: 101, close: 101, volume: 2, trades: 1 },
           ],
+          book: {
+            bids: [{ price: 98, quantity: 3 }],
+            asks: [{ price: 101, quantity: 2 }],
+          },
         });
       }
     } finally {

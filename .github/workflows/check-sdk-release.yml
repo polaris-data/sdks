@@ -31,25 +31,29 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: polaris-zig-archives
-          path: crates/polaris-data/prebuilt
+          path: sdk/rust/prebuilt
+      - uses: actions/download-artifact@v4
+        with:
+          name: polaris-generated-sdk-sources
+          path: .
       - run: python tools/install-toolchain.py --binaryen
       - run: python tools/generate.py --check
       - run: python tools/package-zig.py source-archive --check
       - run: python tools/package-zig.py stage-source
-      - run: cargo package -p polaris-data --locked
+      - run: cargo package -p polaris-data --locked --allow-dirty
       - run: python tools/check-rust-dist.py target/package/polaris-data-*.crate
       - run: uvx --from maturin==1.14.1 maturin build --release --locked --out dist
       - run: uvx --from maturin==1.14.1 maturin sdist --out dist
       - run: python tools/check-python-dist.py dist/*.whl
       - run: python tools/check-python-dist.py dist/polaris_data-*.tar.gz
-      - run: npm ci --prefix typescript
-      - run: npx --prefix typescript playwright install --with-deps chromium
-      - run: npm test --prefix typescript
+      - run: npm ci --prefix sdk/typescript
+      - run: npx --prefix sdk/typescript playwright install --with-deps chromium
+      - run: npm test --prefix sdk/typescript
+      - run: |
+          npm pack ./sdk/typescript --pack-destination dist
+          node tools/check-npm-dist.mjs dist/polaris-data-*.tgz
         env:
           POLARIS_TEST_BROWSER: "1"
-      - run: |
-          npm pack ./typescript --pack-destination dist
-          node tools/check-npm-dist.mjs dist/polaris-data-*.tgz
       - run: |
           python -m venv "$RUNNER_TEMP/polaris-smoke"
           "$RUNNER_TEMP/polaris-smoke/bin/python" -m pip install dist/*.whl

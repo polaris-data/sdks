@@ -11,13 +11,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 SNIPPET = """
 import sys
-from polaris_data import PolarisClient, _native
+from polaris_data import OrderbookBuilder, PolarisClient, _native
 assert _native.__native__
 with PolarisClient('fixture-key', base_url=sys.argv[1]) as client:
     assert client.health()['ok']
     assert len(list(client.data_rows('standard.trades'))) == 2
     with client.stream([{'table':'standard.trades'}]) as pages:
         assert [page['cursor'] for page in pages] == ['stream:1', 'stream:2']
+books = OrderbookBuilder()
+assert books.update({
+    'timestamp': 1, 'source': 'fixture', 'market': 'BTC', 'type': 'orderbook',
+    'data': {'bids': [[99, 1]], 'asks': []},
+})
+assert books.snapshot('fixture', 'BTC')['bids'][0]['price'] == 99
 """
 
 

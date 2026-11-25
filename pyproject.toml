@@ -46,18 +46,21 @@ dev = [
 ]
 
 [tool.maturin]
-manifest-path = "crates/polaris-python/Cargo.toml"
-python-source = "python"
+manifest-path = "sdk/python/Cargo.toml"
+python-source = "sdk/python/python"
 module-name = "polaris_data._native"
 bindings = "pyo3"
 features = ["pyo3/extension-module"]
 include = [
-  { path = "crates/polaris-data/zig-source/**/*", format = "sdist" },
-  { path = "crates/polaris-data/prebuilt/**/*", format = "sdist" },
+  { path = "sdk/rust/zig-source/**/*", format = "sdist" },
+  { path = "sdk/rust/prebuilt/**/*", format = "sdist" },
   { path = "build.zig", format = "sdist" },
   { path = "build.zig.zon", format = "sdist" },
   { path = ".zigversion", format = "sdist" },
   { path = "zig/**/*", format = "sdist" },
+  { path = "sdk/zig/**/*", format = "sdist" },
+  { path = "sdk/rust/src/generated.rs", format = "sdist" },
+  { path = "sdk/python/python/polaris_data/models.py", format = ["sdist", "wheel"] },
   { path = "include/**/*", format = "sdist" },
 ]
 

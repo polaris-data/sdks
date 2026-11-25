@@ -37,7 +37,7 @@ def toml_string(path: str, section: str, key: str) -> str:
 
 
 def python_runtime_version() -> str:
-    init_path = ROOT / "python/polaris_data/__init__.py"
+    init_path = ROOT / "sdk/python/python/polaris_data/__init__.py"
     module = ast.parse(init_path.read_text(), filename=str(init_path))
     for statement in module.body:
         if (
@@ -54,7 +54,7 @@ def python_runtime_version() -> str:
 
 
 def typescript_runtime_version() -> str:
-    client_path = ROOT / "typescript/src/client.ts"
+    client_path = ROOT / "sdk/typescript/src/client.ts"
     pattern = re.compile(
         r'^\s*const\s+VERSION\s*=\s*"([^"]+)"\s*;\s*(?://.*)?$',
         re.MULTILINE,
@@ -93,28 +93,28 @@ def version_sources(ecosystem: str) -> dict[str, str]:
             "pyproject.toml [project]": toml_string(
                 "pyproject.toml", "project", "version"
             ),
-            "crates/polaris-python/Cargo.toml [package]": toml_string(
-                "crates/polaris-python/Cargo.toml", "package", "version"
+            "sdk/python/Cargo.toml [package]": toml_string(
+                "sdk/python/Cargo.toml", "package", "version"
             ),
-            "python/polaris_data/__init__.py": python_runtime_version(),
+            "sdk/python/python/polaris_data/__init__.py": python_runtime_version(),
         }
     if ecosystem == "rust":
         return {
-            "crates/polaris-data/Cargo.toml [package]": toml_string(
-                "crates/polaris-data/Cargo.toml", "package", "version"
+            "sdk/rust/Cargo.toml [package]": toml_string(
+                "sdk/rust/Cargo.toml", "package", "version"
             )
         }
     return {
-        "typescript/package.json": json_string(
-            "typescript/package.json", "version"
+        "sdk/typescript/package.json": json_string(
+            "sdk/typescript/package.json", "version"
         ),
-        "typescript/package-lock.json": json_string(
-            "typescript/package-lock.json", "version"
+        "sdk/typescript/package-lock.json": json_string(
+            "sdk/typescript/package-lock.json", "version"
         ),
-        "typescript/package-lock.json packages[\"\"]": json_string(
-            "typescript/package-lock.json", "packages", "", "version"
+        "sdk/typescript/package-lock.json packages[\"\"]": json_string(
+            "sdk/typescript/package-lock.json", "packages", "", "version"
         ),
-        "typescript/src/client.ts": typescript_runtime_version(),
+        "sdk/typescript/src/client.ts": typescript_runtime_version(),
     }
 
 
