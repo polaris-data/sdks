@@ -24,4 +24,4 @@ try {
 
 Use `coverage()` to discover tables, `dataRows()` to iterate across pages, `sql({ query })` for analytics, and `candles()` for aligned DEX pool candles. `stream({ subscriptions })` yields table pages with opaque resume cursors. Unquoted integers outside the safe integer range are returned as `bigint`.
 
-See the [main SDK guide](https://github.com/polaris-data/sdks#readme), [migration guide](https://github.com/polaris-data/sdks/blob/main/MIGRATION.md), and [browser guide](https://github.com/polaris-data/sdks/blob/main/typescript/docs/BROWSER_USAGE.md).
+See the [main SDK guide](https://github.com/polaris-data/sdks#readme) and the [browser guide](https://github.com/polaris-data/sdks/blob/main/sdk/typescript/docs/BROWSER_USAGE.md).

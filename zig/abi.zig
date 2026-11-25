@@ -1,6 +1,7 @@
 const std = @import("std");
 const p = @import("protocol.zig");
 const native = @import("native.zig");
+const Orderbooks = @import("orderbook.zig").Orderbooks;
 const a = std.heap.c_allocator;
 
 const Buffer = extern struct {
@@ -89,6 +90,25 @@ export fn polaris_v1_stream_destroy(stream: *native.Stream) void {
     stream.deinit();
 }
 
+export fn polaris_v1_orderbook_create() ?*Orderbooks {
+    return Orderbooks.create(a) catch null;
+}
+
+export fn polaris_v1_orderbook_clone(books: *const Orderbooks) ?*Orderbooks {
+    return books.clone() catch null;
+}
+
+export fn polaris_v1_orderbook_call(books: *Orderbooks, ptr: [*]const u8, len: usize) Buffer {
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    return encode(books.call(arena.allocator(), ptr[0..len]) catch p.fault("request", "Native orderbook operation failed"));
+}
+
+export fn polaris_v1_orderbook_destroy(books: *Orderbooks) void {
+    books.destroy();
+}
+
 test {
     _ = p;
+    _ = @import("ohlcv.zig");
 }

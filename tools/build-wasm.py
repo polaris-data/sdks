@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "typescript" / "src"
+SOURCE = ROOT / "sdk" / "typescript" / "src"
 zig = os.environ.get("ZIG", "zig")
 wasm2js = os.environ.get("WASM2JS", "wasm2js")
 expected = (ROOT / ".zigversion").read_text().strip()

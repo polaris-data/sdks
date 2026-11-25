@@ -30,7 +30,10 @@ def main():
         )
         (work / "src").mkdir()
         (work / "src/main.rs").write_text("""
-use polaris_data::{blocking::PolarisClient, DataQuery, StreamQuery, SubscriptionRequest};
+use polaris_data::{
+    blocking::PolarisClient, DataQuery, LegacyStandardEvent, OrderbookBuilder, StandardEvent,
+    StreamQuery, SubscriptionRequest,
+};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::args().nth(1).expect("fixture endpoint");
     let client = PolarisClient::builder().base_url(url).api_key("fixture-key").build()?;
@@ -41,6 +44,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         SubscriptionRequest { table: "standard.trades".into(), ..Default::default() }
     ] })?;
     assert_eq!(pages.map(|page| page.map(|p| p.cursor)).collect::<Result<Vec<_>, _>>()?, ["stream:1", "stream:2"]);
+    let mut books = OrderbookBuilder::new();
+    assert!(books.update(&StandardEvent::Legacy(LegacyStandardEvent {
+        timestamp: 1,
+        source: "fixture".into(),
+        market: "BTC".into(),
+        event_type: "orderbook".into(),
+        data: r#"{"bids":[[99,1]],"asks":[]}"#.parse()?,
+        extra: Default::default(),
+    }))?);
+    assert_eq!(books.snapshot("fixture", "BTC").unwrap().bids[0].price, 99.0);
     Ok(())
 }
 """)

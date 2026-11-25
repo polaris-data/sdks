@@ -13,7 +13,7 @@ name = "_native"
 crate-type = ["cdylib"]
 
 [dependencies]
-polaris-data = { path = "../polaris-data" }
+polaris-data = { path = "../rust" }
 pyo3 = { version = "0.28", features = ["abi3-py39", "extension-module"] }
 pythonize = "0.28"
 serde.workspace = true

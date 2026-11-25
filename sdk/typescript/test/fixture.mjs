@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 
 export async function startFixture() {
-  const path = fileURLToPath(new URL("../../tests/fixture_server.py", import.meta.url));
+  const path = fileURLToPath(new URL("../../../tests/fixture_server.py", import.meta.url));
   const fixture = spawn("python3", [path], { stdio: ["ignore", "pipe", "inherit"] });
   const lines = createInterface({ input: fixture.stdout });
   const [url] = await Promise.race([

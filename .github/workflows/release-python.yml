@@ -65,7 +65,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: polaris-zig-archives
-          path: crates/polaris-data/prebuilt
+          path: sdk/rust/prebuilt
+      - uses: actions/download-artifact@v4
+        with:
+          name: polaris-generated-sdk-sources
+          path: .
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           maturin-version: ${{ env.MATURIN_VERSION }}
@@ -103,7 +107,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: polaris-zig-archives
-          path: crates/polaris-data/prebuilt
+          path: sdk/rust/prebuilt
+      - uses: actions/download-artifact@v4
+        with:
+          name: polaris-generated-sdk-sources
+          path: .
       - uses: actions/setup-python@v6
         with:
           python-version: "3.9"
@@ -140,7 +148,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: polaris-zig-archives
-          path: crates/polaris-data/prebuilt
+          path: sdk/rust/prebuilt
+      - uses: actions/download-artifact@v4
+        with:
+          name: polaris-generated-sdk-sources
+          path: .
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
@@ -169,7 +181,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: polaris-zig-archives
-          path: crates/polaris-data/prebuilt
+          path: sdk/rust/prebuilt
+      - uses: actions/download-artifact@v4
+        with:
+          name: polaris-generated-sdk-sources
+          path: .
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"

@@ -5,7 +5,7 @@ use std::{
     sync::Mutex,
 };
 
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 use crate::{PolarisError, errors::Fault, generated::TableDataMessage};
@@ -30,6 +30,10 @@ unsafe extern "C" {
     fn polaris_v1_stream_next(stream: *mut c_void) -> RawBuffer;
     fn polaris_v1_stream_cancel(stream: *mut c_void);
     fn polaris_v1_stream_destroy(stream: *mut c_void);
+    fn polaris_v1_orderbook_create() -> *mut c_void;
+    fn polaris_v1_orderbook_clone(books: *const c_void) -> *mut c_void;
+    fn polaris_v1_orderbook_call(books: *mut c_void, ptr: *const u8, len: usize) -> RawBuffer;
+    fn polaris_v1_orderbook_destroy(books: *mut c_void);
 }
 
 impl Drop for Buffer {
@@ -138,5 +142,60 @@ impl Stream {
 impl Drop for Stream {
     fn drop(&mut self) {
         unsafe { polaris_v1_stream_destroy(self.ptr.as_ptr()) }
+    }
+}
+
+pub(crate) struct Orderbooks(NonNull<c_void>);
+
+// Each handle owns its state. Shared calls only read it, and mutating calls
+// require exclusive access. Zig uses the thread-safe libc allocator.
+unsafe impl Send for Orderbooks {}
+unsafe impl Sync for Orderbooks {}
+
+impl Default for Orderbooks {
+    fn default() -> Self {
+        Self(
+            NonNull::new(unsafe { polaris_v1_orderbook_create() })
+                .expect("allocate native orderbook"),
+        )
+    }
+}
+
+impl Clone for Orderbooks {
+    fn clone(&self) -> Self {
+        Self(
+            NonNull::new(unsafe { polaris_v1_orderbook_clone(self.0.as_ptr()) })
+                .expect("clone native orderbook"),
+        )
+    }
+}
+
+impl Orderbooks {
+    pub(crate) fn snapshot<T: DeserializeOwned>(
+        &self,
+        source: &str,
+        market: &str,
+    ) -> Result<T, PolarisError> {
+        self.call(&serde_json::json!({"operation": "snapshot", "source": source, "market": market}))
+    }
+
+    pub(crate) fn change<T: DeserializeOwned>(
+        &mut self,
+        request: &impl Serialize,
+    ) -> Result<T, PolarisError> {
+        self.call(request)
+    }
+
+    fn call<T: DeserializeOwned>(&self, request: &impl Serialize) -> Result<T, PolarisError> {
+        let input = serde_json::to_vec(request)
+            .map_err(|error| PolarisError::Request(error.to_string()))?;
+        Buffer(unsafe { polaris_v1_orderbook_call(self.0.as_ptr(), input.as_ptr(), input.len()) })
+            .decode()
+    }
+}
+
+impl Drop for Orderbooks {
+    fn drop(&mut self) {
+        unsafe { polaris_v1_orderbook_destroy(self.0.as_ptr()) }
     }
 }

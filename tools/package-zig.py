@@ -13,8 +13,8 @@ import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-CRATE = ROOT / "crates/polaris-data"
-SOURCE = ("build.zig", "build.zig.zon", "zig", "include", "README.md", ".zigversion")
+CRATE = ROOT / "sdk/rust"
+SOURCE = ("build.zig", "build.zig.zon", "zig", "sdk/zig", "include", "README.md", ".zigversion")
 TARGETS = {
     "x86_64-unknown-linux-gnu": "x86_64-linux-gnu.2.17",
     "aarch64-unknown-linux-gnu": "aarch64-linux-gnu.2.17",
@@ -100,6 +100,9 @@ def main():
     archive.add_argument("--out", type=Path, default=ROOT / "dist")
     archive.add_argument("--check", action="store_true")
     args = parser.parse_args()
+    required = ("zig/generated/routes.zig", "zig/generated/models.zig", "sdk/zig/generated.zig")
+    if any(not (ROOT / path).is_file() for path in required):
+        raise SystemExit("Run python3 tools/generate.py --target zig before packaging the Zig core")
     if args.action == "archives":
         with ThreadPoolExecutor(max_workers=2) as workers:
             list(workers.map(lambda target: build_target(target, args.out), args.target or TARGETS))

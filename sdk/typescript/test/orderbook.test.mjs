@@ -69,3 +69,32 @@ test("OrderbookBuilder updates state without materializing until requested", asy
     asks: [{ price: 101, quantity: 3 }],
   });
 });
+
+test("a malformed update leaves both sides intact and the adapter preserves metadata", async () => {
+  const { OrderbookBuilder, PolarisError } = await import("../dist/node/index.js");
+  const builder = new OrderbookBuilder();
+  const snapshot = {
+    timestamp: 1, source: "s", market: "m", type: "orderbook", id: 18446744073709551615n,
+    data: { bids: [[99, " 1 "]], asks: [[101, 2]], detail: { sequence: 18446744073709551614n } },
+  };
+  const result = builder.apply(snapshot);
+  assert.equal(result.id, snapshot.id);
+  assert.equal(result.data.detail, snapshot.data.detail);
+  assert.throws(() => builder.update({
+    ...snapshot, type: "orderbook_delta", data: { bids: [[99, 0]], asks: [[101, -1]] },
+  }), PolarisError);
+  assert.deepEqual(builder.snapshot("s", "m"), {
+    bids: [{ price: 99, quantity: 1 }],
+    asks: [{ price: 101, quantity: 2 }],
+  });
+});
+
+test("orderbook snapshots retain the numeric types of large levels", async () => {
+  const { OrderbookBuilder } = await import("../dist/node/index.js");
+  const builder = new OrderbookBuilder();
+  builder.update({
+    timestamp: 1, source: "s", market: "m", type: "orderbook",
+    data: { bids: [[1e16, 1e30]], asks: [] },
+  });
+  assert.deepEqual(builder.snapshot("s", "m").bids, [{ price: 1e16, quantity: 1e30 }]);
+});

@@ -16,10 +16,16 @@ pub fn build(b: *std.Build) void {
     lib.installHeadersDirectory(b.path("include"), "", .{});
     b.getInstallStep().dependOn(&b.addInstallArtifact(lib, .{}).step);
     _ = b.addModule("polaris_data", .{
-        .root_source_file = b.path("zig/root.zig"),
+        .root_source_file = b.path("sdk/zig/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .imports = &.{.{ .name = "polaris_native", .module = b.createModule(.{
+            .root_source_file = b.path("zig/native.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }) }},
     });
     const tests = b.addRunArtifact(b.addTest(.{ .root_module = core }));
     b.step("test", "Run the Zig core tests").dependOn(&tests.step);

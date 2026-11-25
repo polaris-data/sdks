@@ -1,4 +1,4 @@
-const native = @import("native.zig");
+const native = @import("polaris_native");
 const generated = @import("generated.zig");
 
 pub const Client = generated.Client;

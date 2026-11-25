@@ -4,5 +4,5 @@
 
     .version = "0.1.0",
     .minimum_zig_version = "0.17.1",
-    .paths = .{ "build.zig", "build.zig.zon", "zig", "include", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "zig", "sdk/zig", "include", "README.md" },
 }

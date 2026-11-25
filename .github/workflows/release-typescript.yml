@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: typescript
+        working-directory: sdk/typescript
     steps:
       - uses: actions/checkout@v6
         with:
@@ -47,19 +47,19 @@ jobs:
           git fetch --no-tags origin main
           tag_commit=$(git rev-parse "${RELEASE_TAG}^{commit}")
           git merge-base --is-ancestor "$tag_commit" origin/main
-      - run: python ../tools/install-toolchain.py --binaryen
+      - run: python ../../tools/install-toolchain.py --binaryen
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm test
-        env:
-          POLARIS_TEST_BROWSER: "1"
       - run: npm run typecheck
       - run: npm pack
-      - run: node ../tools/check-npm-dist.mjs polaris-data-*.tgz
+      - run: node ../../tools/check-npm-dist.mjs polaris-data-*.tgz
+        env:
+          POLARIS_TEST_BROWSER: "1"
       - uses: actions/upload-artifact@v4
         with:
           name: polaris-npm-tarball
-          path: typescript/polaris-data-*.tgz
+          path: sdk/typescript/polaris-data-*.tgz
 
   publish:
     needs: validate
@@ -73,7 +73,7 @@ jobs:
       id-token: write
     defaults:
       run:
-        working-directory: typescript
+        working-directory: sdk/typescript
     steps:
       - uses: actions/checkout@v6
         with:
@@ -87,7 +87,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: polaris-npm-tarball
-          path: typescript
+          path: sdk/typescript
       - run: npm publish polaris-data-*.tgz --access public
 
   create-release:
@@ -121,7 +121,7 @@ jobs:
               git log "$previous_tag..$RELEASE_TAG" \
                 --pretty=format:"- %s (%h)" \
                 --no-merges -- \
-                typescript zig schema tools build.zig build.zig.zon \
+                typescript sdk/typescript sdk/zig zig schema tools build.zig build.zig.zon \
                 .github/workflows/ci.yml \
                 .github/workflows/release-typescript.yml \
                 .github/scripts/check-release-version.py
