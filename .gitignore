@@ -6,6 +6,7 @@ python/polaris_data/_native*.pyd
 python/polaris_data/_native*.dylib
 __pycache__/
 *.pyc
+.ipynb_checkpoints/
 
 # Python build and packaging artifacts
 build/

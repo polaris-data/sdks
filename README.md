@@ -12,6 +12,10 @@ npm install polaris-data
 
 For Python Arrow batches or Pandas DataFrames, install `polaris-data[arrow]` or `polaris-data[dataframe]`.
 
+## Jupyter notebooks
+
+The [notebook guide](notebooks/README.md) covers six market data analyses with saved outputs and charts, plus setup for their pinned Python environment.
+
 ## Quickstart
 
 ```python

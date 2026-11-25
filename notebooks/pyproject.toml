@@ -1,0 +1,11 @@
+[project]
+name = "polaris-notebooks"
+version = "0.1.0"
+description = "Polaris notebook workspace"
+requires-python = ">=3.9"
+dependencies = [
+  "jupyterlab>=4.4.0",
+  "matplotlib>=3.9.0",
+  "pandas>=2.2.0",
+  "polaris-data[dataframe]==0.15.0",
+]
