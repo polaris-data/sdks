@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -12,6 +12,9 @@ class PolarisError(Exception):
     message: str
     status_code: int | None = None
     body: str | None = None
+
+    code: str | None = field(default=None, init=False)
+    resolution: str | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         super().__init__(self.message)
@@ -38,7 +41,7 @@ class RateLimitedError(PolarisError):
 
 
 class StreamDecodeError(PolarisError):
-    """Raised when NDJSON stream decoding fails."""
+    """Raised when a realtime WebSocket message cannot be decoded."""
 
 
 class StreamConnectionError(PolarisError):

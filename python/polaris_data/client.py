@@ -1,13 +1,11 @@
-"""Python compatibility facade over the native Rust Polaris SDK."""
+"""Synchronous Python client for the Polaris API."""
 
 from __future__ import annotations
 
-import importlib
 import json
 import os
-import warnings
-from itertools import islice
-from typing import TYPE_CHECKING, Any, Iterator, Literal, Sequence, overload
+from typing import Any, Iterator, Mapping, Sequence
+from weakref import WeakSet
 
 from . import _native
 from .errors import (
@@ -15,37 +13,40 @@ from .errors import (
     NotFoundError,
     PolarisError,
     RateLimitedError,
-    StreamDecodeError,
     StreamConnectionError,
+    StreamDecodeError,
     StreamProtocolError,
     UnauthorizedError,
 )
-from .models import (
-    CatalogCount,
-    CatalogResponse,
-    MetaResponse,
-    InstrumentsResponse,
-    FundingRateRow,
-    MixedEventRow,
-    MixedEventType,
-    OhlcvRow,
-    IntentRow,
-    JSONDict,
-    OptionTickerRow,
-    OrderbookL2Row,
-    RawCaptureRow,
-    TradeRow,
-)
-from .utils import TimeInput, to_iso8601
+from .models import DataTime, GeneratedClient, SubscriptionRequest, TableDataMessage
 
-if TYPE_CHECKING:
-    import pandas
-    import pyarrow
-
+JSONDict = dict[str, Any]
 DEFAULT_BASE_URL = "https://api.polaris.supply"
 DEFAULT_TIMEOUT = 30.0
-DEFAULT_BATCH_SIZE = 65_536
-OutputFormat = Literal["iterator", "batches", "dataframe"]
+
+
+def _native_error(error: Exception) -> PolarisError:
+    payload = json.loads(str(error))
+    kind = payload["kind"]
+    if kind == "stream_protocol":
+        return StreamProtocolError(payload["message"], code=payload.get("code"))
+    if kind == "rate_limited":
+        result = RateLimitedError(
+            payload["message"], payload.get("status_code"), payload.get("body"),
+            reset_at=payload.get("reset_at"),
+        )
+    else:
+        error_type = {
+            "unauthorized": UnauthorizedError,
+            "access_denied": AccessDeniedError,
+            "not_found": NotFoundError,
+            "stream_connection": StreamConnectionError,
+            "stream_decode": StreamDecodeError,
+        }.get(kind, PolarisError)
+        result = error_type(payload["message"], payload.get("status_code"), payload.get("body"))
+    result.code = payload.get("code")
+    result.resolution = payload.get("resolution")
+    return result
 
 
 class OrderbookBuilder:
@@ -59,14 +60,14 @@ class OrderbookBuilder:
         try:
             return self._native.apply(event)
         except _native.NativeError as error:
-            raise PolarisClient._translate_native_error(error, "orderbook") from None
+            raise _native_error(error) from None
 
     def update(self, event: JSONDict) -> bool:
         """Update book state without constructing a complete orderbook."""
         try:
             return self._native.update(event)
         except _native.NativeError as error:
-            raise PolarisClient._translate_native_error(error, "orderbook") from None
+            raise _native_error(error) from None
 
     def snapshot(self, source: str, market: str) -> JSONDict | None:
         """Return the current complete book for a source and market."""
@@ -79,46 +80,44 @@ class OrderbookBuilder:
         self._native.clear_book(source, market)
 
 
-class RealtimeStream(Iterator[JSONDict]):
-    """Closeable iterator of normalized realtime market events."""
+class RealtimeStream(Iterator[TableDataMessage]):
+    """A closeable iterator of complete table pages and resume cursors."""
 
-    def __init__(self, client: "PolarisClient", iterator: Iterator[JSONDict]) -> None:
+    def __init__(self, client: PolarisClient, native: Any) -> None:
         self._client = client
-        self._iterator: Iterator[JSONDict] | None = iterator
+        self._native = native
+        self._closed = False
 
-    def __iter__(self) -> "RealtimeStream":
+    def __iter__(self) -> RealtimeStream:
         return self
 
-    def __next__(self) -> JSONDict:
-        if self._iterator is None:
+    def __next__(self) -> TableDataMessage:
+        if self._closed:
             raise StopIteration
         try:
-            return next(self._iterator)
+            return json.loads(next(self._native))
         except _native.NativeError as error:
             self.close()
-            raise self._client._translate_native_error(error, "stream") from None
-        except StopIteration:
+            raise _native_error(error) from None
+        except BaseException:
             self.close()
             raise
 
     def close(self) -> None:
-        if self._iterator is not None:
-            close = getattr(self._iterator, "close", None)
-            if close is not None:
-                close()
-            self._iterator = None
+        if not self._closed:
+            self._closed = True
+            self._native.close()
             self._client._streams.discard(self)
-            self._client._emit_diagnostics()
 
-    def __enter__(self) -> "RealtimeStream":
+    def __enter__(self) -> RealtimeStream:
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         self.close()
 
 
-class PolarisClient:
-    """High-level synchronous client backed by the shared Rust SDK."""
+class PolarisClient(GeneratedClient):
+    """Read historical data and subscribe to realtime table pages."""
 
     def __init__(
         self,
@@ -130,599 +129,74 @@ class PolarisClient:
         self.api_key = api_key or os.getenv("POLARIS_API_KEY")
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self._native = _native.NativeClient(
-            self.api_key,
-            self.base_url,
-            timeout,
-            stream_url,
-        )
+        try:
+            self._native = _native.NativeClient(
+                self.api_key, self.base_url, timeout, stream_url
+            )
+        except _native.NativeError as error:
+            raise _native_error(error) from None
         self._closed = False
-        self._streams: set[RealtimeStream] = set()
+        self._streams: WeakSet[RealtimeStream] = WeakSet()
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise PolarisError("Polaris client is closed")
+
+    def _request(self, operation: str, query: Any) -> Any:
+        self._require_open()
+        try:
+            return json.loads(self._native.request(operation, json.dumps(query)))
+        except _native.NativeError as error:
+            raise _native_error(error) from None
+
+    def data_rows(
+        self,
+        table: str,
+        *,
+        start: DataTime | None = None,
+        end: DataTime | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+        filters: Mapping[str, str] | None = None,
+    ) -> Iterator[JSONDict]:
+        """Yield rows page by page, starting at the given cursor."""
+        self._require_open()
+        query = dict(
+            table=table, start=start, end=end, limit=limit, cursor=cursor,
+            filters=dict(filters) if filters is not None else None,
+        )
+        native = None
+        try:
+            native = self._native.data_rows(json.dumps(query))
+            while not self._closed:
+                try:
+                    yield json.loads(next(native))
+                except StopIteration:
+                    return
+        except _native.NativeError as error:
+            raise _native_error(error) from None
+        finally:
+            if native is not None:
+                native.close()
+
+    def stream(self, subscriptions: Sequence[SubscriptionRequest]) -> RealtimeStream:
+        self._require_open()
+        try:
+            native = self._native.stream(json.dumps(dict(subscriptions=list(subscriptions))))
+        except _native.NativeError as error:
+            raise _native_error(error) from None
+        stream = RealtimeStream(self, native)
+        self._streams.add(stream)
+        return stream
 
     def close(self) -> None:
         if not self._closed:
+            self._closed = True
             for stream in list(self._streams):
                 stream.close()
-            self._native.close()
-            self._closed = True
 
-    def __enter__(self) -> "PolarisClient":
+    def __enter__(self) -> PolarisClient:
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         self.close()
-
-    @staticmethod
-    def _time(value: TimeInput | None) -> str | None:
-        return None if value is None else to_iso8601(value)
-
-    @staticmethod
-    def _validate_l2_bounds(start: int, end: int) -> None:
-        for name, value in (("start", start), ("end", end)):
-            if not isinstance(value, int) or isinstance(value, bool):
-                raise TypeError(f"{name} must be an integer Unix millisecond timestamp")
-        if start < 0 or end < start:
-            raise ValueError("start and end must be non-negative inclusive milliseconds with start <= end")
-
-    def _emit_diagnostics(self) -> None:
-        for message in self._native.take_diagnostics():
-            warnings.warn(message, UserWarning, stacklevel=3)
-
-    @staticmethod
-    def _translate_native_error(
-        error: Exception,
-        operation: str | None = None,
-    ) -> PolarisError:
-        raw = error.args[0] if error.args else str(error)
-        try:
-            payload = json.loads(raw)
-        except (TypeError, json.JSONDecodeError):
-            return PolarisError(str(error))
-
-        message = str(payload.get("message") or "Polaris request failed")
-        status_code = payload.get("status_code")
-        if not isinstance(status_code, int):
-            status_code = None
-        body = payload.get("body")
-        if not isinstance(body, str):
-            body = None
-
-        kind = payload.get("kind")
-        if kind == "unauthorized":
-            return UnauthorizedError(message, status_code, body)
-        if kind == "access_denied":
-            if "docs.polaris.supply/guides/authentication" not in message:
-                message = (
-                    f"{message}. Set POLARIS_API_KEY or pass api_key to PolarisClient. "
-                    "See https://docs.polaris.supply/guides/authentication"
-                )
-            return AccessDeniedError(message, status_code, body)
-        if kind == "not_found":
-            return NotFoundError(message, status_code, body)
-        if kind == "rate_limited":
-            reset_at = payload.get("reset_at")
-            return RateLimitedError(
-                message,
-                status_code,
-                body,
-                reset_at if isinstance(reset_at, str) else None,
-            )
-        if kind == "stream_decode":
-            return StreamDecodeError(message, status_code, body)
-        if kind == "stream_connection":
-            return StreamConnectionError(message, status_code, body)
-        if kind == "stream_protocol":
-            code = payload.get("code")
-            return StreamProtocolError(
-                message,
-                status_code,
-                body,
-                code if isinstance(code, str) else None,
-            )
-        return PolarisError(message, status_code, body)
-
-    def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
-        if self._closed:
-            raise PolarisError("PolarisClient is closed")
-        try:
-            return getattr(self._native, method)(*args, **kwargs)
-        except _native.NativeError as error:
-            raise self._translate_native_error(error, method) from None
-        finally:
-            self._emit_diagnostics()
-
-    def _iterate(
-        self,
-        iterator: Iterator[JSONDict],
-        operation: str | None = None,
-    ) -> Iterator[JSONDict]:
-        try:
-            while True:
-                try:
-                    yield next(iterator)
-                except StopIteration:
-                    return
-                except _native.NativeError as error:
-                    raise self._translate_native_error(error, operation) from None
-        finally:
-            close = getattr(iterator, "close", None)
-            if close is not None:
-                close()
-            self._emit_diagnostics()
-
-    @staticmethod
-    def _validate_columnar_output(output: str, batch_size: int) -> None:
-        if output not in {"iterator", "batches", "dataframe"}:
-            raise ValueError(
-                "output must be one of: 'iterator', 'batches', 'dataframe'"
-            )
-        if not isinstance(batch_size, int) or isinstance(batch_size, bool):
-            raise TypeError("batch_size must be an integer")
-        if batch_size <= 0:
-            raise ValueError("batch_size must be greater than 0")
-
-    @staticmethod
-    def _require_optional_module(name: str, extra: str) -> Any:
-        try:
-            return importlib.import_module(name)
-        except ImportError:
-            raise ImportError(
-                f"{name} is required for this output; install "
-                f"polaris-data[{extra}]"
-            ) from None
-
-    @staticmethod
-    def _direct_row_schema(method: str, pa: Any) -> Any:
-        fields = [
-            pa.field("event_id", pa.string(), nullable=False),
-            pa.field("source", pa.string(), nullable=False),
-            pa.field("market", pa.string(), nullable=False),
-            pa.field("collector_timestamp", pa.int64(), nullable=False),
-            pa.field("source_capture_id", pa.string(), nullable=False),
-            pa.field("schema_version", pa.int32(), nullable=False),
-        ]
-        if method == "trades":
-            fields += [
-                pa.field("price", pa.float64(), nullable=False),
-                pa.field("quantity", pa.float64(), nullable=False),
-                pa.field("exchange_timestamp", pa.int64()),
-                pa.field("instrument", pa.string()),
-                pa.field("liquidation", pa.bool_()),
-                pa.field("maker", pa.string()),
-                pa.field("order_id", pa.string()),
-                pa.field("side", pa.string()),
-                pa.field("taker", pa.string()),
-            ]
-        elif method == "funding_rates":
-            fields += [
-                pa.field("exchange_timestamp", pa.int64()),
-                pa.field("funding_timestamp", pa.int64()),
-            ]
-            fields += [pa.field(name, pa.string()) for name in (
-                "instrument", "funding_rate", "index_price", "mark_price",
-                "open_interest", "predicted_funding_rate", "premium",
-            )]
-        elif method == "ohlcv":
-            fields += [
-                pa.field("interval", pa.string(), nullable=False),
-                pa.field("open_timestamp", pa.int64(), nullable=False),
-                *[pa.field(name, pa.float64(), nullable=False) for name in (
-                    "open", "high", "low", "close",
-                )],
-                pa.field("exchange_timestamp", pa.int64()),
-                pa.field("instrument", pa.string()),
-                pa.field("close_timestamp", pa.int64()),
-                pa.field("base_volume", pa.float64()),
-                pa.field("quote_volume", pa.float64()),
-                pa.field("trade_count", pa.int64()),
-                pa.field("is_closed", pa.bool_()),
-            ]
-        return pa.schema(fields)
-
-    def _direct_row_output(
-        self,
-        method: Literal["trades", "funding_rates", "ohlcv"],
-        source: str | None,
-        market: str | None,
-        start: int | None,
-        end: int | None,
-        output: OutputFormat,
-        batch_size: int,
-        instrument: str | None = None,
-        interval: str | None = None,
-    ) -> Iterator[JSONDict] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        self._validate_columnar_output(output, batch_size)
-        for name, value in (("start", start), ("end", end)):
-            if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
-                raise TypeError(f"{name} must be an integer Unix millisecond timestamp")
-        pa = None
-        schema = None
-        if output != "iterator":
-            if output == "dataframe":
-                self._require_optional_module("pandas", "dataframe")
-            pa = self._require_optional_module(
-                "pyarrow", "dataframe" if output == "dataframe" else "arrow"
-            )
-            schema = self._direct_row_schema(method, pa)
-        if method == "ohlcv":
-            native_iterator = self._call(method, source, market, instrument, interval, start, end)
-        elif method == "trades":
-            native_iterator = self._call(method, source, market, start, end, instrument)
-        else:
-            native_iterator = self._call(method, source, market, start, end)
-        iterator = self._iterate(native_iterator, method)
-        if output == "iterator":
-            return iterator
-
-        def batches() -> Iterator[pyarrow.RecordBatch]:
-            while rows := list(islice(iterator, batch_size)):
-                yield pa.RecordBatch.from_pylist(rows, schema=schema)
-
-        if output == "batches":
-            return batches()
-        return pa.Table.from_batches(list(batches()), schema=schema).to_pandas()
-
-    def health(self) -> JSONDict:
-        return self._call("health")
-
-    def meta(self) -> MetaResponse:
-        """Return API documentation and machine-readable resource links."""
-        return self._call("meta")
-
-    def stream(
-        self,
-        *,
-        source: str,
-        markets: Sequence[str],
-        instrument: str | None = None,
-        include_buffer: bool = False,
-        materialize_orderbooks: bool = True,
-    ) -> RealtimeStream:
-        """Open a reconnecting realtime stream of normalized market events."""
-        if instrument is not None and not instrument.strip():
-            raise ValueError("instrument must be non-empty")
-        iterator = self._call(
-            "stream",
-            source,
-            list(markets),
-            instrument,
-            include_buffer,
-            materialize_orderbooks,
-        )
-        stream = RealtimeStream(self, iterator)
-        self._streams.add(stream)
-        return stream
-
-    def catalog(
-        self,
-        source: str | None = None,
-        market: str | None = None,
-        q: str | None = None,
-    ) -> CatalogResponse | JSONDict:
-        return self._call("catalog", source, market, q)
-
-    def instruments(
-        self,
-        *,
-        source: str,
-        market: str,
-        instrument: str | None = None,
-        expiry: int | None = None,
-        option_type: Literal["call", "put"] | None = None,
-        q: str | None = None,
-    ) -> InstrumentsResponse:
-        """Discover venue-native option contracts for one underlying market."""
-        return self._call("instruments", source, market, instrument, expiry, option_type, q)
-
-    def count(self) -> CatalogCount:
-        return self._call("count")
-
-    @overload
-    def trades(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        instrument: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        output: Literal["iterator"] = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[TradeRow]: ...
-
-    @overload
-    def trades(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        instrument: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        output: Literal["batches"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[pyarrow.RecordBatch]: ...
-
-    @overload
-    def trades(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        instrument: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        output: Literal["dataframe"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> pandas.DataFrame: ...
-
-    def trades(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        instrument: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        output: OutputFormat = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[TradeRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        """Read flat trade rows from the direct historical API."""
-        if instrument is not None and not instrument.strip():
-            raise ValueError("instrument must be non-empty")
-        return self._direct_row_output(
-            "trades", source, market, start, end, output, batch_size, instrument
-        )
-
-    def events(
-        self,
-        *,
-        start: int,
-        end: int,
-        types: Sequence[MixedEventType] | None = None,
-        source: str | None = None,
-        market: str | None = None,
-        instrument: str | None = None,
-    ) -> Iterator[MixedEventRow]:
-        """Iterate authenticated mixed flat rows in collector-time order."""
-        if isinstance(start, bool) or isinstance(end, bool) or not isinstance(start, int) or not isinstance(end, int) or start < 0 or end < start:
-            raise ValueError("start and end must be non-negative inclusive milliseconds with start <= end")
-        if types is not None and (not types or any(
-            value not in {"trade", "l2_update", "funding_rate", "intent", "quote", "option_ticker", "ohlcv"}
-            for value in types
-        )):
-            raise ValueError("types must contain valid event types")
-        iterator = self._call("events", start, end, list(types) if types is not None else None, source, market, instrument)
-        return self._iterate(iterator, "events")
-
-    def intents(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        instrument: str | None = None,
-        intent_id: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-    ) -> Iterator[IntentRow]:
-        """Iterate pair-shaped intent observations from the direct API."""
-        iterator = self._call("intents", source, market, instrument, intent_id, start, end)
-        return self._iterate(iterator, "intents")
-
-    def option_tickers(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        instrument: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-    ) -> Iterator[OptionTickerRow]:
-        """Read flat option ticker rows for a chain or exact contract."""
-        if instrument is not None and not instrument.strip():
-            raise ValueError("instrument must be non-empty")
-        iterator = self._call(
-            "option_tickers",
-            source,
-            market,
-            instrument,
-            start,
-            end,
-        )
-        return self._iterate(iterator, "option_tickers")
-
-    def perpetual_tickers(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-    ) -> Iterator[FundingRateRow]:
-        """Iterate funding-bearing perpetual ticker observations."""
-        iterator = self._call("perpetual_tickers", source, market, start, end)
-        return self._iterate(iterator, "perpetual_tickers")
-
-    def raw(
-        self,
-        *,
-        source: str,
-        market: str | None = None,
-        from_: TimeInput | None = None,
-        to: TimeInput | None = None,
-        limit: int = 1000,
-        channel: str | None = None,
-    ) -> list[JSONDict]:
-        """Read paged raw captures with optional exact market and channel filters."""
-        if limit <= 0:
-            raise ValueError("limit must be > 0")
-        return self._call(
-            "raw",
-            source,
-            market,
-            self._time(from_),
-            self._time(to),
-            limit,
-            channel,
-        )
-
-    def raw_channel(
-        self,
-        *,
-        exchange: str,
-        event: str,
-        start: int,
-        end: int,
-        market: str | None = None,
-    ) -> Iterator[RawCaptureRow]:
-        """Iterate exact raw captures for one venue-native channel via `/raw`."""
-        if not exchange.strip() or not event.strip() or exchange in {".", ".."} or event in {".", ".."}:
-            raise ValueError("exchange and event must be non-empty channel identifiers")
-        for name, value in (("start", start), ("end", end)):
-            if not isinstance(value, int) or isinstance(value, bool):
-                raise TypeError(f"{name} must be an integer Unix millisecond timestamp")
-        if start < 0 or end < start:
-            raise ValueError("start and end must be non-negative inclusive milliseconds with start <= end")
-        iterator = self._call("raw_channel", exchange, event, start, end, market)
-        return self._iterate(iterator, "raw_channel")
-
-    def l2_snapshots(
-        self,
-        *,
-        source: str,
-        market: str,
-        start: int,
-        end: int,
-        instrument: str | None = None,
-    ) -> Iterator[OrderbookL2Row]:
-        """Read reconstructed top-25 books after each L2 event."""
-        self._validate_l2_bounds(start, end)
-        iterator = self._call("l2_snapshots", source, market, start, end, instrument)
-        return self._iterate(iterator, "l2_snapshots")
-
-    def l2_updates(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        instrument: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-    ) -> Iterator[OrderbookL2Row]:
-        """Read flat source snapshots and sparse L2 deltas without reconstruction."""
-        for name, value in (("start", start), ("end", end)):
-            if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
-                raise TypeError(f"{name} must be an integer Unix millisecond timestamp")
-        iterator = self._call("l2_updates", source, market, instrument, start, end)
-        return self._iterate(iterator, "l2_updates")
-
-    @overload
-    def funding_rates(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        output: Literal["iterator"] = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[FundingRateRow]: ...
-
-    @overload
-    def funding_rates(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        output: Literal["batches"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[pyarrow.RecordBatch]: ...
-
-    @overload
-    def funding_rates(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        output: Literal["dataframe"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> pandas.DataFrame: ...
-
-    def funding_rates(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        output: OutputFormat = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[FundingRateRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        """Read partial flat funding observations from the direct historical API."""
-        return self._direct_row_output(
-            "funding_rates", source, market, start, end, output, batch_size
-        )
-
-    @overload
-    def ohlcv(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        instrument: str | None = None,
-        interval: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        output: Literal["iterator"] = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[OhlcvRow]: ...
-
-    @overload
-    def ohlcv(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        instrument: str | None = None,
-        interval: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        output: Literal["batches"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[pyarrow.RecordBatch]: ...
-
-    @overload
-    def ohlcv(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        instrument: str | None = None,
-        interval: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        output: Literal["dataframe"],
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> pandas.DataFrame: ...
-
-    def ohlcv(
-        self,
-        *,
-        source: str | None = None,
-        market: str | None = None,
-        instrument: str | None = None,
-        interval: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        output: OutputFormat = "iterator",
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ) -> Iterator[OhlcvRow] | Iterator[pyarrow.RecordBatch] | pandas.DataFrame:
-        """Read every venue-published candle update as a flat row."""
-        return self._direct_row_output(
-            "ohlcv", source, market, start, end, output, batch_size,
-            instrument, interval,
-        )

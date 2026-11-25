@@ -1,3 +1,5 @@
 node_modules/
 dist/
 *.tsbuildinfo
+src/wasm-image.ts
+src/wasm-fallback.mjs

@@ -1,385 +1,200 @@
-import {
-  StreamConnectionError,
-  StreamProtocolError,
-} from "./errors";
-import type { StandardEvent, StreamOptions } from "./types";
-import { OrderbookBuilder } from "./orderbook";
-import type {
-  PolarisRuntime,
-  WebSocketLike,
-} from "./runtime/types";
+import { getCore } from "./core";
+import { StreamConnectionError, StreamDecodeError, StreamProtocolError } from "./errors";
+import type { TableDataMessage } from "./generated";
+import type { PolarisRuntime, WebSocketLike } from "./runtime/types";
+import type { StreamOptions } from "./types";
 
-const MAX_SUBSCRIPTIONS = 1_000;
-const PING_INTERVAL_MS = 30_000;
-const PONG_TIMEOUT_MS = 10_000;
-const HEALTHY_CONNECTION_MS = 30_000;
-const INITIAL_BACKOFF_MS = 500;
-const MAX_BACKOFF_MS = 30_000;
-const SUBSCRIBE_REQUEST_ID = "polaris-sdk-subscribe";
+const PING_INTERVAL = 30_000;
+const PONG_TIMEOUT = 10_000;
+const PING_ID = "polaris-sdk-ping";
+const MAX_QUEUED_BYTES = 32 * 1024 * 1024;
+const MAX_QUEUED_FRAMES = 1024;
 
-type SocketEvent =
-  | { type: "open" }
-  | { type: "message"; data: unknown }
-  | { type: "close"; code: number; reason: string }
-  | { type: "error" }
-  | { type: "tick" }
-  | { type: "client-close" };
+type Event =
+  | { type: "open" | "retry" | "timeout" | "closed" }
+  | { type: "end"; code: number }
+  | { type: "message"; data: unknown };
 
-type ParsedMessage =
-  | { type: "data"; event: StandardEvent }
-  | { type: "pong"; requestId?: string }
-  | { type: "control" };
-
-class AsyncQueue<T> {
-  private readonly values: T[] = [];
-  private readonly waiters: Array<(value: T) => void> = [];
-
-  push(value: T): void {
-    const waiter = this.waiters.shift();
-    if (waiter) waiter(value);
-    else this.values.push(value);
-  }
-
-  shift(): Promise<T> {
-    const value = this.values.shift();
-    if (value !== undefined) return Promise.resolve(value);
-    return new Promise((resolve) => this.waiters.push(resolve));
-  }
-}
-
-interface ConnectedSocket {
-  socket: WebSocketLike;
-  queue: AsyncQueue<SocketEvent>;
-}
-
-export class RealtimeStream implements AsyncIterable<StandardEvent> {
-  private readonly source: string;
-  private readonly markets: string[];
-  private readonly instrument: string | undefined;
-  private readonly includeBuffer: boolean;
-  private readonly materializeOrderbooks: boolean;
-  private readonly streamUrl: string;
-  private readonly apiKey: string | undefined;
-  private readonly runtime: PolarisRuntime;
-  private readonly onClose: () => void;
-  private socket: WebSocketLike | undefined;
-  private queue: AsyncQueue<SocketEvent> | undefined;
-  private ticker: ReturnType<typeof setInterval> | undefined;
+class Socket {
+  private readonly queue: Event[] = [];
+  private waiter?: (event: Event) => void;
   private closed = false;
-  private started = false;
+  private bytes = 0;
 
-  constructor(
-    options: StreamOptions,
-    config: {
-      streamUrl: string;
-      apiKey?: string;
-      runtime: PolarisRuntime;
-      onClose: () => void;
-    },
-  ) {
-    this.source = options.source.trim();
-    const seen = new Set<string>();
-    this.markets = options.markets
-      .map((market) => market.trim())
-      .filter((market) => market.length > 0 && !seen.has(market) && Boolean(seen.add(market)));
-    if (!this.source) throw new StreamProtocolError("stream source must not be empty");
-    if (this.markets.length === 0) {
-      throw new StreamProtocolError("stream markets must contain at least one non-empty market");
+  constructor(private readonly socket: WebSocketLike) {
+    socket.addEventListener("open", () => this.push({ type: "open" }));
+    socket.addEventListener("message", ({ data }) => this.push({ type: "message", data }));
+    socket.addEventListener("error", () => this.push({ type: "retry" }));
+    socket.addEventListener("close", ({ code }) => this.push({ type: "end", code: code ?? 1006 }));
+  }
+
+  private push(event: Event): void {
+    if (this.closed) return;
+    if (this.waiter) {
+      this.waiter(event);
+      return;
     }
-    if (this.markets.length > MAX_SUBSCRIPTIONS) {
-      throw new StreamProtocolError(`stream markets must contain at most ${MAX_SUBSCRIPTIONS} unique markets`);
+    const size = event.type === "message" && typeof event.data === "string" ? event.data.length * 2 : 0;
+    if (this.queue.length >= MAX_QUEUED_FRAMES || this.bytes + size > MAX_QUEUED_BYTES) {
+      this.queue.length = 0;
+      this.bytes = 0;
+      this.queue.push({ type: "retry" });
+      this.socket.close();
+      return;
     }
-    this.instrument = options.instrument?.trim();
-    if (this.instrument !== undefined && this.instrument.length === 0) {
-      throw new StreamProtocolError("instrument must be non-empty");
+    this.bytes += size;
+    this.queue.push(event);
+  }
+
+  async read(timeout: number): Promise<Event> {
+    if (this.closed) return { type: "closed" };
+    const event = this.queue.shift();
+    if (event) {
+      if (event.type === "message" && typeof event.data === "string") this.bytes -= event.data.length * 2;
+      return event;
     }
-    this.includeBuffer = options.includeBuffer ?? false;
-    this.materializeOrderbooks = options.materializeOrderbooks ?? true;
-    this.streamUrl = config.streamUrl;
-    this.apiKey = config.apiKey;
-    this.runtime = config.runtime;
-    this.onClose = config.onClose;
+    return new Promise((resolve) => {
+      const finish = (value: Event) => {
+        clearTimeout(timer);
+        this.waiter = undefined;
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish({ type: "timeout" }), Math.max(0, timeout));
+      this.waiter = finish;
+    });
+  }
+
+  send(data: string): void {
+    this.socket.send(data);
   }
 
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    if (this.ticker !== undefined) {
-      clearInterval(this.ticker);
-      this.ticker = undefined;
-    }
-    this.queue?.push({ type: "client-close" });
+    this.queue.length = 0;
+    this.waiter?.({ type: "closed" });
     try {
-      this.socket?.close(1000, "client closed realtime stream");
-    } finally {
-      this.onClose();
+      this.socket.close();
+    } catch {
+      // The peer may have already closed the connection.
     }
   }
+}
 
-  async *[Symbol.asyncIterator](): AsyncGenerator<StandardEvent> {
-    if (this.started) {
-      throw new StreamProtocolError("a realtime stream can only be iterated once");
-    }
+export class RealtimeStream implements AsyncIterable<TableDataMessage> {
+  private socket?: Socket;
+  private wake?: () => void;
+  private closed = false;
+  private started = false;
+
+  constructor(
+    private readonly options: StreamOptions,
+    private readonly config: {
+      url: string;
+      apiKey?: string;
+      timeout: number;
+      runtime: PolarisRuntime;
+      onClose: () => void;
+    },
+  ) {}
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.wake?.();
+    this.socket?.close();
+    this.config.onClose();
+  }
+
+  async *[Symbol.asyncIterator](): AsyncGenerator<TableDataMessage> {
+    if (this.started) throw new StreamProtocolError("A realtime stream can only be iterated once");
     this.started = true;
-    let connectedOnce = false;
-    let backoffMs = INITIAL_BACKOFF_MS;
-    const orderbooks = new OrderbookBuilder();
-
+    if (this.closed) return;
+    const core = await getCore();
+    if (this.closed) return;
+    let session: ReturnType<typeof core.session> | undefined;
+    let connected = false;
+    let backoff = 500;
     try {
+      session = core.session({ query: this.options, api_key: this.config.apiKey });
       while (!this.closed) {
-        let connection: ConnectedSocket;
+        const socket = new Socket(this.config.runtime.createWebSocket(this.config.url));
+        this.socket = socket;
+        let connectedAt = Date.now();
         try {
-          connection = await this.connectAndSubscribe();
-          connectedOnce = true;
-        } catch (error) {
+          const opened = await socket.read(this.config.timeout);
           if (this.closed) return;
-          if (!connectedOnce || error instanceof StreamProtocolError) throw error;
-          await this.waitToReconnect(backoffMs);
-          backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
-          continue;
-        }
-
-        const connectedAt = Date.now();
-        let lastPingAt = Date.now();
-        let awaitingPong: { requestId: string; sentAt: number } | undefined;
-        let pingCounter = 0;
-        let reconnect = false;
-        const ticker = setInterval(() => connection.queue.push({ type: "tick" }), 1_000);
-        this.ticker = ticker;
-
-        try {
+          if (opened.type !== "open") throw new StreamConnectionError("WebSocket did not open");
+          socket.send(session.subscribe());
+          let acknowledged = false;
+          let pingAt = Date.now() + this.config.timeout;
+          let pongPending = false;
           while (!this.closed) {
-            const event = await connection.queue.shift();
-            if (event.type === "client-close") return;
-            if (event.type === "close") {
-              if (event.code === 1000 || event.code === 1001) return;
-              reconnect = true;
-              break;
+            const event = await socket.read(pingAt - Date.now());
+            if (this.closed || event.type === "closed") return;
+            if (event.type === "end") {
+              if (event.code === 1008) throw new StreamProtocolError("WebSocket policy violation");
+              if (acknowledged && (event.code === 1000 || event.code === 1001)) return;
+              throw new StreamConnectionError("WebSocket closed");
             }
-            if (event.type === "error") {
-              reconnect = true;
-              break;
-            }
+            if (event.type === "retry") throw new StreamConnectionError("WebSocket disconnected");
             if (event.type === "message") {
-              const parsed = parseServerMessage(event.data);
-              if (parsed.type === "data") {
-                const output = this.materializeOrderbooks
-                  ? orderbooks.apply(parsed.event)
-                  : parsed.event;
-                if (output) yield output;
-              }
-              if (
-                parsed.type === "pong" &&
-                awaitingPong &&
-                parsed.requestId === awaitingPong.requestId
-              ) {
-                awaitingPong = undefined;
+              if (typeof event.data !== "string") throw new StreamDecodeError("Expected a WebSocket text message");
+              const frame = session.receive(event.data);
+              if (frame.type === "ack") {
+                connected = acknowledged = true;
+                connectedAt = Date.now();
+                pingAt = connectedAt + PING_INTERVAL;
+              } else if (frame.type === "data") {
+                yield frame;
+                if (this.closed) return;
+                session.advance();
+              } else if (frame.request_id === PING_ID) {
+                pongPending = false;
+                pingAt = Date.now() + PING_INTERVAL;
               }
             }
-
-            const now = Date.now();
-            if (awaitingPong && now - awaitingPong.sentAt >= PONG_TIMEOUT_MS) {
-              reconnect = true;
-              break;
-            }
-            if (!awaitingPong && now - lastPingAt >= PING_INTERVAL_MS) {
-              const requestId = `polaris-sdk-ping-${++pingCounter}`;
-              try {
-                connection.socket.send(JSON.stringify({ action: "ping", request_id: requestId }));
-              } catch {
-                reconnect = true;
-                break;
-              }
-              awaitingPong = { requestId, sentAt: now };
-              lastPingAt = now;
+            if (Date.now() >= pingAt) {
+              if (!acknowledged) throw new StreamConnectionError("WebSocket subscription timed out");
+              if (pongPending) throw new StreamConnectionError("WebSocket heartbeat timed out");
+              socket.send(JSON.stringify({ action: "ping", request_id: PING_ID }));
+              pongPending = true;
+              pingAt = Date.now() + PONG_TIMEOUT;
             }
           }
+        } catch (error) {
+          if (this.closed) return;
+          if (!connected || error instanceof StreamProtocolError || error instanceof StreamDecodeError) {
+            if (error instanceof Error && !(error instanceof StreamConnectionError) &&
+                !(error instanceof StreamProtocolError) && !(error instanceof StreamDecodeError)) {
+              throw new StreamConnectionError(error.message);
+            }
+            throw error;
+          }
         } finally {
-          clearInterval(ticker);
-          if (this.ticker === ticker) this.ticker = undefined;
+          socket.close();
+          this.socket = undefined;
         }
-
-        try {
-          connection.socket.close();
-        } catch {
-          // The transport is already gone.
-        }
-        if (!reconnect || this.closed) return;
-        orderbooks.clear();
-        if (Date.now() - connectedAt >= HEALTHY_CONNECTION_MS) {
-          backoffMs = INITIAL_BACKOFF_MS;
-        }
-        await this.waitToReconnect(backoffMs);
-        backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+        if (Date.now() - connectedAt >= 30_000) backoff = 500;
+        await this.delay(backoff);
+        backoff = Math.min(30_000, backoff * 2);
       }
     } finally {
+      session?.close();
       this.close();
     }
   }
 
-  private async connectAndSubscribe(): Promise<ConnectedSocket> {
-    let socket: WebSocketLike;
-    try {
-      socket = this.runtime.createWebSocket(this.streamUrl);
-    } catch (error) {
-      throw new StreamConnectionError(`Failed to create realtime WebSocket: ${String(error)}`);
-    }
-    const queue = new AsyncQueue<SocketEvent>();
-    this.socket = socket;
-    this.queue = queue;
-    socket.addEventListener("open", () => queue.push({ type: "open" }));
-    socket.addEventListener("message", (event) => queue.push({ type: "message", data: event.data }));
-    socket.addEventListener("close", (event) => queue.push({
-      type: "close",
-      code: event.code ?? 1006,
-      reason: event.reason ?? "",
-    }));
-    socket.addEventListener("error", () => queue.push({ type: "error" }));
-
-    while (!this.closed) {
-      const event = await queue.shift();
-      if (event.type === "client-close") throw new StreamConnectionError("Realtime stream closed");
-      if (event.type === "error") throw new StreamConnectionError("Realtime WebSocket connection failed");
-      if (event.type === "close") {
-        throw new StreamConnectionError(`Realtime WebSocket closed before subscribing (${event.code}): ${event.reason}`);
-      }
-      if (event.type !== "open") continue;
-
-      const command: Record<string, unknown> = {
-        action: "subscribe",
-        request_id: SUBSCRIBE_REQUEST_ID,
-        include_buffer: this.includeBuffer,
-        subscriptions: this.markets.map((market) => ({
-          source: this.source,
-          market,
-          ...(this.instrument === undefined ? {} : { instrument: this.instrument }),
-          stream: "standard",
-        })),
+  private delay(ms: number): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    return new Promise((resolve) => {
+      const wake = () => {
+        clearTimeout(timer);
+        this.wake = undefined;
+        resolve();
       };
-      if (this.apiKey) command.token = this.apiKey;
-      try {
-        socket.send(JSON.stringify(command));
-      } catch (error) {
-        throw new StreamConnectionError(`Failed to subscribe realtime WebSocket: ${String(error)}`);
-      }
-      break;
-    }
-
-    while (!this.closed) {
-      const event = await queue.shift();
-      if (event.type === "client-close") throw new StreamConnectionError("Realtime stream closed");
-      if (event.type === "error") throw new StreamConnectionError("Realtime WebSocket failed before subscription acknowledgement");
-      if (event.type === "close") {
-        throw new StreamConnectionError(`Realtime WebSocket closed before subscription acknowledgement (${event.code}): ${event.reason}`);
-      }
-      if (event.type !== "message") continue;
-      const value = parseJsonObject(event.data);
-      if (value.type === "error") throw protocolErrorFromMessage(value);
-      if (value.type !== "ack") {
-        throw new StreamProtocolError("Unexpected server message before subscription acknowledgement");
-      }
-      if (
-        value.request_id !== SUBSCRIBE_REQUEST_ID ||
-        value.action !== "subscribe" ||
-        value.changed !== this.markets.length ||
-        value.active_subscriptions !== this.markets.length
-      ) {
-        throw new StreamProtocolError("Invalid realtime subscription acknowledgement");
-      }
-      return { socket, queue };
-    }
-    throw new StreamConnectionError("Realtime stream closed");
+      const timer = setTimeout(wake, ms);
+      this.wake = wake;
+    });
   }
-
-  private async waitToReconnect(backoffMs: number): Promise<void> {
-    const jittered = Math.round(backoffMs * (0.8 + Math.random() * 0.4));
-    await Promise.race([
-      delay(jittered),
-      this.queue?.shift().then(() => undefined) ?? new Promise<void>(() => undefined),
-    ]);
-  }
-}
-
-function parseServerMessage(data: unknown): ParsedMessage {
-  const value = parseJsonObject(data);
-  if (typeof value.type === "string") {
-    if (value.type === "pong") {
-      return {
-        type: "pong",
-        requestId: typeof value.request_id === "string" ? value.request_id : undefined,
-      };
-    }
-    if (value.type === "ack") return { type: "control" };
-    if (value.type === "error") throw protocolErrorFromMessage(value);
-    throw new StreamProtocolError(`Unexpected realtime server message type '${value.type}'`);
-  }
-  if (!isObject(value.kind) || typeof value.kind.type !== "string") {
-    throw new StreamProtocolError("Realtime message did not include a valid kind object");
-  }
-  if (value.kind.type === "persistence_checkpoint") return { type: "control" };
-  if (value.kind.type !== "data") {
-    throw new StreamProtocolError(`Unexpected realtime message kind '${value.kind.type}'`);
-  }
-  if (value.kind.stream !== "standard" || !isObject(value.kind.event)) {
-    throw new StreamProtocolError("Standard realtime stream received an invalid data message");
-  }
-  const event = value.kind.event as unknown as StandardEvent;
-  const isV2 = [
-    "collector_timestamp",
-    "collector_sequence",
-    "exchange_timestamp",
-    "exchange_sequence",
-  ].every((field) => field in event);
-  const isLegacy = "timestamp" in event && typeof event.timestamp === "number";
-  const validV2 = isV2 &&
-    "collector_timestamp" in event && typeof event.collector_timestamp === "number" &&
-    typeof event.collector_sequence === "number" &&
-    (event.exchange_timestamp === null || typeof event.exchange_timestamp === "number") &&
-    (event.exchange_sequence === null || typeof event.exchange_sequence === "string");
-  if (
-    (!isLegacy && !validV2) ||
-    typeof event.type !== "string" ||
-    !isObject(event.data)
-  ) {
-    throw new StreamProtocolError("Invalid standardized realtime event");
-  }
-  if (!event.source) event.source = typeof value.source === "string" ? value.source : "";
-  if (!event.market) event.market = typeof value.market === "string" ? value.market : "";
-  if (
-    event.type === "option_ticker" &&
-    (typeof event.instrument !== "string" || event.instrument.length === 0)
-  ) {
-    throw new StreamProtocolError("option_ticker instrument must be non-empty");
-  }
-  return { type: "data", event };
-}
-
-function parseJsonObject(data: unknown): Record<string, unknown> {
-  let text: string;
-  if (typeof data === "string") text = data;
-  else if (data instanceof Uint8Array) text = new TextDecoder().decode(data);
-  else if (data && typeof (data as { toString?: unknown }).toString === "function") text = String(data);
-  else throw new StreamProtocolError("Realtime WebSocket delivered an unsupported message payload");
-  try {
-    const value: unknown = JSON.parse(text);
-    if (!isObject(value)) throw new Error("expected an object");
-    return value;
-  } catch (error) {
-    throw new StreamProtocolError(`Invalid realtime JSON: ${String(error)}`);
-  }
-}
-
-function protocolErrorFromMessage(value: Record<string, unknown>): StreamProtocolError {
-  return new StreamProtocolError(
-    typeof value.message === "string" ? value.message : "Realtime server returned an error",
-    typeof value.code === "string" ? value.code : undefined,
-  );
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

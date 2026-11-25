@@ -1,0 +1,53 @@
+name: Release Zig
+
+on:
+  push:
+    tags: ["zig-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - if: github.ref_type == 'tag'
+        run: |
+          python .github/scripts/check-release-version.py "$GITHUB_REF_NAME"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - run: python tools/install-toolchain.py
+      - run: python tools/generate.py --check
+      - run: zig build test
+      - run: python tools/package-zig.py source-archive --check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polaris-zig-sdk
+          path: dist/polaris-data-zig-*.tar.gz
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: polaris-zig-sdk
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" polaris-data-zig-*.tar.gz \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
